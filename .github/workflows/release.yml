@@ -37,7 +37,7 @@ jobs:
             --prefix="home-frigate-ollama-iac-${tag}/" \
             -o "dist/home-frigate-ollama-iac-${tag}.tar.gz" \
             HEAD
-          (cd dist && sha256sum * > checksums.txt)
+          (cd dist && sha256sum ./* > checksums.txt)
       - name: Attest source archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:

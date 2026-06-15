@@ -28,6 +28,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: requirements-dev.txt
       - name: Install IaC tools
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Lint YAML
@@ -97,8 +98,8 @@ jobs:
       - name: Check for obvious committed secrets
         run: |
           credential_terms='api[_-]?key|token|secret|password|private[_-]?key'
-          secret_shapes='ghp_|gho_|sk-|-----BEGIN|[A-Za-z0-9/+_=.-]{32,}'
-          pattern="(${credential_terms}).*(=|:).*(${secret_shapes})"
+          shapes='ghp_|gho_|sk-|-----BEGIN|[A-Za-z0-9/+_=.-]{32,}'
+          pattern="(${credential_terms}).*(=|:).*(${shapes})"
           if git grep -n --ignore-case -E "$pattern" -- . ':!SECURITY.md'; then
             echo "Potential committed secret detected"
             exit 1
