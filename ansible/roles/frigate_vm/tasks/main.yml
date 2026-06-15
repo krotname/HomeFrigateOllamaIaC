@@ -21,7 +21,7 @@
 
 - name: Assert NVIDIA GPU is visible in VM
   ansible.builtin.command: nvidia-smi --query-gpu=name --format=csv,noheader
-  register: nvidia_smi
+  register: frigate_vm_nvidia_smi
   changed_when: false
 
 - name: Assert Docker is installed
@@ -121,8 +121,8 @@
     fi
   args:
     executable: /bin/bash
-  register: ollama_install
-  changed_when: "'ollama already installed' not in ollama_install.stdout"
+  register: frigate_vm_ollama_install
+  changed_when: "'ollama already installed' not in frigate_vm_ollama_install.stdout"
 
 - name: Create Ollama systemd override directory
   ansible.builtin.file:
@@ -155,8 +155,10 @@
 
 - name: Pull Ollama model
   ansible.builtin.command: "ollama pull {{ ollama_model }}"
-  register: ollama_pull
-  changed_when: "'success' in ollama_pull.stdout | lower or 'pulling' in ollama_pull.stdout | lower"
+  register: frigate_vm_ollama_pull
+  changed_when: >
+    'success' in (frigate_vm_ollama_pull.stdout | lower)
+    or 'pulling' in (frigate_vm_ollama_pull.stdout | lower)
 
 - name: Render Ollama HTTPS nginx site
   ansible.builtin.template:
@@ -195,17 +197,17 @@
     url: "https://127.0.0.1:8971/api/version"
     validate_certs: false
     return_content: true
-  register: frigate_version
+  register: frigate_vm_frigate_version
 
 - name: Verify Ollama API
   ansible.builtin.uri:
     url: "http://127.0.0.1:11434/api/version"
     return_content: true
-  register: ollama_version
+  register: frigate_vm_ollama_version
 
 - name: Print deployment summary
   ansible.builtin.debug:
     msg:
-      - "GPU: {{ nvidia_smi.stdout }}"
-      - "Frigate: {{ frigate_version.content }}"
-      - "Ollama: {{ ollama_version.json.version | default(ollama_version.content) }}"
+      - "GPU: {{ frigate_vm_nvidia_smi.stdout }}"
+      - "Frigate: {{ frigate_vm_frigate_version.content }}"
+      - "Ollama: {{ frigate_vm_ollama_version.json.version | default(frigate_vm_ollama_version.content) }}"
