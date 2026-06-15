@@ -9,3 +9,9 @@
 *.md text eol=lf
 *.example text eol=lf
 *.ps1 text eol=crlf
+.github/** text eol=lf
+.ansible-lint text eol=lf
+.yamllint.yml text eol=lf
+ansible.cfg text eol=lf
+requirements-dev.txt text eol=lf
+LICENSE text eol=lf

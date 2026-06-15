@@ -1,4 +1,6 @@
 .codex/
+.cache/
+.venv/
 ops/
 *.local.json
 *.log

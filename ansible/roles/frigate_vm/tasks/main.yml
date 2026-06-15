@@ -116,9 +116,13 @@
     set -euo pipefail
     if ! command -v ollama >/dev/null 2>&1; then
       curl -fsSL https://ollama.com/install.sh | sh
+    else
+      echo "ollama already installed"
     fi
   args:
     executable: /bin/bash
+  register: ollama_install
+  changed_when: "'ollama already installed' not in ollama_install.stdout"
 
 - name: Create Ollama systemd override directory
   ansible.builtin.file:

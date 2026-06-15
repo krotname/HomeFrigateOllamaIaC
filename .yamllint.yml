@@ -1,0 +1,21 @@
+---
+extends: default
+
+ignore: |
+  .cache/
+  .git/
+  .venv/
+  ansible/roles/frigate_vm/templates/*.j2
+
+rules:
+  comments:
+    min-spaces-from-content: 1
+  document-start: disable
+  line-length:
+    max: 120
+    level: warning
+  truthy:
+    allowed-values:
+      - "true"
+      - "false"
+      - "on"
