@@ -4,7 +4,7 @@
 
 | Component | Version | Purpose |
 |---|---:|---|
-| Ansible Core | 2.20.6 | Playbook syntax and deployment runtime baseline |
+| Ansible Core | 2.21.0 | Playbook syntax and deployment runtime baseline |
 | ansible-lint | 26.4.0 | Static analysis for playbooks and roles |
 | yamllint | 1.38.0 | YAML formatting and parser checks |
 | PSScriptAnalyzer | 1.25.0 | PowerShell static analysis in CI |

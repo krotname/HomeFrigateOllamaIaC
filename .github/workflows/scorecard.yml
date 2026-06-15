@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  pull_request:
   schedule:
     - cron: "0 5 * * 1"
   workflow_dispatch:
@@ -34,4 +35,4 @@ jobs:
           results_file: scorecard-results.sarif
           results_format: sarif
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_results: true
+          publish_results: ${{ github.event_name != 'pull_request' }}
