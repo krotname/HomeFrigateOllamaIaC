@@ -17,12 +17,12 @@ Run from the repository root:
 
 ```bash
 python -m pip install -r requirements-dev.txt
-yamllint .
+python -m yamllint .github ansible .yamllint.yml
 ansible-lint ansible/playbooks/site.yml
 ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml --syntax-check -e @ansible/group_vars/all.example.yml
 ```
 
-PowerShell scripts can be parsed without touching infrastructure:
+PowerShell scripts can be parsed and tested without touching infrastructure:
 
 ```powershell
 Get-ChildItem .\scripts -Filter *.ps1 -Recurse | ForEach-Object {
@@ -31,6 +31,8 @@ Get-ChildItem .\scripts -Filter *.ps1 -Recurse | ForEach-Object {
     [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors) { $errors; exit 1 }
 }
+
+Invoke-Pester -Path tests -CI
 ```
 
 ## Runtime smoke test

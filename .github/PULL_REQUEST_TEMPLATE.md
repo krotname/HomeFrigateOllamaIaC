@@ -4,9 +4,10 @@ Briefly describe the infrastructure, documentation, or verification change and w
 
 ## Testing
 
-- [ ] `yamllint .`
+- [ ] `python -m yamllint .github ansible .yamllint.yml`
 - [ ] `ansible-lint ansible/playbooks/site.yml`
 - [ ] `ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml --syntax-check -e @ansible/group_vars/all.example.yml`
+- [ ] `Invoke-Pester -Path tests -CI`
 - [ ] PowerShell parser/PSScriptAnalyzer checks pass
 - [ ] Runtime smoke test considered or run when host, VM, GPU, camera, or certificate behavior changed
 

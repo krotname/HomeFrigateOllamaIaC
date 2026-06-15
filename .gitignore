@@ -6,6 +6,7 @@ ops/
 *.log
 logs/
 **/logs/
+testResults.xml
 *.tmp
 *.bak
 *.dpapi

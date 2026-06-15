@@ -6,6 +6,7 @@
 
 - IaC validation: YAML lint, Ansible lint, and playbook syntax check against example variables.
 - PowerShell validation: parser check and PSScriptAnalyzer errors.
+- PowerShell tests: Pester coverage for local config generation.
 - Secret hygiene check for obvious committed credentials.
 - CodeQL analysis for GitHub Actions workflows.
 - GitHub Actions workflow linting through actionlint.

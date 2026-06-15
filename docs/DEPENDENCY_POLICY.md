@@ -8,6 +8,7 @@
 | ansible-lint | 26.4.0 | Static analysis for playbooks and roles |
 | yamllint | 1.38.0 | YAML formatting and parser checks |
 | PSScriptAnalyzer | 1.25.0 | PowerShell static analysis in CI |
+| Pester | 5.7.1 | PowerShell unit tests |
 | Frigate image | `ghcr.io/blakeblackshear/frigate:stable-tensorrt` | CUDA/TensorRT Frigate runtime |
 | Ollama model | `qwen2.5vl:3b` | Local vision model used by Frigate GenAI review |
 
@@ -24,7 +25,8 @@
 
 ```bash
 python -m pip install -r requirements-dev.txt
-yamllint .
+python -m yamllint .github ansible .yamllint.yml
 ansible-lint ansible/playbooks/site.yml
 ansible-playbook -i ansible/inventory.example.yml ansible/playbooks/site.yml --syntax-check -e @ansible/group_vars/all.example.yml
+pwsh -NoProfile -Command "Invoke-Pester -Path tests -CI"
 ```

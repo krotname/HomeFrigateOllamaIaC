@@ -32,7 +32,7 @@ jobs:
       - name: Install IaC tools
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Lint YAML
-        run: yamllint .
+        run: python -m yamllint .github ansible .yamllint.yml
       - name: Lint Ansible
         run: ansible-lint ansible/playbooks/site.yml
       - name: Check Ansible syntax
@@ -60,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           $errors = @()
-          Get-ChildItem -Path scripts -Filter *.ps1 -Recurse | ForEach-Object {
+          Get-ChildItem -Path scripts, tests -Filter *.ps1 -Recurse | ForEach-Object {
               $tokens = $null
               $parseErrors = $null
               [System.Management.Automation.Language.Parser]::ParseFile(
@@ -81,11 +81,30 @@ jobs:
       - name: Analyze PowerShell scripts
         shell: pwsh
         run: |
-          $findings = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error
+          $findings = @()
+          $findings += Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error
+          $findings += Invoke-ScriptAnalyzer -Path tests -Recurse -Severity Error
           if ($findings) {
               $findings | Format-Table -AutoSize
               exit 1
           }
+
+  powershell-tests:
+    name: PowerShell tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Run PowerShell tests
+        shell: pwsh
+        run: Invoke-Pester -Path tests -CI
 
   secret-hygiene:
     name: Secret hygiene
