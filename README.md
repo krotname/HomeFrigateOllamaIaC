@@ -1,31 +1,73 @@
-# Frigate/Ollama Hyper-V GPU Stack
+# Frigate + Ollama на Hyper-V VM с NVIDIA Tesla
 
-Infrastructure-as-code repository for the home Frigate + Ollama video AI stack.
+Репозиторий для воспроизводимого разворачивания домашнего video AI стека:
+Frigate смотрит камеры, пишет архив, детектит объекты на GPU и отправляет кадры
+в Ollama vision-модель. Windows Server остается основным хостом, а Linux/CUDA
+стек живет внутри Ubuntu VM.
 
-Current production shape:
+Проверенная рабочая конфигурация:
 
-- Windows Server host `ADLER-WHITE-1W` runs Hyper-V.
-- Ubuntu VM `frigate-ubuntu` runs Frigate, Ollama and nginx.
-- NVIDIA Tesla P40 is assigned to the VM through Hyper-V DDA.
-- Frigate uses CUDA ffmpeg and ONNX GPU object detection.
-- Frigate GenAI uses Ollama `qwen2.5vl:3b`.
-- Frigate HTTPS is exposed on `8971`; Ollama HTTPS proxy is exposed on `11443`.
+- Windows Server host: `ADLER-WHITE-1W`.
+- Hyper-V VM: `frigate-ubuntu`.
+- GPU: NVIDIA Tesla P40 через Hyper-V DDA passthrough.
+- Frigate: CUDA ffmpeg + ONNX GPU detector YOLOv9-t 320.
+- Ollama: `qwen2.5vl:3b`.
+- Frigate HTTPS: `8971`.
+- Ollama HTTPS proxy: `11443`.
 
-## Technology
+## Зачем Это Нужно
 
-The repo uses a pragmatic split:
+Обычный Frigate на CPU быстро упирается в процессор: декодирование RTSP,
+масштабирование кадров, object detection, запись и GenAI-конвейер конкурируют
+за одни и те же ядра. В итоге растут задержки, skipped frames и нагрузка на
+Windows-хост.
 
-- PowerShell for Windows Server / Hyper-V / DDA GPU setup.
-- Ansible for Ubuntu VM package, service, template, certificate and Docker Compose management.
-- Docker Compose for Frigate runtime.
+Tesla P40 хорошо подходит для такого домашнего сервера:
 
-This is a better fit than Terraform for this stack because most of the state is
-host-level Hyper-V and guest-level Linux service configuration, not cloud
-resources. It is also more complete than plain Docker Compose because Ollama,
-nginx, certificates, YOLO model build and GPU checks live outside the Frigate
-container.
+- `24 GB` VRAM хватает одновременно под Frigate detector и небольшую vision LLM.
+- Карта серверная, рассчитана на постоянную работу 24/7.
+- Pascal `compute capability 6.1` все еще поддерживается CUDA/ONNXRuntime в этом
+  стеке.
+- Frigate разгружает CPU через CUDA decode/scale и ONNX detector.
+- Ollama держит vision-модель на GPU, а не в swap/CPU.
+- VM изолирует Linux NVIDIA runtime от Windows Server и Docker Desktop.
 
-## Layout
+Идея не в том, что P40 самая новая. Идея в том, что это дешевая серверная карта
+с большим объемом памяти, которую можно эффективно использовать для постоянного
+видеонаблюдения и локального AI.
+
+## Какие Tesla Подойдут
+
+Проверено в этом репозитории на Tesla P40. Для других карт надо проверять драйвер,
+охлаждение, питание, passthrough и поддержку ONNXRuntime/Ollama.
+
+| Карта | Оценка | Комментарий |
+| --- | --- | --- |
+| Tesla P40 24GB | Лучший бюджетный вариант | Много VRAM, нормальна для inference, требует хорошего обдува. |
+| Tesla P4 8GB | Хороша для Frigate | Низкое потребление, но мало VRAM для vision LLM. |
+| Tesla P100 16GB | Работоспособна, но не идеальна | Хорошая вычислительная карта, но для quantized inference P40/P4 часто практичнее. |
+| Tesla T4 16GB | Отличный вариант | Новее и эффективнее P40, обычно проще с современным AI-стеком. |
+| Tesla V100 16/32GB | Сильная, но дорогая | Избыточна для простого домашнего Frigate, хороша для более тяжелых моделей. |
+| Tesla M40/M60 | Только как эксперимент | Старее, хуже с современным CUDA/LLM стеком, внимательно проверять поддержку. |
+| Tesla K80/K40/K20 | Не рекомендуется | Слишком старые для такого современного CUDA/Ollama/ONNX стека. |
+
+Для compute capability удобно сверяться с официальной таблицей NVIDIA:
+[CUDA GPUs](https://developer.nvidia.com/cuda/gpus).
+
+## Технологии
+
+В репозитории намеренно разделены зоны ответственности:
+
+- PowerShell: Windows Server, Hyper-V, автозапуск VM, DDA GPU passthrough.
+- Ansible: Ubuntu VM, пакеты, сервисы, шаблоны, сертификат, Docker Compose.
+- Docker Compose: runtime Frigate.
+
+Terraform здесь не главный инструмент, потому что основные ресурсы не в облаке:
+они живут в Hyper-V и внутри конкретной Ubuntu VM. Один Docker Compose тоже не
+достаточен: Ollama, nginx, сертификаты, модель YOLO и GPU-проверки находятся
+снаружи контейнера Frigate.
+
+## Что Внутри
 
 ```text
 ansible/
@@ -34,6 +76,7 @@ ansible/
   playbooks/site.yml
   roles/frigate_vm/
 scripts/
+  init-local-config.ps1
   hyperv-host-setup.ps1
   install-frigate-local-ca.ps1
   smoke-test.ps1
@@ -45,87 +88,96 @@ frigate/
   .env.example
 ```
 
-## Deploy
+## Быстрый Старт
 
-Prerequisites on the control machine:
+Нужны:
 
-- PowerShell 7 or Windows PowerShell 5.1.
-- GitHub/SSH access to the Windows host and Ubuntu VM.
-- Ansible installed in WSL/Linux or another Unix-like control environment.
-- `ansible-playbook` can SSH into the Ubuntu VM as a sudo-capable user.
+- Windows PowerShell 5.1 или PowerShell 7.
+- SSH-доступ к Windows host и Ubuntu VM.
+- Ansible в WSL/Linux или на другой Unix-like машине управления.
+- sudo-пользователь внутри Ubuntu VM.
 
-1. Prepare inventory and variables:
-
-```powershell
-Copy-Item .\ansible\inventory.example.yml .\ansible\inventory.yml
-Copy-Item .\ansible\group_vars\all.example.yml .\ansible\group_vars\all.yml
-```
-
-2. Edit `ansible\group_vars\all.yml` and set real camera credentials. Do not
-commit this file. For encrypted secrets:
+1. Создать локальные настройки:
 
 ```powershell
-ansible-vault encrypt .\ansible\group_vars\all.yml
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\init-local-config.ps1
 ```
 
-3. Configure the Windows Hyper-V host from an elevated PowerShell session on the
-host:
+Скрипт создаст:
+
+- `ansible\inventory.yml`
+- `ansible\group_vars\all.yml`
+
+Эти файлы игнорируются git. В них будут локальные IP, камеры и RTSP-учетка.
+
+2. На Windows Server host настроить VM:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\hyperv-host-setup.ps1
 ```
 
-Use `-AssignGpu` only when the Tesla P40 is not already assigned to the VM.
+Если GPU еще не назначена VM, запускать осознанно:
 
-4. Deploy the VM services:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\hyperv-host-setup.ps1 -AssignGpu
+```
+
+3. Развернуть сервисы внутри Ubuntu VM:
 
 ```powershell
 ansible-playbook -i .\ansible\inventory.yml .\ansible\playbooks\site.yml --ask-become-pass
 ```
 
-5. Trust the local Frigate/Ollama certificate on a Windows client:
+4. Доверить локальный сертификат Frigate/Ollama на Windows-клиенте:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 -FrigateUrl https://192.168.1.138:8971
 ```
 
-## Verify
-
-Run the full smoke test:
+5. Проверить весь стек:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
-The expected result is `failed_count=0`. The test covers:
+Ожидаемый результат: `failed_count=0`.
 
-- Windows host identity and VM autostart.
-- Hyper-V DDA Tesla P40 assignment.
-- trusted TLS for Frigate and Ollama HTTPS proxy.
-- Frigate container health and API.
-- Frigate ONNX GPU detector with YOLOv9-t 320.
-- CUDA ffmpeg decode/scale path.
-- camera FPS and recent recordings.
+## Что Проверяет Smoke-Test
+
+- Windows host identity.
+- Hyper-V VM running/autostart/IP.
+- Tesla P40 DDA assignment.
+- доверенный TLS для Frigate и Ollama HTTPS proxy.
+- Docker и Frigate container health.
+- Frigate API.
+- ONNX GPU detector: `device=GPU`, `CUDAExecutionProvider`, YOLOv9-t 320.
+- CUDA ffmpeg decode/scale pipeline.
+- FPS камер и свежие записи.
 - Ollama service/API/model.
-- Frigate container access to Ollama.
-- live Frigate frame sent to Ollama vision model with GPU execution.
+- сетевой путь Frigate container -> Ollama.
+- live кадр из Frigate -> Ollama vision model -> русский ответ -> `100% GPU`.
 
-Latest verified production report:
+Последний проверенный production-прогон:
 
 ```text
-2026-06-15 09:25, failed_count=0
-ONNX detector: GPU, inference ~8.1 ms
+2026-06-15 09:33, failed_count=0
+ONNX detector: GPU, inference ~8.16 ms
 Ollama vision: qwen2.5vl:3b, 100% GPU
 ```
 
-## Secret Policy
+## Секреты
 
-The repository intentionally excludes:
+В репозиторий не попадают:
 
 - `ansible/group_vars/all.yml`
 - `.env`
-- TLS private keys and generated certificates
-- generated ONNX/PT model artifacts
-- smoke-test reports and local logs
+- private key сертификата
+- сгенерированные сертификаты
+- `.onnx` / `.pt` модели
+- smoke-test отчеты и логи
 
-Use `ansible/group_vars/all.example.yml` and `frigate/.env.example` as templates.
+Если checkout используется не только локально, зашифруйте переменные:
+
+```powershell
+ansible-vault encrypt .\ansible\group_vars\all.yml
+```

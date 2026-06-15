@@ -16,6 +16,7 @@ logs/
 *.env
 !*.env.example
 ansible/group_vars/all.yml
+ansible/inventory.yml
 certs/
 *.key
 *.pem

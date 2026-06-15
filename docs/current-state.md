@@ -1,6 +1,6 @@
 # Current Production State
 
-Last verified: `2026-06-15 09:25`, smoke-test `failed_count=0`.
+Last verified: `2026-06-15 09:33`, smoke-test `failed_count=0`.
 
 ## Host and VM
 
@@ -37,7 +37,7 @@ Last verified: `2026-06-15 09:25`, smoke-test `failed_count=0`.
 ## Validation Snapshot
 
 ```text
-Frigate detector: type=onnx, device=GPU, inference_speed_ms=8.11
+Frigate detector: type=onnx, device=GPU, inference_speed_ms=8.16
 ONNX providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider
 Camera FPS: cam1 5.0/5.0 skipped 0.0; cam2 5.1/5.1 skipped 0.0
 Ollama vision: qwen2.5vl:3b, 100% GPU
