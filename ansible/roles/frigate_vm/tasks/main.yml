@@ -1,0 +1,207 @@
+---
+- name: Validate required variables are not placeholders
+  ansible.builtin.assert:
+    that:
+      - frigate_rtsp_user != "CHANGE_ME"
+      - frigate_rtsp_password != "CHANGE_ME"
+      - cameras | length > 0
+    fail_msg: "Set real camera credentials and cameras in ansible/group_vars/all.yml or Ansible Vault."
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - nginx-light
+      - openssl
+      - python3-yaml
+    state: present
+    update_cache: true
+
+- name: Assert NVIDIA GPU is visible in VM
+  ansible.builtin.command: nvidia-smi --query-gpu=name --format=csv,noheader
+  register: nvidia_smi
+  changed_when: false
+
+- name: Assert Docker is installed
+  ansible.builtin.command: docker --version
+  changed_when: false
+
+- name: Create Frigate directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ frigate_root }}"
+    - "{{ frigate_root }}/config"
+    - "{{ frigate_root }}/config/model_cache"
+    - "{{ frigate_root }}/certs"
+    - "{{ frigate_media_path }}"
+
+- name: Generate local self-signed certificate if missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -x509
+      - -nodes
+      - -newkey
+      - rsa:2048
+      - -days
+      - "825"
+      - -keyout
+      - "{{ frigate_root }}/certs/privkey.pem"
+      - -out
+      - "{{ frigate_root }}/certs/fullchain.pem"
+      - -subj
+      - "/CN={{ frigate_vm_ip }}"
+      - -addext
+      - "subjectAltName=IP:{{ frigate_vm_ip }}{% for name in frigate_dns_names %},DNS:{{ name }}{% endfor %}"
+  args:
+    creates: "{{ frigate_root }}/certs/fullchain.pem"
+
+- name: Render Frigate environment
+  ansible.builtin.template:
+    src: frigate.env.j2
+    dest: "{{ frigate_root }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render Frigate config
+  ansible.builtin.template:
+    src: frigate-config.yml.j2
+    dest: "{{ frigate_root }}/config/config.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Frigate
+
+- name: Install YOLO COCO-80 labelmap
+  ansible.builtin.copy:
+    src: coco-yolo-80.txt
+    dest: "{{ frigate_root }}/config/model_cache/coco-yolo-80.txt"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install model build script
+  ansible.builtin.copy:
+    src: build-yolov9-onnx.sh
+    dest: "{{ frigate_root }}/build-yolov9-onnx.sh"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Build YOLOv9-t ONNX model if missing
+  ansible.builtin.command: "{{ frigate_root }}/build-yolov9-onnx.sh"
+  args:
+    creates: "{{ frigate_root }}/config/model_cache/yolov9-t-320.onnx"
+
+- name: Render Docker Compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ frigate_root }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Frigate
+
+- name: Install or update Ollama
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if ! command -v ollama >/dev/null 2>&1; then
+      curl -fsSL https://ollama.com/install.sh | sh
+    fi
+  args:
+    executable: /bin/bash
+
+- name: Create Ollama systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/ollama.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure Ollama service environment
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ollama.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      Environment=OLLAMA_HOST={{ ollama_host }}
+      Environment=OLLAMA_KEEP_ALIVE={{ ollama_keep_alive }}
+  notify:
+    - Reload systemd
+    - Restart Ollama
+
+- name: Enable and start Ollama
+  ansible.builtin.systemd:
+    name: ollama
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Pull Ollama model
+  ansible.builtin.command: "ollama pull {{ ollama_model }}"
+  register: ollama_pull
+  changed_when: "'success' in ollama_pull.stdout | lower or 'pulling' in ollama_pull.stdout | lower"
+
+- name: Render Ollama HTTPS nginx site
+  ansible.builtin.template:
+    src: ollama-https.nginx.j2
+    dest: /etc/nginx/sites-available/ollama-https
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Enable Ollama HTTPS nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/ollama-https
+    dest: /etc/nginx/sites-enabled/ollama-https
+    state: link
+  notify: Restart nginx
+
+- name: Disable default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Restart nginx
+
+- name: Start Frigate
+  ansible.builtin.command: docker compose -f "{{ frigate_root }}/docker-compose.yml" up -d
+  changed_when: true
+
+- name: Enable nginx
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Verify Frigate API
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:8971/api/version"
+    validate_certs: false
+    return_content: true
+  register: frigate_version
+
+- name: Verify Ollama API
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:11434/api/version"
+    return_content: true
+  register: ollama_version
+
+- name: Print deployment summary
+  ansible.builtin.debug:
+    msg:
+      - "GPU: {{ nvidia_smi.stdout }}"
+      - "Frigate: {{ frigate_version.content }}"
+      - "Ollama: {{ ollama_version.json.version | default(ollama_version.content) }}"

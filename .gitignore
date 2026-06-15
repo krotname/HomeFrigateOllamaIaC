@@ -1,0 +1,29 @@
+.codex/
+ops/
+*.local.json
+*.log
+logs/
+**/logs/
+*.tmp
+*.bak
+*.dpapi
+*.sqlite
+*.db
+*.png
+
+# Secrets and generated runtime state
+.env
+*.env
+!*.env.example
+ansible/group_vars/all.yml
+certs/
+*.key
+*.pem
+*.crt
+*.pfx
+
+# Generated model/build artifacts
+*.onnx
+*.pt
+model_cache/
+build/

@@ -1,0 +1,149 @@
+auth:
+  enabled: false
+
+mqtt:
+  enabled: false
+
+ffmpeg:
+  hwaccel_args: preset-nvidia
+  output_args:
+    record: preset-record-generic-audio-aac
+
+detectors:
+  onnx:
+    type: onnx
+    device: GPU
+
+detect:
+  enabled: true
+  fps: 5
+
+genai:
+  provider: ollama
+  base_url: http://host.docker.internal:11434
+  model: {{ ollama_model }}
+  provider_options:
+    options:
+      num_ctx: 32768
+      num_predict: 350
+      temperature: 0.1
+
+review:
+  genai:
+    enabled: true
+    alerts: true
+    detections: false
+    preferred_language: Russian
+
+record:
+  enabled: true
+  alerts:
+    retain:
+      days: 7
+  detections:
+    retain:
+      days: 7
+  continuous:
+    days: 0
+  motion:
+    days: 3
+
+snapshots:
+  enabled: true
+  timestamp: true
+  bounding_box: true
+  retain:
+    default: 7
+
+objects:
+  track:
+    - person
+    - car
+    - bicycle
+    - motorcycle
+    - airplane
+    - bus
+    - train
+    - truck
+    - boat
+    - bird
+    - cat
+    - dog
+    - horse
+    - sheep
+    - cow
+    - elephant
+    - bear
+    - zebra
+    - giraffe
+  genai:
+    enabled: true
+    objects:
+      - person
+      - car
+      - bicycle
+      - motorcycle
+      - airplane
+      - bus
+      - train
+      - truck
+      - boat
+      - bird
+      - cat
+      - dog
+      - horse
+      - sheep
+      - cow
+      - elephant
+      - bear
+      - zebra
+      - giraffe
+    prompt: >
+      Answer only in Russian. Briefly describe what the {label} is doing in these
+      security camera frames. Mention only observed behavior; do not guess. Use one sentence.
+
+go2rtc:
+  streams:
+{% for camera in cameras %}
+    {{ camera.name }}_main:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@{{ camera.host }}:554/Streaming/Channels/101
+    {{ camera.name }}_sub:
+      - rtsp://{FRIGATE_RTSP_USER}:{FRIGATE_RTSP_PASSWORD}@{{ camera.host }}:554/Streaming/Channels/102
+{% endfor %}
+
+cameras:
+{% for camera in cameras %}
+  {{ camera.name }}:
+    enabled: true
+    ffmpeg:
+{% if camera.apple_compatibility | default(false) %}
+      apple_compatibility: true
+{% endif %}
+      inputs:
+        - path: rtsp://127.0.0.1:8554/{{ camera.name }}_sub
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+        - path: rtsp://127.0.0.1:8554/{{ camera.name }}_main
+          input_args: preset-rtsp-restream
+          roles:
+            - record
+    detect:
+      width: {{ camera.detect_width }}
+      height: {{ camera.detect_height }}
+      fps: {{ camera.detect_fps }}
+    live:
+      streams:
+        {{ camera.name }}_sub: {{ camera.name }}_sub
+{% endfor %}
+
+version: 0.17-0
+
+model:
+  model_type: yolo-generic
+  width: 320
+  height: 320
+  input_tensor: nchw
+  input_dtype: float
+  path: {{ frigate_model_path }}
+  labelmap_path: {{ frigate_labelmap_path }}

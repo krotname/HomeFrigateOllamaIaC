@@ -1,0 +1,6 @@
+---
+- name: Deploy Frigate and Ollama VM services
+  hosts: frigate_vm
+  become: true
+  roles:
+    - frigate_vm
