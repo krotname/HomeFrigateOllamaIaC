@@ -1,34 +1,43 @@
 ---
+# Каталоги внутри Ubuntu VM.
 frigate_root: /opt/frigate
 frigate_media_path: /media/frigate
 frigate_timezone: Europe/Moscow
-frigate_vm_ip: 192.168.1.138
+
+# Адрес VM и локальные DNS-имена, которые попадут в self-signed сертификат.
+frigate_vm_ip: 192.168.50.20
 frigate_dns_names:
   - frigate-ubuntu
   - frigate.local
 
+# Образ Frigate с поддержкой NVIDIA/TensorRT.
+# Перед обновлением сверяйте release notes Frigate и прогоняйте smoke-test.
 frigate_image: ghcr.io/blakeblackshear/frigate:stable-tensorrt
 frigate_model_path: /config/model_cache/yolov9-t-320.onnx
 frigate_labelmap_path: /config/model_cache/coco-yolo-80.txt
 
+# Ollama слушает HTTP внутри VM, а наружу отдается через nginx HTTPS proxy.
 ollama_host: 0.0.0.0:11434
 ollama_https_port: 11443
 ollama_model: qwen2.5vl:3b
 ollama_keep_alive: 10m
 
-# Put real values in ansible/group_vars/all.yml or Ansible Vault.
-frigate_rtsp_user: CHANGE_ME
-frigate_rtsp_password: CHANGE_ME
+# Демонстрационные RTSP-учетные данные. Для реального стенда замените их
+# в ansible/group_vars/all.yml и при необходимости зашифруйте файл Ansible Vault.
+frigate_rtsp_user: rtsp_viewer
+frigate_rtsp_password: demo_camera_password
 
+# Пример двух камер Hikvision/совместимых RTSP-потоков:
+# main stream на /101 пишется в архив, sub stream на /102 идет в detector.
 cameras:
-  - name: cam1_ds_i202
-    host: 192.168.1.12
+  - name: driveway_hikvision
+    host: 192.168.50.31
     detect_width: 640
     detect_height: 360
     detect_fps: 5
     apple_compatibility: true
-  - name: cam2_ds_i551
-    host: 192.168.1.65
+  - name: garage_hikvision
+    host: 192.168.50.32
     detect_width: 640
     detect_height: 480
     detect_fps: 5

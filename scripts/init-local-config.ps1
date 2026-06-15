@@ -1,12 +1,12 @@
 param(
-    [string]$VmAddress = "192.168.1.138",
-    [string]$HostAddress = "192.168.1.33",
-    [string]$VmUser = "krt",
-    [string]$SshKeyPath = "$env:USERPROFILE\.ssh\win-home-codex_ed25519",
+    [string]$VmAddress = "192.168.50.20",
+    [string]$HostAddress = "192.168.50.10",
+    [string]$VmUser = "frigateadmin",
+    [string]$SshKeyPath = "$env:USERPROFILE\.ssh\home_frigate_vm_ed25519",
     [string]$RtspUser = "",
     [securestring]$RtspPassword,
-    [string]$Camera1Host = "192.168.1.12",
-    [string]$Camera2Host = "192.168.1.65",
+    [string]$Camera1Host = "192.168.50.31",
+    [string]$Camera2Host = "192.168.50.32",
     [switch]$Force
 )
 
@@ -33,8 +33,8 @@ function Set-YamlScalar {
         [string]$Value
     )
     $escaped = [regex]::Escape($Key)
-    $safeValue = $Value.Replace("\", "\\").Replace("`"", "\`"")
-    [regex]::Replace($Text, "^(?<indent>\s*)$escaped\s*:.*$", "`${indent}$Key`: $safeValue", "Multiline")
+    $safeValue = $Value.Replace("'", "''")
+    [regex]::Replace($Text, "^(?<indent>\s*)$escaped\s*:.*$", "`${indent}$Key`: '$safeValue'", "Multiline")
 }
 
 if ([string]::IsNullOrWhiteSpace($RtspUser)) {
@@ -44,6 +44,12 @@ if (-not $RtspPassword) {
     $RtspPassword = Read-Host "RTSP password" -AsSecureString
 }
 $plainPassword = ConvertTo-PlainText -Secure $RtspPassword
+if ([string]::IsNullOrWhiteSpace($RtspUser)) {
+    throw "RTSP user must not be empty."
+}
+if ([string]::IsNullOrWhiteSpace($plainPassword)) {
+    throw "RTSP password must not be empty."
+}
 
 $inventoryPath = Join-Path $PSScriptRoot "..\ansible\inventory.yml"
 $inventoryExample = Join-Path $PSScriptRoot "..\ansible\inventory.example.yml"
@@ -60,17 +66,17 @@ Copy-Item -LiteralPath $inventoryExample -Destination $inventoryPath -Force
 Copy-Item -LiteralPath $varsExample -Destination $varsPath -Force
 
 $inventory = Get-Content -Raw -LiteralPath $inventoryPath
-$inventory = $inventory -replace "ansible_host:\s*\S+", "ansible_host: $VmAddress"
-$inventory = $inventory -replace "ansible_user:\s*\S+", "ansible_user: $VmUser"
-$inventory = $inventory -replace "ansible_ssh_private_key_file:\s*.*", "ansible_ssh_private_key_file: $SshKeyPath"
+$inventory = Set-YamlScalar -Text $inventory -Key "ansible_host" -Value $VmAddress
+$inventory = Set-YamlScalar -Text $inventory -Key "ansible_user" -Value $VmUser
+$inventory = Set-YamlScalar -Text $inventory -Key "ansible_ssh_private_key_file" -Value $SshKeyPath
 Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding UTF8
 
 $vars = Get-Content -Raw -LiteralPath $varsPath
 $vars = Set-YamlScalar -Text $vars -Key "frigate_vm_ip" -Value $VmAddress
 $vars = Set-YamlScalar -Text $vars -Key "frigate_rtsp_user" -Value $RtspUser
 $vars = Set-YamlScalar -Text $vars -Key "frigate_rtsp_password" -Value $plainPassword
-$vars = $vars -replace "host:\s*192\.168\.1\.12", "host: $Camera1Host"
-$vars = $vars -replace "host:\s*192\.168\.1\.65", "host: $Camera2Host"
+$vars = $vars -replace "host:\s*192\.168\.50\.31", "host: $Camera1Host"
+$vars = $vars -replace "host:\s*192\.168\.50\.32", "host: $Camera2Host"
 Set-Content -LiteralPath $varsPath -Value $vars -Encoding UTF8
 
 Write-Host "Created $inventoryPath"

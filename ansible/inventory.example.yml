@@ -1,12 +1,19 @@
 ---
 all:
   vars:
-    ansible_user: krt
-    ansible_ssh_private_key_file: ~/.ssh/win-home-codex_ed25519
+    # Пользователь внутри Ubuntu VM. Для реального стенда замените на своего sudo-пользователя.
+    ansible_user: frigateadmin
+
+    # Пример пути к SSH-ключу на машине управления. Файл с приватным ключом не коммитить.
+    ansible_ssh_private_key_file: ~/.ssh/home_frigate_vm_ed25519
+
+    # Для домашней лаборатории удобно не писать host key VM в known_hosts.
+    # В production-сценарии лучше закрепить fingerprint и убрать UserKnownHostsFile=/dev/null.
     ansible_ssh_common_args: >-
       -o CertificateFile=none
       -o StrictHostKeyChecking=no
       -o UserKnownHostsFile=/dev/null
   hosts:
     frigate_vm:
-      ansible_host: 192.168.1.138
+      # Демонстрационный IP Ubuntu VM в домашней сети.
+      ansible_host: 192.168.50.20

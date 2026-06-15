@@ -31,6 +31,6 @@ sha256sum -c checksums.txt
 Verify provenance for the source archive:
 
 ```bash
-gh attestation verify home-frigate-ollama-iac-vX.Y.Z.tar.gz \
-  -R krotname/home-frigate-ollama-iac
+gh attestation verify HomeFrigateOllamaIaC-vX.Y.Z.tar.gz \
+  -R krotname/HomeFrigateOllamaIaC
 ```

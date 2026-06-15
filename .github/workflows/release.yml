@@ -34,8 +34,8 @@ jobs:
           mkdir -p dist
           git archive \
             --format=tar.gz \
-            --prefix="home-frigate-ollama-iac-${tag}/" \
-            -o "dist/home-frigate-ollama-iac-${tag}.tar.gz" \
+            --prefix="HomeFrigateOllamaIaC-${tag}/" \
+            -o "dist/HomeFrigateOllamaIaC-${tag}.tar.gz" \
             HEAD
           (cd dist && sha256sum ./* > checksums.txt)
       - name: Attest source archive

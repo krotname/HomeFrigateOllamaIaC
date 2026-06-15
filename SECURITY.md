@@ -9,7 +9,7 @@ Security fixes are handled on the default branch and the latest public release l
 Do not open a public issue for suspected vulnerabilities, leaked secrets, camera access details, host access details, or exploit steps.
 
 Report vulnerabilities through GitHub private vulnerability reporting:
-https://github.com/krotname/home-frigate-ollama-iac/security/advisories/new
+https://github.com/krotname/HomeFrigateOllamaIaC/security/advisories/new
 
 Include:
 

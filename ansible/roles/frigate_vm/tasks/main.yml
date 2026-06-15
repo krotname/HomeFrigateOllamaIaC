@@ -2,8 +2,10 @@
 - name: Validate required variables are not placeholders
   ansible.builtin.assert:
     that:
-      - frigate_rtsp_user != "CHANGE_ME"
-      - frigate_rtsp_password != "CHANGE_ME"
+      - frigate_rtsp_user | length > 0
+      - frigate_rtsp_password | length > 0
+      - frigate_rtsp_user != "rtsp_viewer"
+      - frigate_rtsp_password != "demo_camera_password"
       - cameras | length > 0
     fail_msg: "Set real camera credentials and cameras in ansible/group_vars/all.yml or Ansible Vault."
 
