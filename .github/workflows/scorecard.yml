@@ -26,6 +26,7 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+      statuses: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -45,18 +46,17 @@ jobs:
       - name: Analyze
         env:
           GITHUB_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ENABLE_SARIF: "true"
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/scorecard/scorecard" \
             --repo="github.com/${{ github.repository }}" \
             --commit="${GITHUB_SHA}" \
-            --format=sarif \
-            --output="scorecard-results.sarif" \
+            --format=json \
+            --output="scorecard-results.json" \
             --show-details
-      - name: Upload Scorecard SARIF artifact
+      - name: Upload Scorecard artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: openssf-scorecard-sarif
-          path: scorecard-results.sarif
+          name: openssf-scorecard
+          path: scorecard-results.json
           if-no-files-found: error
