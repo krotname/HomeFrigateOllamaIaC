@@ -6,41 +6,51 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Add-Type @"
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-public class CertCapture {
-  public static X509Certificate2 Certificate;
-  public static bool Callback(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors) {
-    Certificate = new X509Certificate2(certificate);
-    return true;
-  }
+$uri = [Uri]$FrigateUrl
+if ($uri.Scheme -ne "https") {
+    throw "FrigateUrl must use https so a certificate can be captured safely"
 }
-"@
 
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [CertCapture]::Callback
+$capturedCertificate = $null
+$handler = [System.Net.Http.HttpClientHandler]::new()
+$handler.ServerCertificateCustomValidationCallback = {
+    param($requestMessage, $certificate, $chain, $sslPolicyErrors)
+    if ($certificate) {
+        $script:capturedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
+    }
+    return $true
+}
+$client = [System.Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(15)
 try {
-    Invoke-WebRequest -Uri "$FrigateUrl/api/version" -UseBasicParsing -TimeoutSec 15 | Out-Null
+    $response = $client.GetAsync("$FrigateUrl/api/version").GetAwaiter().GetResult()
+    try {
+        $response.EnsureSuccessStatusCode() | Out-Null
+    }
+    finally {
+        $response.Dispose()
+    }
 }
 finally {
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+    $client.Dispose()
+    $handler.Dispose()
 }
 
-if (-not [CertCapture]::Certificate) {
+if (-not $capturedCertificate) {
     throw "Could not capture certificate from $FrigateUrl"
 }
 
-[System.IO.File]::WriteAllBytes($OutFile, [CertCapture]::Certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+[System.IO.File]::WriteAllBytes($OutFile, $capturedCertificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
 
 $storeLocation = if ($MachineStore) { "LocalMachine" } else { "CurrentUser" }
 $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", $storeLocation)
 $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
 try {
-    $store.Add([CertCapture]::Certificate)
+    $store.Add($capturedCertificate)
 }
 finally {
     $store.Close()
 }
 
-Write-Host "Installed $([CertCapture]::Certificate.Subject) into Cert:\$storeLocation\Root"
+Write-Host "Installed $($capturedCertificate.Subject) into Cert:\$storeLocation\Root"
 Write-Host "Exported certificate to $OutFile"

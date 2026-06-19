@@ -3,6 +3,9 @@ set -euo pipefail
 
 export DOCKER_BUILDKIT=0
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+YOLOV9_REV="5b1ea9a8b3f0ffe4fe0e203ec6232d788bb3fcff"
+YOLOV9_REQUIREMENTS_LOCK="${SCRIPT_DIR}/yolov9-export-requirements.lock"
 MODEL_SIZE="${MODEL_SIZE:-t}"
 IMG_SIZE="${IMG_SIZE:-320}"
 FRIGATE_ROOT="${FRIGATE_ROOT:-/opt/frigate}"
@@ -20,14 +23,17 @@ mkdir -p "${MODEL_CACHE}"
 rm -rf "${WORKDIR}"
 mkdir -p "${WORKDIR}"
 cd "${WORKDIR}"
+cp "${YOLOV9_REQUIREMENTS_LOCK}" "${WORKDIR}/requirements.lock"
 
-docker build --build-arg MODEL_SIZE="${MODEL_SIZE}" --build-arg IMG_SIZE="${IMG_SIZE}" -t "${IMAGE}" -f- . <<'DOCKERFILE'
-FROM python:3.11
+docker build --build-arg MODEL_SIZE="${MODEL_SIZE}" --build-arg IMG_SIZE="${IMG_SIZE}" --build-arg YOLOV9_REV="${YOLOV9_REV}" -t "${IMAGE}" -f- . <<'DOCKERFILE'
+FROM python:3.11@sha256:a30c4ff1a6a474019f9b1f0d921e81a254cf420d408c09e8a8b79fd803b62ebf
 RUN apt-get update && apt-get install --no-install-recommends -y git wget cmake libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
 WORKDIR /yolov9
-RUN git clone --depth 1 https://github.com/WongKinYiu/yolov9.git .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir onnx==1.18.0 onnxruntime "onnx-simplifier==0.4.*" onnxscript
+ARG YOLOV9_REV
+RUN git init . && git remote add origin https://github.com/WongKinYiu/yolov9.git && git fetch --depth 1 origin "${YOLOV9_REV}" && git checkout --detach FETCH_HEAD
+COPY requirements.lock /tmp/yolov9-export-requirements.lock
+RUN pip install --no-cache-dir --require-hashes -r /tmp/yolov9-export-requirements.lock
+RUN sed -i "s/onnx-simplifier>=0.4.1/onnxsim>=0.4.1/g" export.py
 ARG MODEL_SIZE
 ARG IMG_SIZE
 RUN wget -O yolov9-${MODEL_SIZE}.pt https://github.com/WongKinYiu/yolov9/releases/download/v0.1/yolov9-${MODEL_SIZE}-converted.pt

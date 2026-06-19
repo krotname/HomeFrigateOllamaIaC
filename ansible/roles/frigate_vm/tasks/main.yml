@@ -117,7 +117,11 @@
   ansible.builtin.shell: |
     set -euo pipefail
     if ! command -v ollama >/dev/null 2>&1; then
-      curl -fsSL https://ollama.com/install.sh | sh
+      install_script="$(mktemp)"
+      trap 'rm -f "$install_script"' EXIT
+      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 --max-time 120 \
+        https://ollama.com/install.sh -o "$install_script"
+      sh "$install_script"
     else
       echo "ollama already installed"
     fi

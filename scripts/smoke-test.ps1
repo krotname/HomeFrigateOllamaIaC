@@ -9,7 +9,8 @@ param(
     [string]$OllamaHttpsUrl = "https://192.168.1.138:11443",
     [string]$OllamaModel = "qwen2.5vl:3b",
     [string]$ReportPath = "",
-    [switch]$SkipOllamaGenerate
+    [switch]$SkipOllamaGenerate,
+    [switch]$TrustUnknownHostKeys
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,35 +39,53 @@ function Invoke-SshText {
         [int]$TimeoutSeconds = 30
     )
 
-    $args = @(
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = "ssh"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    $sshArgs = @(
         "-i", $KeyPath,
         "-o", "CertificateFile=none",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=NUL",
+        "-o", "BatchMode=yes"
+    )
+    if ($TrustUnknownHostKeys) {
+        $sshArgs += @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL")
+    } else {
+        $sshArgs += @("-o", "StrictHostKeyChecking=accept-new")
+    }
+    $sshArgs += @(
         "-o", "ConnectTimeout=10",
         $Target,
         $Command
     )
+    foreach ($arg in $sshArgs) {
+        $psi.ArgumentList.Add($arg) | Out-Null
+    }
 
-    $job = Start-Job -ScriptBlock {
-        param($sshArgs)
-        & ssh @sshArgs 2>&1
-        $global:LASTEXITCODE
-    } -ArgumentList (, $args)
-
-    if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
-        Stop-Job $job -Force | Out-Null
-        Remove-Job $job -Force | Out-Null
+    $process = [System.Diagnostics.Process]::Start($psi)
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try {
+            $process.Kill($true)
+        } catch {
+            try { $process.Kill() } catch { }
+        }
+        $process.WaitForExit()
         throw "SSH command timed out for $Target"
     }
 
-    $raw = Receive-Job $job
-    Remove-Job $job -Force | Out-Null
-    $exitCode = [int]$raw[-1]
-    $text = ($raw[0..([Math]::Max(0, $raw.Count - 2))] -join "`n").Trim()
-    if ($exitCode -ne 0) {
-        throw "SSH command failed for $Target with exit $exitCode. Output: $text"
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    $outputParts = @()
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) { $outputParts += $stdout.TrimEnd() }
+    if (-not [string]::IsNullOrWhiteSpace($stderr)) { $outputParts += $stderr.TrimEnd() }
+    $text = ($outputParts -join "`n").Trim()
+    if ($process.ExitCode -ne 0) {
+        throw "SSH command failed for $Target with exit $($process.ExitCode). Output: $text"
     }
     $text
 }

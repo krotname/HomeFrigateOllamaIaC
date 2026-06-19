@@ -85,7 +85,16 @@ Describe "init-local-config.ps1" {
 }
 
 AfterAll {
-    if (Test-Path -LiteralPath $TestRoot) {
-        Remove-Item -LiteralPath $TestRoot -Recurse -Force
+    $resolvedTestRoot = [System.IO.Path]::GetFullPath($TestRoot)
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    if (-not $resolvedTestRoot.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove test path outside temp root: $resolvedTestRoot"
+    }
+    if ((Split-Path -Leaf $resolvedTestRoot) -notlike "HomeFrigateOllamaIaC-Pester-*") {
+        throw "Refusing to remove unexpected test path: $resolvedTestRoot"
+    }
+    if (Test-Path -LiteralPath $resolvedTestRoot) {
+        $removeArgs = @{ Recurse = $true; Force = $true }
+        Remove-Item -LiteralPath $resolvedTestRoot @removeArgs
     }
 }
