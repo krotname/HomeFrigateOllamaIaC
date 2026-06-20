@@ -1,5 +1,7 @@
 # Frigate + Ollama на Hyper-V VM с NVIDIA Tesla
 
+[English](README.en.md)
+
 [![CI](https://github.com/krotname/HomeFrigateOllamaIaC/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/krotname/HomeFrigateOllamaIaC/actions/workflows/ci.yml?query=branch%3Amain)
 [![CodeQL](https://github.com/krotname/HomeFrigateOllamaIaC/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/krotname/HomeFrigateOllamaIaC/actions/workflows/codeql.yml?query=branch%3Amain)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/krotname/HomeFrigateOllamaIaC/badge)](https://securityscorecards.dev/viewer/?uri=github.com/krotname/HomeFrigateOllamaIaC)
