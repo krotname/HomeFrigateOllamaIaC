@@ -11,6 +11,30 @@ This repository deploys the home video AI stack as code.
 - GenAI: Frigate `genai.provider=ollama`, model `qwen2.5vl:3b`.
 - TLS: local self-signed certificate for Frigate `8971` and Ollama HTTPS `11443`.
 
+## Runtime Diagram
+
+```mermaid
+flowchart LR
+    Cameras["RTSP cameras"]
+    Host["Windows Server host\nHyper-V + DDA"]
+    VM["Ubuntu VM\nDocker + NVIDIA runtime"]
+    Frigate["Frigate\nCUDA ffmpeg + ONNX GPU detector"]
+    Media["Frigate media volume\nrecordings and events"]
+    Ollama["Ollama\nqwen2.5vl:3b"]
+    Nginx["nginx HTTPS proxy\n8971 / 11443"]
+    Operator["Operator browser / smoke-test"]
+
+    Cameras --> Frigate
+    Host --> VM
+    VM --> Frigate
+    VM --> Ollama
+    Frigate --> Media
+    Frigate --> Ollama
+    Frigate --> Nginx
+    Ollama --> Nginx
+    Nginx --> Operator
+```
+
 ## Technology Choice
 
 PowerShell owns the Windows/Hyper-V layer because Hyper-V DDA, MMIO and VM

@@ -183,6 +183,15 @@ ONNX detector: GPU, inference ~8.16 ms
 Ollama vision: qwen2.5vl:3b, 100% GPU
 ```
 
+Полный proof-снимок лежит в [docs/smoke-test-proof.md](docs/smoke-test-proof.md).
+
+## Релиз
+
+Первый публичный release:
+[v0.1.0](https://github.com/krotname/HomeFrigateOllamaIaC/releases/tag/v0.1.0).
+В нем опубликованы source archive, `checksums.txt` и GitHub build provenance
+attestation для tagged archive.
+
 ## Секреты
 
 В репозиторий не попадают:
@@ -205,5 +214,6 @@ ansible-vault encrypt .\ansible\group_vars\all.yml
 - [Security Policy](SECURITY.md) описывает private vulnerability reporting и правила для секретов.
 - [Governance](docs/GOVERNANCE.md) фиксирует protected branch baseline и исключения для solo-maintained hygiene changes.
 - [Reviewer Guide](docs/REVIEWER_GUIDE.md) перечисляет статические проверки и runtime smoke-test.
+- [Smoke-Test Proof](docs/smoke-test-proof.md) фиксирует последний production-прогон `failed_count=0`.
 - [Supply Chain Verification](docs/SUPPLY_CHAIN.md) описывает SHA-pinned Actions, pinned dev tools и release attestations.
 - [Dependency Policy](docs/DEPENDENCY_POLICY.md) фиксирует текущий baseline Ansible/PowerShell/Frigate/Ollama.
