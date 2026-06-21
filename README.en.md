@@ -112,3 +112,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
 Expected result: `failed_count=0`.
+
+The full proof snapshot is in [docs/smoke-test-proof.md](docs/smoke-test-proof.md).
+
+## Release
+
+The first public release is
+[v0.1.0](https://github.com/krotname/HomeFrigateOllamaIaC/releases/tag/v0.1.0).
+It publishes the source archive, `checksums.txt`, and GitHub build provenance
+attestation for the tagged archive.
+
+## Security and Quality
+
+- [Security Policy](SECURITY.md) covers private vulnerability reporting and secret rules.
+- [Governance](docs/GOVERNANCE.md) records protected branch baseline and solo-maintained hygiene exceptions.
+- [Reviewer Guide](docs/REVIEWER_GUIDE.md) lists static checks and the runtime smoke-test.
+- [Smoke-Test Proof](docs/smoke-test-proof.md) records the latest production run with `failed_count=0`.
+- [Supply Chain Verification](docs/SUPPLY_CHAIN.md) explains SHA-pinned Actions, pinned dev tools and release attestations.
+- [Dependency Policy](docs/DEPENDENCY_POLICY.md) records the current Ansible/PowerShell/Frigate/Ollama baseline.
