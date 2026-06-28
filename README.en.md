@@ -1,9 +1,9 @@
-# Frigate + Ollama on a Hyper-V VM with NVIDIA Tesla
+# Frigate + Ollama + ASR on a Hyper-V VM with NVIDIA Tesla
 
 [Russian](README.md)
 
 
-A reproducible IaC repository for a home video AI stack: Frigate watches cameras, records footage, detects objects on GPU, and sends frames to an Ollama vision model. Windows Server remains the main host, while the Linux/CUDA stack runs inside an Ubuntu VM.
+A reproducible IaC repository for a home video/audio AI stack: Frigate watches cameras, records footage, detects objects on GPU, Ollama serves a local text model, and a separate HTTPS ASR service transcribes audio with faster-whisper. Windows Server remains the main host, while the Linux/CUDA stack runs inside an Ubuntu VM.
 
 Verified configuration:
 
@@ -11,9 +11,11 @@ Verified configuration:
 - Hyper-V VM: `frigate-ubuntu`.
 - GPU: NVIDIA Tesla P40 through Hyper-V DDA passthrough.
 - Frigate: CUDA ffmpeg plus ONNX GPU detector YOLOv9-t 320.
-- Ollama: `qwen2.5vl:3b`.
-- Frigate HTTPS: `8971`.
-- Ollama HTTPS proxy: `11443`.
+- Ollama: `huihui_ai/gpt-oss-abliterated:20b`.
+- ASR: `Systran/faster-whisper-large-v3`, CUDA `int8`.
+- Frigate HTTPS LAN: `https://192.168.1.138:8971/`.
+- Ollama HTTP LAN: `http://192.168.1.138:11434/`.
+- ASR HTTPS LAN: `https://192.168.1.138:9443/`.
 
 ## What This Repository Demonstrates
 
@@ -34,14 +36,14 @@ Tesla P40 works well for this home server use case:
 - The card is designed for 24/7 server workloads.
 - Pascal `compute capability 6.1` is still supported by the CUDA/ONNXRuntime stack used here.
 - Frigate offloads decode/scale and ONNX detection to GPU.
-- Ollama keeps the vision model on GPU instead of swap/CPU.
+- Ollama keeps the local text model on GPU instead of swap/CPU.
 - The VM isolates Linux NVIDIA runtime from Windows Server and Docker Desktop.
 
 ## Technology Split
 
 - PowerShell: Windows Server, Hyper-V, VM autostart, DDA GPU passthrough.
 - Ansible: Ubuntu VM packages, services, templates, certificates, Docker Compose.
-- Docker Compose: Frigate runtime.
+- Docker Compose: Frigate and ASR runtime.
 
 Terraform is not the primary tool here because the core resources are not cloud resources: they live in Hyper-V and inside a specific Ubuntu VM.
 
@@ -64,6 +66,10 @@ docs/
   current-state.md
 frigate/
   .env.example
+asr/
+  app.py
+  docker-compose.yml
+  Dockerfile
 ```
 
 ## Quick Start
@@ -112,6 +118,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
 Expected result: `failed_count=0`.
+
+ASR health check:
+
+```powershell
+curl.exe -k https://192.168.1.138:9443/health
+```
+
+Audio transcription:
+
+```powershell
+curl.exe -k -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
+  -F "file=@C:\path\audio.m4a" `
+  -F "language=ru" `
+  -F "response_format=json"
+```
 
 The full proof snapshot is in [docs/smoke-test-proof.md](docs/smoke-test-proof.md).
 

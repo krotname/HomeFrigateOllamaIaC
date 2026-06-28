@@ -2,13 +2,13 @@
 
 ## What this repository demonstrates
 
-This repository describes a reproducible home video AI stack where a Windows Server host runs a Hyper-V Ubuntu VM, passes an NVIDIA Tesla GPU through with DDA, and deploys Frigate plus Ollama through Ansible.
+This repository describes a reproducible home video/audio AI stack where a Windows Server host runs a Hyper-V Ubuntu VM, passes an NVIDIA Tesla GPU through with DDA, and deploys Frigate, Ollama, and ASR services through Ansible.
 
 The important boundaries are:
 
 - PowerShell owns Windows host and Hyper-V setup.
 - Ansible owns Ubuntu VM packages, services, templates, TLS material, and Docker Compose runtime files.
-- Docker Compose owns the Frigate container runtime.
+- Docker Compose owns the Frigate and ASR container runtimes.
 - Local ignored files own camera credentials, inventory, private certificates, generated models, and smoke-test reports.
 
 ## Static checks
@@ -37,7 +37,7 @@ Invoke-Pester -Path tests -CI
 
 ## Runtime smoke test
 
-Only run the runtime smoke test when the real Windows host, Ubuntu VM, GPU, camera network, Frigate, Ollama, and local certificate trust are available:
+Only run the runtime smoke test when the real Windows host, Ubuntu VM, GPU, camera network, Frigate, Ollama, ASR, and local certificate trust are available:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
@@ -50,4 +50,4 @@ Expected production signal from the last documented run is `failed_count=0`.
 - Host and VM changes must preserve remote access and rollback paths.
 - GPU passthrough changes must be reviewed against the current Tesla card and Windows Server behavior.
 - Camera, RTSP, and certificate examples must remain sanitized.
-- Frigate image and model updates must include smoke-test evidence or an explicit reason why runtime validation was deferred.
+- Frigate, Ollama, and ASR model updates must include smoke-test evidence or an explicit reason why runtime validation was deferred.

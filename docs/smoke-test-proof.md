@@ -7,22 +7,25 @@ designed to reproduce.
 
 | Field | Value |
 | --- | --- |
-| Date/time | `2026-06-15 09:33` |
-| Command | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1` |
+| Date/time | `2026-06-28 17:40` |
+| Command | `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -SkipOllamaGenerate -AsrSamplePath $env:TEMP\asr-test-sample.m4a -TrustUnknownHostKeys` |
 | Result | `failed_count=0` |
 | Host | `ADLER-WHITE-1W` |
 | VM | `frigate-ubuntu` |
 | GPU | NVIDIA Tesla P40 through Hyper-V DDA |
 | Frigate | CUDA ffmpeg + ONNX YOLOv9-t 320 detector |
-| Ollama | `qwen2.5vl:3b` behind HTTPS proxy |
+| Ollama | `huihui_ai/gpt-oss-abliterated:20b` over LAN HTTP |
+| ASR | `Systran/faster-whisper-large-v3` over LAN HTTPS |
 
 ## Runtime Evidence
 
 ```text
-Frigate detector: type=onnx, device=GPU, inference_speed_ms=8.16
+Frigate detector: type=onnx, device=GPU, inference_speed_ms=11.53
 ONNX providers: TensorrtExecutionProvider, CUDAExecutionProvider, CPUExecutionProvider
-Camera FPS: cam1 5.0/5.0 skipped 0.0; cam2 5.1/5.1 skipped 0.0
-Ollama vision: qwen2.5vl:3b, 100% GPU
+Camera FPS: cam1_ds_i202 5/5 skipped 0; cam2_ds_i551 5/5 skipped 0
+Ollama: huihui_ai/gpt-oss-abliterated:20b present, service active
+ASR health: Systran/faster-whisper-large-v3, cuda, int8, container up
+ASR sample: 90s Russian audio, 1414 chars, language=ru
 ```
 
 ## Reproduction Gate
@@ -32,14 +35,14 @@ can verify:
 
 - Windows host identity and Hyper-V VM state.
 - Tesla P40 DDA assignment.
-- trusted HTTPS endpoints for Frigate and Ollama.
+- trusted HTTPS endpoint for Frigate and LAN endpoints for Ollama and ASR.
 - Docker and Frigate container health.
 - ONNX GPU detector provider selection.
 - CUDA ffmpeg decode/scale path.
 - camera FPS and recent recordings.
 - Ollama API/model availability.
 - Frigate-to-Ollama network path.
-- one live-frame vision request answered by Ollama on GPU.
+- ASR HTTPS health and optional real audio transcription.
 
 ## Release Signal
 

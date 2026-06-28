@@ -10,7 +10,10 @@
 | PSScriptAnalyzer | 1.25.0 | PowerShell static analysis in CI |
 | Pester | 5.7.1 | PowerShell unit tests |
 | Frigate image | `ghcr.io/blakeblackshear/frigate:stable-tensorrt` | CUDA/TensorRT Frigate runtime |
-| Ollama model | `qwen2.5vl:3b` | Local vision model used by Frigate GenAI review |
+| Ollama model | `huihui_ai/gpt-oss-abliterated:20b` | Local text model for LAN API usage |
+| ASR base image | `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` | CUDA runtime for faster-whisper |
+| ASR model | `Systran/faster-whisper-large-v3` | Local audio transcription |
+| ASR Python runtime | `faster-whisper==1.1.1`, `fastapi==0.115.6` | HTTPS ASR API |
 
 ## Update rules
 
@@ -18,7 +21,7 @@
 - Keep validation tools pinned in `requirements-dev.txt`.
 - Keep GitHub Actions pinned to full commit SHAs with the reviewed tag in a trailing comment.
 - Review Frigate image changes manually because the image tag lives in Ansible variables, not in a Dockerfile.
-- Treat model changes as operational changes: verify VRAM use, response latency, and smoke-test output before making them the default.
+- Treat model changes as operational changes: verify VRAM use, response latency, ASR sample quality, and smoke-test output before making them the default.
 - Run the repository validation checks after dependency changes.
 
 ## Manual update check

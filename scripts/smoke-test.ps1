@@ -12,6 +12,9 @@ param(
     [string]$FrigateAuthPassword = $env:FRIGATE_BASIC_PASSWORD,
     [string]$OllamaUrl = "http://192.168.1.138:11434",
     [string]$OllamaModel = "huihui_ai/gpt-oss-abliterated:20b",
+    [string]$AsrUrl = "https://192.168.1.138:9443",
+    [string]$AsrSamplePath = "",
+    [int]$AsrTranscribeTimeoutSeconds = 900,
     [string]$ReportPath = "",
     [switch]$SkipOllamaGenerate,
     [switch]$TrustUnknownHostKeys
@@ -209,6 +212,51 @@ try {
     $ollamaOutput = & curl.exe --silent --show-error --fail --max-time 15 "$OllamaUrl/api/version" 2>&1
     $results.Add((Add-Result "ollama.lan.version" ($LASTEXITCODE -eq 0 -and $ollamaOutput -match '"version"') $ollamaOutput))
 
+    $asrOutput = & curl.exe --insecure --silent --show-error --fail --max-time 15 "$AsrUrl/health" 2>&1
+    $asrHealth = $null
+    if ($LASTEXITCODE -eq 0) {
+        try {
+            $asrHealth = $asrOutput | ConvertFrom-Json
+        } catch {
+            $asrHealth = $null
+        }
+    }
+    $asrPass = $LASTEXITCODE -eq 0 -and $null -ne $asrHealth -and $asrHealth.status -eq "ok"
+    $asrDetail = if ($null -ne $asrHealth) {
+        "model=$($asrHealth.model), device=$($asrHealth.device), compute_type=$($asrHealth.compute_type), loaded=$($asrHealth.loaded)"
+    } else {
+        "$asrOutput"
+    }
+    $results.Add((Add-Result "asr.lan.health" $asrPass $asrDetail))
+    $asrUri = [Uri]$AsrUrl
+    $asrPortOpen = Test-NetConnection -ComputerName $asrUri.Host -Port $asrUri.Port -WarningAction SilentlyContinue -InformationLevel Quiet
+    $results.Add((Add-Result "asr.direct_port.open" $asrPortOpen "vm=$($asrUri.Host), port=$($asrUri.Port), open=$asrPortOpen"))
+
+    if (-not [string]::IsNullOrWhiteSpace($AsrSamplePath)) {
+        if (-not (Test-Path -LiteralPath $AsrSamplePath)) {
+            $results.Add((Add-Result "asr.audio.transcribe" $false "sample not found: $AsrSamplePath"))
+        } else {
+            $asrTranscriptOutput = & curl.exe --insecure --silent --show-error --fail --max-time $AsrTranscribeTimeoutSeconds -X POST "$AsrUrl/v1/audio/transcriptions" -F "file=@$AsrSamplePath" -F "language=ru" -F "response_format=json" 2>&1
+            $asrTranscript = $null
+            if ($LASTEXITCODE -eq 0) {
+                try {
+                    $asrTranscript = $asrTranscriptOutput | ConvertFrom-Json
+                } catch {
+                    $asrTranscript = $null
+                }
+            }
+            $transcribePass = $LASTEXITCODE -eq 0 -and $null -ne $asrTranscript -and -not [string]::IsNullOrWhiteSpace($asrTranscript.text)
+            $preview = if ($transcribePass -and $asrTranscript.text.Length -gt 160) {
+                $asrTranscript.text.Substring(0, 160)
+            } elseif ($transcribePass) {
+                $asrTranscript.text
+            } else {
+                "$asrTranscriptOutput"
+            }
+            $results.Add((Add-Result "asr.audio.transcribe" $transcribePass "language=$($asrTranscript.language), chars=$($asrTranscript.text.Length), preview=$preview"))
+        }
+    }
+
     $vmScript = @'
 set -euo pipefail
 
@@ -251,6 +299,7 @@ summary["gpu_is_p40"] = "Tesla P40" in smi
 
 summary["frigate_version"] = read_url("https://127.0.0.1:8971/api/version", insecure=True).strip()
 summary["ollama_version"] = json.loads(read_url("http://127.0.0.1:11434/api/version"))["version"]
+summary["asr_health"] = json.loads(read_url("https://127.0.0.1:9443/health", insecure=True))
 
 config = json.loads(read_url("https://127.0.0.1:8971/api/config", insecure=True))
 with open("/opt/frigate/config/config.yml", "r", encoding="utf-8") as f:
@@ -299,6 +348,7 @@ summary["detectors"] = stats.get("detectors", {})
 compose_ps = run(["docker", "compose", "-f", "/opt/frigate/docker-compose.yml", "ps"], timeout=30).stdout
 summary["frigate_compose_ps"] = compose_ps
 summary["frigate_healthy"] = "healthy" in compose_ps
+summary["asr_compose_ps"] = run(["docker", "compose", "-f", "/opt/asr/docker-compose.yml", "ps"], timeout=30).stdout
 
 ffmpeg_ps = run(["docker", "exec", "frigate", "sh", "-lc", "ps -eo args | grep ffmpeg | grep -v grep"], timeout=30).stdout
 summary["ffmpeg_uses_cuda"] = "-hwaccel cuda" in ffmpeg_ps and "scale_cuda" in ffmpeg_ps
@@ -378,6 +428,10 @@ PY
     $results.Add((Add-Result "ollama.api.version" ($vmState.ollama_version -match "^\d+\.\d+") "version=$($vmState.ollama_version)"))
     $results.Add((Add-Result "ollama.model.present" ([bool]$vmState.ollama_has_model) "model=$OllamaModel"))
     $results.Add((Add-Result "frigate.to_ollama.network" ([bool]$vmState.frigate_can_reach_ollama) "Frigate container can query Ollama tags"))
+    $vmAsrHealth = $vmState.asr_health
+    $vmAsrPass = $vmAsrHealth.status -eq "ok" -and $vmAsrHealth.device -eq "cuda" -and $vmAsrHealth.compute_type -eq "int8"
+    $results.Add((Add-Result "asr.api.health" $vmAsrPass "model=$($vmAsrHealth.model), device=$($vmAsrHealth.device), compute_type=$($vmAsrHealth.compute_type), loaded=$($vmAsrHealth.loaded)"))
+    $results.Add((Add-Result "asr.container.up" ($vmState.asr_compose_ps -match "Up") (($vmState.asr_compose_ps -split "`n") -join " | ")))
 
     if (-not $SkipOllamaGenerate) {
         $genPrompt = "Напиши одно короткое предложение по-русски: локальная модель работает."

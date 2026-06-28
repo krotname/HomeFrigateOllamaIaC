@@ -188,9 +188,66 @@
     state: absent
   notify: Restart nginx
 
+- name: Resolve ASR settings
+  ansible.builtin.set_fact:
+    frigate_vm_asr_enabled_resolved: "{{ asr_enabled | default(frigate_vm_asr_enabled) }}"
+    frigate_vm_asr_root_resolved: "{{ asr_root | default(frigate_vm_asr_root) }}"
+    frigate_vm_asr_port_resolved: "{{ asr_port | default(frigate_vm_asr_port) }}"
+    frigate_vm_asr_model_resolved: "{{ asr_model | default(frigate_vm_asr_model) }}"
+    frigate_vm_asr_device_resolved: "{{ asr_device | default(frigate_vm_asr_device) }}"
+    frigate_vm_asr_compute_type_resolved: "{{ asr_compute_type | default(frigate_vm_asr_compute_type) }}"
+    frigate_vm_asr_cpu_threads_resolved: "{{ asr_cpu_threads | default(frigate_vm_asr_cpu_threads) }}"
+
+- name: Create ASR directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ frigate_vm_asr_root_resolved }}"
+    - "{{ frigate_vm_asr_root_resolved }}/models"
+    - "{{ frigate_vm_asr_root_resolved }}/tmp"
+  when: frigate_vm_asr_enabled_resolved | bool
+
+- name: Install ASR service files
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../asr/{{ item }}"
+    dest: "{{ frigate_vm_asr_root_resolved }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - .dockerignore
+    - Dockerfile
+    - app.py
+    - docker-compose.yml
+    - requirements.txt
+  when: frigate_vm_asr_enabled_resolved | bool
+
+- name: Render ASR environment
+  ansible.builtin.copy:
+    dest: "{{ frigate_vm_asr_root_resolved }}/.env"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      ASR_MODEL={{ frigate_vm_asr_model_resolved }}
+      ASR_DEVICE={{ frigate_vm_asr_device_resolved }}
+      ASR_COMPUTE_TYPE={{ frigate_vm_asr_compute_type_resolved }}
+      ASR_CPU_THREADS={{ frigate_vm_asr_cpu_threads_resolved }}
+      ASR_PORT={{ frigate_vm_asr_port_resolved }}
+  when: frigate_vm_asr_enabled_resolved | bool
+
 - name: Start Frigate
   ansible.builtin.command: docker compose -f "{{ frigate_root }}/docker-compose.yml" up -d
   changed_when: true
+
+- name: Start ASR
+  ansible.builtin.command: docker compose -f "{{ frigate_vm_asr_root_resolved }}/docker-compose.yml" up -d --build
+  changed_when: true
+  when: frigate_vm_asr_enabled_resolved | bool
 
 - name: Enable nginx
   ansible.builtin.systemd:
@@ -211,9 +268,18 @@
     return_content: true
   register: frigate_vm_ollama_version
 
+- name: Verify ASR API
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ frigate_vm_asr_port_resolved }}/health"
+    validate_certs: false
+    return_content: true
+  register: frigate_vm_asr_health
+  when: frigate_vm_asr_enabled_resolved | bool
+
 - name: Print deployment summary
   ansible.builtin.debug:
     msg:
       - "GPU: {{ frigate_vm_nvidia_smi.stdout }}"
       - "Frigate: {{ frigate_vm_frigate_version.content }}"
       - "Ollama: {{ frigate_vm_ollama_version.json.version | default(frigate_vm_ollama_version.content) }}"
+      - "ASR: {{ frigate_vm_asr_health.json.model | default('disabled') }}"

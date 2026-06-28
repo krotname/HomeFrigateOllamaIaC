@@ -11,7 +11,9 @@ This repository deploys the home video AI stack as code.
 - Ollama model: `huihui_ai/gpt-oss-abliterated:20b`.
 - Frigate GenAI descriptions are disabled because the installed gpt-oss model is
   text-only, not a vision model.
-- TLS: local self-signed certificate for Frigate `8971`.
+- ASR: separate FastAPI/faster-whisper container with an OpenAI-compatible
+  transcription endpoint.
+- TLS: local self-signed certificate for Frigate `8971` and ASR `9443`.
 - Administration: Windows host over WinRM HTTPS `5986` with `PowerShell.7`;
   Ubuntu VM over SSH.
 
@@ -24,18 +26,21 @@ flowchart LR
     VM["Ubuntu VM\nDocker + NVIDIA runtime"]
     Frigate["Frigate\nCUDA ffmpeg + ONNX GPU detector"]
     Media["Frigate media volume\nrecordings and events"]
-    Ollama["Ollama\nqwen2.5vl:3b"]
-    Nginx["nginx HTTPS proxy\n8971 / 11443"]
+    Ollama["Ollama\nhuihui_ai/gpt-oss-abliterated:20b"]
+    ASR["ASR\nfaster-whisper large-v3"]
+    Nginx["nginx HTTPS proxy\n8971"]
     Operator["Operator browser / smoke-test"]
 
     Cameras --> Frigate
     Host --> VM
     VM --> Frigate
     VM --> Ollama
+    VM --> ASR
     Frigate --> Media
     Frigate --> Ollama
     Frigate --> Nginx
-    Ollama --> Nginx
+    ASR --> Operator
+    Ollama --> Operator
     Nginx --> Operator
 ```
 
@@ -61,5 +66,9 @@ certificates, model generation and GPU runtime checks are host-level concerns.
 - YOLO model: `/opt/frigate/config/model_cache/yolov9-t-320.onnx`
 - YOLO labelmap: `/opt/frigate/config/model_cache/coco-yolo-80.txt`
 - Ollama API: `http://0.0.0.0:11434`
+- ASR root: `/opt/asr`
+- ASR model cache: `/opt/asr/models`
+- ASR API: `https://0.0.0.0:9443`
 - LAN Frigate URL: `https://192.168.1.138:8971`
 - LAN Ollama URL: `http://192.168.1.138:11434`
+- LAN ASR URL: `https://192.168.1.138:9443`

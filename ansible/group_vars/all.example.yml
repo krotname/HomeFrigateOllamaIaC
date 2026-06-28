@@ -23,6 +23,15 @@ ollama_https_port: 11443
 ollama_model: huihui_ai/gpt-oss-abliterated:20b
 ollama_keep_alive: 10m
 
+# Separate HTTPS ASR API on the same VM.
+asr_enabled: true
+asr_root: /opt/asr
+asr_port: 9443
+asr_model: Systran/faster-whisper-large-v3
+asr_device: cuda
+asr_compute_type: int8
+asr_cpu_threads: 4
+
 # Демонстрационные RTSP-учетные данные. Для реального стенда замените их
 # в ansible/group_vars/all.yml и при необходимости зашифруйте файл Ansible Vault.
 frigate_rtsp_user: rtsp_viewer

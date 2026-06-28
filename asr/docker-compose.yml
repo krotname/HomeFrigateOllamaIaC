@@ -1,0 +1,23 @@
+services:
+  asr:
+    container_name: asr
+    build: .
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      ASR_MODEL: ${ASR_MODEL:-Systran/faster-whisper-large-v3}
+      ASR_DEVICE: ${ASR_DEVICE:-cuda}
+      ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-int8}
+      ASR_CPU_THREADS: ${ASR_CPU_THREADS:-4}
+      ASR_PORT: ${ASR_PORT:-9443}
+      ASR_CERT_FILE: /certs/fullchain.pem
+      ASR_KEY_FILE: /certs/privkey.pem
+      ASR_TMP_DIR: /tmp/asr
+    volumes:
+      - ./models:/models
+      - ./tmp:/tmp/asr
+      - /opt/frigate/certs:/certs:ro
+    ports:
+      - "0.0.0.0:${ASR_PORT:-9443}:${ASR_PORT:-9443}"
