@@ -1,0 +1,2 @@
+registry_id,title,path,format,record_type,key_fields,status,owner_or_area,source,last_updated,index_path,notes
+backup-registry,Backup Registry,registries/backup-registry.csv,csv,backup definition,backup_id,active,operations,manual,2026-06-16,_indexes/registry-of-registries.md,Primary system of record for backup jobs and retention policy.

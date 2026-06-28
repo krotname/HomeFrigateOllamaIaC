@@ -7,8 +7,9 @@ frigate_timezone: Europe/Moscow
 # Адрес VM и локальные DNS-имена, которые попадут в self-signed сертификат.
 frigate_vm_ip: 192.168.50.20
 frigate_dns_names:
+  - adler-frigate.local
+  - adler-frigate
   - frigate-ubuntu
-  - frigate.local
 
 # Образ Frigate с поддержкой NVIDIA/TensorRT.
 # Перед обновлением сверяйте release notes Frigate и прогоняйте smoke-test.
@@ -19,7 +20,7 @@ frigate_labelmap_path: /config/model_cache/coco-yolo-80.txt
 # Ollama слушает HTTP внутри VM, а наружу отдается через nginx HTTPS proxy.
 ollama_host: 0.0.0.0:11434
 ollama_https_port: 11443
-ollama_model: qwen2.5vl:3b
+ollama_model: huihui_ai/gpt-oss-abliterated:20b
 ollama_keep_alive: 10m
 
 # Демонстрационные RTSP-учетные данные. Для реального стенда замените их

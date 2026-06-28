@@ -1,6 +1,9 @@
 .codex/
+.codex-temp/
 .cache/
 .venv/
+_indexes/
+__pycache__/
 ops/
 *.local.json
 *.log

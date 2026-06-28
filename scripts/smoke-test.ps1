@@ -1,13 +1,17 @@
 param(
+    [string]$HostName = "ADLER-WHITE-1W",
     [string]$HostAddress = "192.168.1.33",
     [string]$VmAddress = "192.168.1.138",
-    [string]$HostUser = "KRT",
     [string]$VmUser = "krt",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\win-home-codex_ed25519",
+    [string]$HostCredentialPath = "$env:USERPROFILE\.codex\secrets\adler-winrm.credential.xml",
+    [string]$HostConfigurationName = "PowerShell.7",
     [string]$VmName = "frigate-ubuntu",
     [string]$FrigateUrl = "https://192.168.1.138:8971",
-    [string]$OllamaHttpsUrl = "https://192.168.1.138:11443",
-    [string]$OllamaModel = "qwen2.5vl:3b",
+    [string]$FrigateAuthUser = $env:FRIGATE_BASIC_USER,
+    [string]$FrigateAuthPassword = $env:FRIGATE_BASIC_PASSWORD,
+    [string]$OllamaUrl = "http://192.168.1.138:11434",
+    [string]$OllamaModel = "huihui_ai/gpt-oss-abliterated:20b",
     [string]$ReportPath = "",
     [switch]$SkipOllamaGenerate,
     [switch]$TrustUnknownHostKeys
@@ -93,12 +97,41 @@ function Invoke-SshText {
 function Invoke-HostPowerShellJson {
     param([string]$Script, [int]$TimeoutSeconds = 30)
 
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-    $target = "$HostUser@$HostAddress"
-    $text = Invoke-SshText -Target $target -Command "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -TimeoutSeconds $TimeoutSeconds
+    if (-not (Test-Path -LiteralPath $HostCredentialPath)) {
+        throw "WinRM credential not found: $HostCredentialPath"
+    }
+
+    $credential = Import-Clixml -LiteralPath $HostCredentialPath
+    $job = Start-Job -ScriptBlock {
+        param($ComputerName, $ConfigurationName, $Credential, $ScriptText)
+        $ErrorActionPreference = "Stop"
+        Invoke-Command `
+            -ComputerName $ComputerName `
+            -UseSSL `
+            -ConfigurationName $ConfigurationName `
+            -Credential $Credential `
+            -Authentication Negotiate `
+            -ScriptBlock ([scriptblock]::Create($ScriptText))
+    } -ArgumentList $HostName, $HostConfigurationName, $credential, $Script
+
+    if (-not (Wait-Job $job -Timeout $TimeoutSeconds)) {
+        Stop-Job $job | Out-Null
+        Remove-Job $job -Force | Out-Null
+        throw "WinRM command timed out for $HostName"
+    }
+
+    $raw = Receive-Job $job
+    $state = $job.State
+    $reason = $job.ChildJobs[0].JobStateInfo.Reason
+    Remove-Job $job -Force | Out-Null
+    if ($state -ne "Completed") {
+        throw "WinRM command failed for $HostName. $reason"
+    }
+
+    $text = ($raw | Out-String).Trim()
     $jsonLine = ($text -split "`n" | Where-Object { $_.TrimStart().StartsWith("{") -or $_.TrimStart().StartsWith("[") } | Select-Object -First 1)
     if (-not $jsonLine) {
-        throw "No JSON returned from host script. Output: $text"
+        throw "No JSON returned from WinRM host script. Output: $text"
     }
     $jsonLine | ConvertFrom-Json
 }
@@ -107,7 +140,7 @@ function Invoke-VmBashJson {
     param([string]$Script, [int]$TimeoutSeconds = 60)
 
     $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Script))
-    $command = "printf '%s' '$payload' | base64 -d | bash"
+    $command = "printf '%s' '$payload' | base64 -d | tr -d '\r' | bash"
     $target = "$VmUser@$VmAddress"
     $text = Invoke-SshText -Target $target -Command $command -TimeoutSeconds $TimeoutSeconds
     $jsonLine = ($text -split "`n" | Where-Object { $_.TrimStart().StartsWith("{") } | Select-Object -Last 1)
@@ -117,14 +150,25 @@ function Invoke-VmBashJson {
     $jsonLine | ConvertFrom-Json
 }
 
+function Get-FrigateCurlArgs {
+    $args = @("--insecure", "--silent", "--show-error", "--fail", "--max-time", "15")
+    if (-not [string]::IsNullOrWhiteSpace($FrigateAuthUser) -and -not [string]::IsNullOrWhiteSpace($FrigateAuthPassword)) {
+        $args += @("--user", "$($FrigateAuthUser):$FrigateAuthPassword")
+    }
+    $args
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 
 try {
     if (-not (Test-Path -LiteralPath $KeyPath)) {
-        throw "SSH key not found: $KeyPath"
+        throw "VM SSH key not found: $KeyPath"
+    }
+    if (-not (Test-Path -LiteralPath $HostCredentialPath)) {
+        throw "WinRM credential not found: $HostCredentialPath"
     }
 
-    $hostState = Invoke-HostPowerShellJson -TimeoutSeconds 45 -Script @"
+    $hostState = Invoke-HostPowerShellJson -TimeoutSeconds 120 -Script @"
 `$ErrorActionPreference = 'Stop'
 `$os = Get-CimInstance Win32_OperatingSystem
 `$vm = Get-VM -Name '$VmName'
@@ -143,20 +187,27 @@ try {
   GpuLocationPath = `$assignable.LocationPath
   GpuInstanceID = `$assignable.InstanceID
   VmIPs = @(`$adapter.IPAddresses)
+  Whoami = whoami
+  PSVersion = `$PSVersionTable.PSVersion.ToString()
+  IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 } | ConvertTo-Json -Compress
 "@
 
     $results.Add((Add-Result "host.identity" ($hostState.Hostname -eq "ADLER-WHITE-1W") "hostname=$($hostState.Hostname)"))
+    $results.Add((Add-Result "host.winrm.powershell7_admin" ($hostState.PSVersion -match "^7\." -and [bool]$hostState.IsAdmin) "whoami=$($hostState.Whoami), ps=$($hostState.PSVersion), is_admin=$($hostState.IsAdmin)"))
     $results.Add((Add-Result "hyperv.vm.running" ($hostState.VmState -eq "Running") "state=$($hostState.VmState)"))
     $results.Add((Add-Result "hyperv.vm.autostart" ($hostState.AutomaticStartAction -eq "Start" -and [int]$hostState.AutomaticStartDelay -ge 1) "action=$($hostState.AutomaticStartAction), delay=$($hostState.AutomaticStartDelay)"))
     $results.Add((Add-Result "hyperv.gpu.assigned" ($hostState.GpuInstanceID -match "VEN_10DE" -and $hostState.GpuLocationPath -eq "PCIROOT(0)#PCI(0300)#PCI(0000)") "gpu=$($hostState.GpuInstanceID)"))
     $results.Add((Add-Result "hyperv.vm.ip" (($hostState.VmIPs -contains $VmAddress)) "ips=$($hostState.VmIPs -join ',')"))
 
-    $certOutput = & curl.exe --silent --show-error --fail --max-time 15 "$FrigateUrl/api/version" 2>&1
-    $results.Add((Add-Result "tls.frigate.trusted" ($LASTEXITCODE -eq 0 -and $certOutput -match "^\d+\.\d+") "version=$certOutput"))
+    $frigateCurlArgs = Get-FrigateCurlArgs
+    $certOutput = & curl.exe @frigateCurlArgs "$FrigateUrl/api/version" 2>&1
+    $results.Add((Add-Result "frigate.lan.version" ($LASTEXITCODE -eq 0 -and $certOutput -match "^\d+\.\d+") "version=$certOutput"))
+    $directFrigatePortOpen = Test-NetConnection -ComputerName $VmAddress -Port 8971 -WarningAction SilentlyContinue -InformationLevel Quiet
+    $results.Add((Add-Result "frigate.direct_port.open" $directFrigatePortOpen "vm=$VmAddress, port=8971, open=$directFrigatePortOpen"))
 
-    $ollamaTlsOutput = & curl.exe --silent --show-error --fail --max-time 15 "$OllamaHttpsUrl/api/version" 2>&1
-    $results.Add((Add-Result "tls.ollama.trusted" ($LASTEXITCODE -eq 0 -and $ollamaTlsOutput -match '"version"') $ollamaTlsOutput))
+    $ollamaOutput = & curl.exe --silent --show-error --fail --max-time 15 "$OllamaUrl/api/version" 2>&1
+    $results.Add((Add-Result "ollama.lan.version" ($LASTEXITCODE -eq 0 -and $ollamaOutput -match '"version"') $ollamaOutput))
 
     $vmScript = @'
 set -euo pipefail
@@ -185,7 +236,6 @@ summary["hostname"] = run(["hostname"]).stdout.strip()
 summary["docker_active"] = run(["systemctl", "is-active", "docker"]).stdout.strip()
 summary["ollama_active"] = run(["systemctl", "is-active", "ollama"]).stdout.strip()
 summary["ollama_enabled"] = run(["systemctl", "is-enabled", "ollama"]).stdout.strip()
-summary["nginx_active"] = run(["systemctl", "is-active", "nginx"]).stdout.strip()
 
 df = run(["df", "-T", "/media/frigate"]).stdout.strip().splitlines()
 summary["media_df"] = df[-1] if len(df) >= 2 else ""
@@ -201,7 +251,6 @@ summary["gpu_is_p40"] = "Tesla P40" in smi
 
 summary["frigate_version"] = read_url("https://127.0.0.1:8971/api/version", insecure=True).strip()
 summary["ollama_version"] = json.loads(read_url("http://127.0.0.1:11434/api/version"))["version"]
-summary["ollama_https_version"] = json.loads(read_url("https://127.0.0.1:11443/api/version", insecure=True))["version"]
 
 config = json.loads(read_url("https://127.0.0.1:8971/api/config", insecure=True))
 with open("/opt/frigate/config/config.yml", "r", encoding="utf-8") as f:
@@ -258,10 +307,10 @@ container_tags = run([
     "docker", "exec", "frigate", "python3", "-c",
     "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=10).read().decode())"
 ], timeout=30).stdout
-summary["frigate_can_reach_ollama"] = "qwen2.5vl:3b" in container_tags
+summary["frigate_can_reach_ollama"] = "huihui_ai/gpt-oss-abliterated:20b" in container_tags
 
 model_list = run(["ollama", "list"], timeout=30).stdout
-summary["ollama_has_model"] = "qwen2.5vl:3b" in model_list
+summary["ollama_has_model"] = "huihui_ai/gpt-oss-abliterated:20b" in model_list
 
 recent_records = run(["bash", "-lc", "find /media/frigate/recordings -type f -mmin -10 | head -5"], timeout=30).stdout.strip()
 summary["recent_recording_files"] = recent_records.splitlines() if recent_records else []
@@ -281,9 +330,8 @@ PY
     $genaiPass = $genaiConfig.provider -eq "ollama" `
         -and $genaiConfig.base_url -eq "http://host.docker.internal:11434" `
         -and $genaiConfig.model -eq $OllamaModel `
-        -and [bool]$genaiConfig.review_enabled `
-        -and [bool]$genaiConfig.review_alerts `
-        -and [bool]$genaiConfig.objects_enabled
+        -and -not [bool]$genaiConfig.review_enabled `
+        -and -not [bool]$genaiConfig.objects_enabled
     $genaiDetail = "provider=$($genaiConfig.provider), base_url=$($genaiConfig.base_url), model=$($genaiConfig.model), review_enabled=$($genaiConfig.review_enabled), review_alerts=$($genaiConfig.review_alerts), objects_enabled=$($genaiConfig.objects_enabled)"
     $results.Add((Add-Result "frigate.genai.ollama_config" $genaiPass $genaiDetail))
     $detectorStats = $vmState.detectors.onnx
@@ -327,20 +375,18 @@ PY
     $results.Add((Add-Result "frigate.recordings.recent" ($vmState.recent_recording_files.Count -gt 0) (($vmState.recent_recording_files | Select-Object -First 3) -join "; ")))
 
     $results.Add((Add-Result "ollama.service.active" ($vmState.ollama_active -eq "active" -and $vmState.ollama_enabled -eq "enabled") "active=$($vmState.ollama_active), enabled=$($vmState.ollama_enabled)"))
-    $results.Add((Add-Result "ollama.https.nginx.active" ($vmState.nginx_active -eq "active") "nginx=$($vmState.nginx_active)"))
     $results.Add((Add-Result "ollama.api.version" ($vmState.ollama_version -match "^\d+\.\d+") "version=$($vmState.ollama_version)"))
-    $results.Add((Add-Result "ollama.https.proxy.version" ($vmState.ollama_https_version -eq $vmState.ollama_version) "https=$($vmState.ollama_https_version), http=$($vmState.ollama_version)"))
     $results.Add((Add-Result "ollama.model.present" ([bool]$vmState.ollama_has_model) "model=$OllamaModel"))
     $results.Add((Add-Result "frigate.to_ollama.network" ([bool]$vmState.frigate_can_reach_ollama) "Frigate container can query Ollama tags"))
 
     if (-not $SkipOllamaGenerate) {
-        $genPrompt = "Describe the surveillance camera frame in one short Russian sentence. Use Cyrillic Russian text only. Do not invent details."
+        $genPrompt = "Напиши одно короткое предложение по-русски: локальная модель работает."
         $genPayload = @{
             model   = $OllamaModel
-            system  = "You are a surveillance camera assistant. Always answer in Russian using Cyrillic text only, with no English text."
             prompt  = $genPrompt
             stream  = $false
-            options = @{ num_predict = 48 }
+            think   = "low"
+            options = @{ num_predict = 256; num_ctx = 2048 }
         } | ConvertTo-Json -Compress
         $genB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($genPayload))
         $genScript = @"
@@ -354,30 +400,23 @@ def read_url(url, timeout=20, insecure=False):
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
         return r.read()
 
-stats=json.loads(read_url('https://127.0.0.1:8971/api/stats', insecure=True).decode())
-cameras=sorted(stats.get('cameras', {}).keys())
-if not cameras:
-    raise SystemExit('No cameras found in Frigate stats')
-camera=cameras[0]
-image=read_url(f'https://127.0.0.1:8971/api/{camera}/latest.jpg', timeout=20, insecure=True)
 payload=json.load(open('/tmp/ollama-smoke-payload.json'))
-payload['images']=[base64.b64encode(image).decode()]
 req=urllib.request.Request(
     'http://127.0.0.1:11434/api/generate',
     data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
     headers={'Content-Type':'application/json'},
 )
-d=json.loads(urllib.request.urlopen(req, timeout=240).read().decode())
+d=json.loads(urllib.request.urlopen(req, timeout=900).read().decode())
 ps=subprocess.run(['ollama','ps'], text=True, capture_output=True, timeout=30).stdout
 smi=subprocess.run(['nvidia-smi','--query-gpu=name,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'], text=True, capture_output=True, timeout=30).stdout.strip()
-print(json.dumps({'done': d.get('done'), 'response': d.get('response',''), 'camera': camera, 'image_bytes': len(image), 'ollama_ps': ps, 'nvidia_smi': smi}, ensure_ascii=True, separators=(',', ':')))
+print(json.dumps({'done': d.get('done'), 'response': d.get('response',''), 'ollama_ps': ps, 'nvidia_smi': smi}, ensure_ascii=True, separators=(',', ':')))
 PY
 "@
-$genState = Invoke-VmBashJson -Script $genScript -TimeoutSeconds 240
+$genState = Invoke-VmBashJson -Script $genScript -TimeoutSeconds 900
         $hasCyrillic = $genState.response -match "[\u0400-\u04FF]"
-        $imagePass = [bool]$genState.done -and [int]$genState.image_bytes -gt 1000 -and -not [string]::IsNullOrWhiteSpace($genState.response) -and $hasCyrillic
-        $results.Add((Add-Result "camera.frame.to_ollama_vision" $imagePass "camera=$($genState.camera), image_bytes=$($genState.image_bytes), response=$($genState.response)"))
-        $results.Add((Add-Result "ollama.vision.gpu" ($genState.ollama_ps -match "100% GPU") (($genState.ollama_ps -split "`n") -join " | ")))
+        $textPass = [bool]$genState.done -and -not [string]::IsNullOrWhiteSpace($genState.response) -and $hasCyrillic
+        $results.Add((Add-Result "ollama.text.generate" $textPass "response=$($genState.response)"))
+        $results.Add((Add-Result "ollama.text.gpu" ($genState.ollama_ps -match "100% GPU") (($genState.ollama_ps -split "`n") -join " | ")))
     }
 }
 catch {
