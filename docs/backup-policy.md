@@ -85,3 +85,30 @@ Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShel
 ```
 
 The production copy runs from `C:\ProgramData\KRT\ConfigBackup` on the server.
+
+## Network VPN Configuration Backups
+
+Router and VPN hub configuration snapshots are retained separately because they
+contain router credentials, AmneziaWG keys, PSKs, and server VPN secrets.
+
+Storage root:
+
+`F:\Files\Backups\network-vpn-configs`
+
+Each manual run creates one directory:
+
+`F:\Files\Backups\network-vpn-configs\network-vpn-config-YYYYMMDD-HHMMSS`
+
+The directory contains:
+
+- `openwrt-sysupgrade-backup.tar.gz`: OpenWrt router config backup.
+- `openwrt-*.uci` and `openwrt-packages.txt`: router config/package evidence.
+- `msk-vpn-configs.tar.gz`: Moscow VPS VPN config archive covering AmneziaWG,
+  Hysteria, sing-box, OpenVPN/WireGuard remnants, UFW, and related sysctl/systemd
+  files.
+- `client-krt-home-amneziawg.conf`: current split-route client config.
+- `manifest.json`: hashes, byte counts, timestamp, scope, and verification
+  flags.
+
+These archives are not committed to git. The repository tracks only this policy
+and `registries/backup-registry.csv`.
