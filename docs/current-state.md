@@ -1,6 +1,6 @@
 # Current Production State
 
-Last live LAN/API check verified: `2026-06-28`.
+Last live LAN/API check verified: `2026-07-06`.
 Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 
 ## Host and VM
@@ -13,7 +13,7 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Frigate LAN address | `192.168.1.138:8971` |
 | ASR LAN address | `192.168.1.138:9443` |
 | VM autostart | `AutomaticStartAction=Start`, delay `60` seconds |
-| VM CPU/RAM | `8` vCPU, `4 GB` startup RAM |
+| VM CPU/RAM | `8` vCPU, `8 GB` startup RAM |
 | GPU | NVIDIA Tesla P40 via Hyper-V DDA, `PCIROOT(0)#PCI(0300)#PCI(0000)` |
 | Config backups | Scheduled task `WinHome Config Backup`, daily `03:20`, retained at `F:\Files\Backups\win-home-configs` |
 
@@ -22,7 +22,7 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Component | Value |
 | --- | --- |
 | URL | `https://192.168.1.138:8971/` |
-| Auth | Frigate auth disabled; use `curl.exe -k` for the local certificate |
+| Auth | nginx basic auth on LAN `8971`; Frigate container listens on `127.0.0.1:18971` |
 | Root | `/opt/frigate` |
 | Image | `ghcr.io/blakeblackshear/frigate:stable-tensorrt` |
 | Media | `/media/frigate`, ext4 VHDX-backed mount |
@@ -36,10 +36,11 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Component | Value |
 | --- | --- |
 | Service | systemd `ollama`, enabled |
-| HTTP | `0.0.0.0:11434` |
-| LAN URL | `http://192.168.1.138:11434` |
-| Model | `huihui_ai/gpt-oss-abliterated:20b` |
-| Frigate GenAI | Disabled; current gpt-oss model is text-only |
+| Backend HTTP | `127.0.0.1:11435` |
+| LAN URL | nginx TLS/basic-auth proxy on `192.168.1.138:11434` and `11443` |
+| Frigate GenAI model | `qwen2.5:3b` |
+| Installed larger model | `huihui_ai/gpt-oss-abliterated:20b` |
+| Frigate GenAI | Review/object generation disabled; Frigate can still reach Ollama |
 
 ## ASR
 
@@ -51,16 +52,17 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Engine | `faster-whisper` |
 | Model | `Systran/faster-whisper-large-v3` |
 | Device | CUDA, `int8` compute type |
-| TLS | Reuses `/opt/frigate/certs/fullchain.pem` and `privkey.pem` |
+| TLS/Auth | nginx terminates LAN TLS and basic auth on `9443`; the ASR container listens on `127.0.0.1:19443` and uses `/opt/asr/certs` |
 
 ## Validation Snapshot
 
 ```text
-Frigate LAN API: https://192.168.1.138:8971/api/version -> 0.17.1-416a9b7
-Ollama LAN API: http://192.168.1.138:11434/api/version -> 0.30.8
-Ollama model: huihui_ai/gpt-oss-abliterated:20b, 20.9B, cold start ~301s, 100% GPU, about 12 GB VRAM loaded
-ASR LAN API: https://192.168.1.138:9443/health -> Systran/faster-whisper-large-v3, cuda, int8
-ASR sample: 90s Russian audio -> 1414 characters, language=ru, probability=1
+Smoke-test after RAM upgrade: failed_count=0
+Hyper-V VM memory: startup=8589934592, assigned=8589934592
+Frigate API: 0.17.1-416a9b7, container healthy
+Ollama API: 0.30.8, Frigate model=qwen2.5:3b
+ASR API: Systran/faster-whisper-large-v3, cuda, int8
+GPU: Tesla P40, detector inference about 8.34 ms
 ```
 
 The full validation command is:

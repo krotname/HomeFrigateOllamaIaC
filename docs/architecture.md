@@ -13,7 +13,7 @@ This repository deploys the home video AI stack as code.
   text-only, not a vision model.
 - ASR: separate FastAPI/faster-whisper container with an OpenAI-compatible
   transcription endpoint.
-- TLS: local self-signed certificate for Frigate `8971` and ASR `9443`.
+- TLS: local self-signed certificates for Frigate `8971` and ASR `9443`.
 - Administration: Windows host over WinRM HTTPS `5986` with `PowerShell.7`;
   Ubuntu VM over SSH.
 
@@ -24,11 +24,11 @@ flowchart LR
     Cameras["RTSP cameras"]
     Host["Windows Server host\nHyper-V + DDA"]
     VM["Ubuntu VM\nDocker + NVIDIA runtime"]
-    Frigate["Frigate\nCUDA ffmpeg + ONNX GPU detector"]
+    Frigate["Frigate\nCUDA ffmpeg + ONNX GPU detector\n127.0.0.1:18971"]
     Media["Frigate media volume\nrecordings and events"]
     Ollama["Ollama\nhuihui_ai/gpt-oss-abliterated:20b"]
-    ASR["ASR\nfaster-whisper large-v3"]
-    Nginx["nginx HTTPS proxy\n8971"]
+    ASR["ASR\nfaster-whisper large-v3\n127.0.0.1:19443"]
+    Nginx["nginx HTTPS proxy\n8971 / 9443"]
     Operator["Operator browser / smoke-test"]
 
     Cameras --> Frigate
@@ -39,7 +39,7 @@ flowchart LR
     Frigate --> Media
     Frigate --> Ollama
     Frigate --> Nginx
-    ASR --> Operator
+    ASR --> Nginx
     Ollama --> Operator
     Nginx --> Operator
 ```
@@ -68,7 +68,8 @@ certificates, model generation and GPU runtime checks are host-level concerns.
 - Ollama API: `http://0.0.0.0:11434`
 - ASR root: `/opt/asr`
 - ASR model cache: `/opt/asr/models`
-- ASR API: `https://0.0.0.0:9443`
+- ASR container API: `https://127.0.0.1:19443`
+- Frigate container API: `https://127.0.0.1:18971`
 - LAN Frigate URL: `https://192.168.1.138:8971`
 - LAN Ollama URL: `http://192.168.1.138:11434`
 - LAN ASR URL: `https://192.168.1.138:9443`

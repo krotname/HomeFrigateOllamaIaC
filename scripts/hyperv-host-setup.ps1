@@ -1,7 +1,7 @@
 param(
     [string]$VmName = "frigate-ubuntu",
     [int]$ProcessorCount = 8,
-    [UInt64]$StartupMemoryBytes = 4GB,
+    [UInt64]$StartupMemoryBytes = 8GB,
     [int]$AutomaticStartDelay = 60,
     [string]$GpuLocationPath = "PCIROOT(0)#PCI(0300)#PCI(0000)",
     [switch]$AssignGpu

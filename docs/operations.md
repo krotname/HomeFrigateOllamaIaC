@@ -97,6 +97,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 If Frigate is protected by nginx basic auth, provide the credentials with
 `-FrigateAuthUser` / `-FrigateAuthPassword` or the `FRIGATE_BASIC_USER` /
 `FRIGATE_BASIC_PASSWORD` environment variables.
+If ASR is protected by nginx basic auth, provide `-AsrAuthUser` /
+`-AsrAuthPassword` or the `ASR_BASIC_USER` / `ASR_BASIC_PASSWORD` environment
+variables.
 
 The test writes `scripts\logs\frigate-vm-smoke-latest.json` unless a custom
 `-ReportPath` is supplied. It verifies Hyper-V autostart, DDA GPU assignment,
@@ -115,7 +118,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -As
 Frigate is published on the VM LAN address:
 
 ```powershell
-curl.exe -k https://192.168.1.138:8971/api/version
+curl.exe -k -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://192.168.1.138:8971/api/version
 ```
 
 Ollama is published on the VM LAN address:
@@ -127,13 +130,13 @@ curl.exe http://192.168.1.138:11434/api/version
 ASR is published on the VM LAN address over HTTPS:
 
 ```powershell
-curl.exe -k https://192.168.1.138:9443/health
+curl.exe -k -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" https://192.168.1.138:9443/health
 ```
 
 Transcribe audio with the OpenAI-compatible endpoint:
 
 ```powershell
-curl.exe -k -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
+curl.exe -k -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
   -F "file=@C:\path\audio.m4a" `
   -F "language=ru" `
   -F "response_format=json"

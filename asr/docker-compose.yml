@@ -18,6 +18,6 @@ services:
     volumes:
       - ./models:/models
       - ./tmp:/tmp/asr
-      - /opt/frigate/certs:/certs:ro
+      - /opt/asr/certs:/certs:ro
     ports:
-      - "0.0.0.0:${ASR_PORT:-9443}:${ASR_PORT:-9443}"
+      - "127.0.0.1:19443:${ASR_PORT:-9443}"

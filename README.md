@@ -168,7 +168,7 @@ Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShel
 
 ```powershell
 $cred = Import-Clixml -LiteralPath 'C:\Users\KRT\.codex\secrets\adler-winrm.credential.xml'
-Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShell.7 -Credential $cred -Authentication Negotiate -FilePath .\scripts\hyperv-host-setup.ps1 -ArgumentList 'frigate-ubuntu', 8, 4GB, 60, 'PCIROOT(0)#PCI(0300)#PCI(0000)', $true
+Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShell.7 -Credential $cred -Authentication Negotiate -FilePath .\scripts\hyperv-host-setup.ps1 -ArgumentList 'frigate-ubuntu', 8, 8GB, 60, 'PCIROOT(0)#PCI(0300)#PCI(0000)', $true
 ```
 
 3. Развернуть сервисы внутри Ubuntu VM:

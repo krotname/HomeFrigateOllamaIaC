@@ -8,11 +8,15 @@ param(
     [string]$HostConfigurationName = "PowerShell.7",
     [string]$VmName = "frigate-ubuntu",
     [string]$FrigateUrl = "https://192.168.1.138:8971",
+    [string]$FrigateInternalUrl = "https://127.0.0.1:18971",
     [string]$FrigateAuthUser = $env:FRIGATE_BASIC_USER,
     [string]$FrigateAuthPassword = $env:FRIGATE_BASIC_PASSWORD,
     [string]$OllamaUrl = "http://192.168.1.138:11434",
     [string]$OllamaModel = "huihui_ai/gpt-oss-abliterated:20b",
     [string]$AsrUrl = "https://192.168.1.138:9443",
+    [string]$AsrInternalUrl = "https://127.0.0.1:19443",
+    [string]$AsrAuthUser = $env:ASR_BASIC_USER,
+    [string]$AsrAuthPassword = $env:ASR_BASIC_PASSWORD,
     [string]$AsrSamplePath = "",
     [int]$AsrTranscribeTimeoutSeconds = 900,
     [string]$ReportPath = "",
@@ -161,6 +165,14 @@ function Get-FrigateCurlArgs {
     $args
 }
 
+function Get-AsrCurlArgs {
+    $args = @("--insecure", "--silent", "--show-error", "--fail", "--max-time", "15")
+    if (-not [string]::IsNullOrWhiteSpace($AsrAuthUser) -and -not [string]::IsNullOrWhiteSpace($AsrAuthPassword)) {
+        $args += @("--user", "$($AsrAuthUser):$AsrAuthPassword")
+    }
+    $args
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 
 try {
@@ -183,6 +195,7 @@ try {
   VmName = `$vm.Name
   VmState = `$vm.State.ToString()
   VmMemoryAssigned = `$vm.MemoryAssigned
+  VmMemoryStartup = `$vm.MemoryStartup
   VmProcessorCount = `$vm.ProcessorCount
   AutomaticStartAction = `$vm.AutomaticStartAction.ToString()
   AutomaticStartDelay = `$vm.AutomaticStartDelay
@@ -199,6 +212,7 @@ try {
     $results.Add((Add-Result "host.identity" ($hostState.Hostname -eq "ADLER-WHITE-1W") "hostname=$($hostState.Hostname)"))
     $results.Add((Add-Result "host.winrm.powershell7_admin" ($hostState.PSVersion -match "^7\." -and [bool]$hostState.IsAdmin) "whoami=$($hostState.Whoami), ps=$($hostState.PSVersion), is_admin=$($hostState.IsAdmin)"))
     $results.Add((Add-Result "hyperv.vm.running" ($hostState.VmState -eq "Running") "state=$($hostState.VmState)"))
+    $results.Add((Add-Result "hyperv.vm.memory_8gb" ([int64]$hostState.VmMemoryStartup -eq 8GB -and [int64]$hostState.VmMemoryAssigned -eq 8GB) "startup=$($hostState.VmMemoryStartup), assigned=$($hostState.VmMemoryAssigned)"))
     $results.Add((Add-Result "hyperv.vm.autostart" ($hostState.AutomaticStartAction -eq "Start" -and [int]$hostState.AutomaticStartDelay -ge 1) "action=$($hostState.AutomaticStartAction), delay=$($hostState.AutomaticStartDelay)"))
     $results.Add((Add-Result "hyperv.gpu.assigned" ($hostState.GpuInstanceID -match "VEN_10DE" -and $hostState.GpuLocationPath -eq "PCIROOT(0)#PCI(0300)#PCI(0000)") "gpu=$($hostState.GpuInstanceID)"))
     $results.Add((Add-Result "hyperv.vm.ip" (($hostState.VmIPs -contains $VmAddress)) "ips=$($hostState.VmIPs -join ',')"))
@@ -212,7 +226,8 @@ try {
     $ollamaOutput = & curl.exe --silent --show-error --fail --max-time 15 "$OllamaUrl/api/version" 2>&1
     $results.Add((Add-Result "ollama.lan.version" ($LASTEXITCODE -eq 0 -and $ollamaOutput -match '"version"') $ollamaOutput))
 
-    $asrOutput = & curl.exe --insecure --silent --show-error --fail --max-time 15 "$AsrUrl/health" 2>&1
+    $asrCurlArgs = Get-AsrCurlArgs
+    $asrOutput = & curl.exe @asrCurlArgs "$AsrUrl/health" 2>&1
     $asrHealth = $null
     if ($LASTEXITCODE -eq 0) {
         try {
@@ -236,7 +251,9 @@ try {
         if (-not (Test-Path -LiteralPath $AsrSamplePath)) {
             $results.Add((Add-Result "asr.audio.transcribe" $false "sample not found: $AsrSamplePath"))
         } else {
-            $asrTranscriptOutput = & curl.exe --insecure --silent --show-error --fail --max-time $AsrTranscribeTimeoutSeconds -X POST "$AsrUrl/v1/audio/transcriptions" -F "file=@$AsrSamplePath" -F "language=ru" -F "response_format=json" 2>&1
+            $asrTranscriptArgs = Get-AsrCurlArgs
+            $asrTranscriptArgs += @("--max-time", "$AsrTranscribeTimeoutSeconds", "-X", "POST", "$AsrUrl/v1/audio/transcriptions", "-F", "file=@$AsrSamplePath", "-F", "language=ru", "-F", "response_format=json")
+            $asrTranscriptOutput = & curl.exe @asrTranscriptArgs 2>&1
             $asrTranscript = $null
             if ($LASTEXITCODE -eq 0) {
                 try {
@@ -297,11 +314,11 @@ smi = run([
 summary["nvidia_smi"] = smi
 summary["gpu_is_p40"] = "Tesla P40" in smi
 
-summary["frigate_version"] = read_url("https://127.0.0.1:8971/api/version", insecure=True).strip()
+summary["frigate_version"] = read_url("__FRIGATE_INTERNAL_URL__/api/version", insecure=True).strip()
 summary["ollama_version"] = json.loads(read_url("http://127.0.0.1:11434/api/version"))["version"]
-summary["asr_health"] = json.loads(read_url("https://127.0.0.1:9443/health", insecure=True))
+summary["asr_health"] = json.loads(read_url("__ASR_INTERNAL_URL__/health", insecure=True))
 
-config = json.loads(read_url("https://127.0.0.1:8971/api/config", insecure=True))
+config = json.loads(read_url("__FRIGATE_INTERNAL_URL__/api/config", insecure=True))
 with open("/opt/frigate/config/config.yml", "r", encoding="utf-8") as f:
     raw_config = yaml.safe_load(f)
 genai = config.get("genai", {})
@@ -333,7 +350,7 @@ providers = run([
 ], timeout=30).stdout.strip()
 summary["onnxruntime_providers"] = json.loads(providers) if providers else []
 
-stats = json.loads(read_url("https://127.0.0.1:8971/api/stats", insecure=True))
+stats = json.loads(read_url("__FRIGATE_INTERNAL_URL__/api/stats", insecure=True))
 summary["cameras"] = {
     name: {
         "camera_fps": camera.get("camera_fps"),
@@ -357,10 +374,10 @@ container_tags = run([
     "docker", "exec", "frigate", "python3", "-c",
     "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=10).read().decode())"
 ], timeout=30).stdout
-summary["frigate_can_reach_ollama"] = "huihui_ai/gpt-oss-abliterated:20b" in container_tags
+summary["frigate_can_reach_ollama"] = "__OLLAMA_MODEL__" in container_tags
 
 model_list = run(["ollama", "list"], timeout=30).stdout
-summary["ollama_has_model"] = "huihui_ai/gpt-oss-abliterated:20b" in model_list
+summary["ollama_has_model"] = "__OLLAMA_MODEL__" in model_list
 
 recent_records = run(["bash", "-lc", "find /media/frigate/recordings -type f -mmin -10 | head -5"], timeout=30).stdout.strip()
 summary["recent_recording_files"] = recent_records.splitlines() if recent_records else []
@@ -368,6 +385,10 @@ summary["recent_recording_files"] = recent_records.splitlines() if recent_record
 print(json.dumps(summary, ensure_ascii=True, separators=(",", ":")))
 PY
 '@
+
+    $vmScript = $vmScript.Replace("__FRIGATE_INTERNAL_URL__", $FrigateInternalUrl.TrimEnd("/"))
+    $vmScript = $vmScript.Replace("__ASR_INTERNAL_URL__", $AsrInternalUrl.TrimEnd("/"))
+    $vmScript = $vmScript.Replace("__OLLAMA_MODEL__", $OllamaModel)
 
     $vmState = Invoke-VmBashJson -Script $vmScript -TimeoutSeconds 120
     $results.Add((Add-Result "vm.identity" ($vmState.hostname -eq "frigate-ubuntu") "hostname=$($vmState.hostname)"))
