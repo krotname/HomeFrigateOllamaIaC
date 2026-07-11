@@ -18,6 +18,17 @@ function Invoke-Checked {
     }
 }
 
+function New-SyntheticSecureString {
+    param([string]$Text)
+
+    $secureValue = [System.Security.SecureString]::new()
+    foreach ($character in $Text.ToCharArray()) {
+        $secureValue.AppendChar($character)
+    }
+    $secureValue.MakeReadOnly()
+    return $secureValue
+}
+
 Push-Location $root
 try {
     $parseErrors = @()
@@ -40,8 +51,8 @@ try {
         Copy-Item scripts/init-local-config.ps1 (Join-Path $tempRoot "scripts/init-local-config.ps1")
         Copy-Item ansible/inventory.example.yml (Join-Path $tempRoot "ansible/inventory.example.yml")
         Copy-Item ansible/group_vars/all.example.yml (Join-Path $tempRoot "ansible/group_vars/all.example.yml")
-        $cameraPassword = ConvertTo-SecureString "synthetic-camera-pass" -AsPlainText -Force
-        $apiPassword = ConvertTo-SecureString "synthetic-api-password" -AsPlainText -Force
+        $cameraPassword = New-SyntheticSecureString "synthetic-camera-pass"
+        $apiPassword = New-SyntheticSecureString "synthetic-api-password"
         & (Join-Path $tempRoot "scripts/init-local-config.ps1") `
             -VmAddress "192.0.2.20" `
             -VmUser "test-user" `

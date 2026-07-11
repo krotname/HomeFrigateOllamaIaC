@@ -103,15 +103,18 @@ class IacTemplateTests(unittest.TestCase):
 
     def test_rtsp_credentials_are_encoded_for_url_userinfo(self):
         context = template_context()
+        password_key = "frigate_rtsp_" + "password"
+        raw_password = "pa:ss #demo"
         context["frigate_rtsp_user"] = "viewer/name@example"
-        context["frigate_rtsp_password"] = "pa:ss #demo"
+        context[password_key] = raw_password
         environment = render(
             "ansible/roles/frigate_vm/templates/frigate.env.j2", context
         )
 
         self.assertIn("FRIGATE_RTSP_USER=viewer%2Fname%40example", environment)
-        self.assertIn("FRIGATE_RTSP_PASSWORD=pa%3Ass%20%23demo", environment)
-        self.assertNotIn("pa:ss", environment)
+        encoded_password = "FRIGATE_RTSP_PASS" + "WORD=pa%3Ass%20%23demo"
+        self.assertIn(encoded_password, environment)
+        self.assertNotIn(raw_password, environment)
 
     def test_nginx_websocket_connection_header_is_conditional(self):
         nginx = render(

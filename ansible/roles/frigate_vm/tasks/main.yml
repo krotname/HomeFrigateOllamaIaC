@@ -292,6 +292,7 @@
       - "keyUsage=critical,digitalSignature,keyEncipherment"
       - -addext
       - "extendedKeyUsage=serverAuth"
+  changed_when: true
   when: frigate_vm_tls_regeneration_required | bool
   notify: Restart nginx
 
