@@ -6,3 +6,10 @@ frigate_vm_asr_model: Systran/faster-whisper-large-v3
 frigate_vm_asr_device: cuda
 frigate_vm_asr_compute_type: int8
 frigate_vm_asr_cpu_threads: 4
+frigate_vm_asr_max_upload_bytes: 104857600
+frigate_vm_asr_max_concurrent_transcriptions: 1
+frigate_vm_frigate_backend_port: 18971
+frigate_vm_ollama_backend_port: 11435
+frigate_vm_asr_backend_port: 19443
+frigate_vm_ollama_version: 0.30.8
+frigate_vm_ollama_archive_sha256: ffe2b2c2f2f5f5b30c081ec353c2e0bb2d9ead516064a8e22663b24b8fd8dca0

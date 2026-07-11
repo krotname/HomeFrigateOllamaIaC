@@ -14,7 +14,7 @@ Verified configuration:
 - Ollama: `huihui_ai/gpt-oss-abliterated:20b`.
 - ASR: `Systran/faster-whisper-large-v3`, CUDA `int8`.
 - Frigate HTTPS LAN: `https://192.168.1.138:8971/`.
-- Ollama HTTP LAN: `http://192.168.1.138:11434/`.
+- Ollama HTTPS LAN: `https://192.168.1.138:11443/`.
 - ASR HTTPS LAN: `https://192.168.1.138:9443/`.
 
 ## What This Repository Demonstrates
@@ -108,7 +108,9 @@ ansible-playbook -i .\ansible\inventory.yml .\ansible\playbooks\site.yml --ask-b
 Install the local certificate on the Windows client:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 -FrigateUrl https://192.168.1.138:8971
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 `
+  -FrigateUrl https://192.168.1.138:8971 `
+  -CaCertPath C:\secure-transfer\fullchain.pem
 ```
 
 Run the full smoke test:
@@ -119,16 +121,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 
 Expected result: `failed_count=0`.
 
+The generated local variables include one basic-auth account for all three LAN
+APIs. Set matching `FRIGATE_BASIC_*`, `OLLAMA_BASIC_*`, and `ASR_BASIC_*`
+environment variables before running the smoke test.
+
+Install and verify the local certificate with `install-frigate-local-ca.ps1`
+first. The examples intentionally keep TLS certificate verification enabled.
+
 ASR health check:
 
 ```powershell
-curl.exe -k https://192.168.1.138:9443/health
+curl.exe -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" https://192.168.1.138:9443/health
 ```
 
 Audio transcription:
 
 ```powershell
-curl.exe -k -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
+curl.exe -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
   -F "file=@C:\path\audio.m4a" `
   -F "language=ru" `
   -F "response_format=json"

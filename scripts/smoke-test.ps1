@@ -11,14 +11,18 @@ param(
     [string]$FrigateInternalUrl = "https://127.0.0.1:18971",
     [string]$FrigateAuthUser = $env:FRIGATE_BASIC_USER,
     [string]$FrigateAuthPassword = $env:FRIGATE_BASIC_PASSWORD,
-    [string]$OllamaUrl = "http://192.168.1.138:11434",
+    [string]$OllamaUrl = "https://192.168.1.138:11443",
+    [string]$OllamaInternalUrl = "http://127.0.0.1:11435",
+    [string]$OllamaAuthUser = $env:OLLAMA_BASIC_USER,
+    [string]$OllamaAuthPassword = $env:OLLAMA_BASIC_PASSWORD,
     [string]$OllamaModel = "huihui_ai/gpt-oss-abliterated:20b",
     [string]$AsrUrl = "https://192.168.1.138:9443",
-    [string]$AsrInternalUrl = "https://127.0.0.1:19443",
+    [string]$AsrInternalUrl = "http://127.0.0.1:19443",
     [string]$AsrAuthUser = $env:ASR_BASIC_USER,
     [string]$AsrAuthPassword = $env:ASR_BASIC_PASSWORD,
     [string]$AsrSamplePath = "",
     [int]$AsrTranscribeTimeoutSeconds = 900,
+    [int]$ExpectedCameraCount = 2,
     [string]$ReportPath = "",
     [switch]$SkipOllamaGenerate,
     [switch]$TrustUnknownHostKeys
@@ -28,6 +32,77 @@ $ErrorActionPreference = "Stop"
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+
+foreach ($address in @($HostAddress, $VmAddress)) {
+    if ([string]::IsNullOrWhiteSpace($address) -or $address.Length -gt 253 -or
+        $address -match '[\x00-\x20\x7F]' -or $address.StartsWith('-') -or
+        [Uri]::CheckHostName($address) -notin @([UriHostNameType]::Dns, [UriHostNameType]::IPv4)) {
+        throw "Host and VM addresses must be valid IPv4 addresses or DNS names. Invalid value: $address"
+    }
+    if ($address -match '^[0-9.]+$') {
+        $parsedAddress = $null
+        if ($address -notmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' -or
+            -not [Net.IPAddress]::TryParse($address, [ref]$parsedAddress) -or
+            $parsedAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+            throw "Host and VM addresses must be valid IPv4 addresses or DNS names. Invalid value: $address"
+        }
+    }
+}
+if ($VmUser -notmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$') {
+    throw "VmUser contains unsupported characters."
+}
+if ($VmName -notmatch '^[A-Za-z0-9_.-]{1,64}$') {
+    throw "VmName contains unsupported characters."
+}
+if ($ExpectedCameraCount -lt 1 -or $ExpectedCameraCount -gt 256) {
+    throw "ExpectedCameraCount must be in range 1..256."
+}
+if ($AsrTranscribeTimeoutSeconds -lt 1 -or $AsrTranscribeTimeoutSeconds -gt 3600) {
+    throw "AsrTranscribeTimeoutSeconds must be in range 1..3600."
+}
+if ($OllamaModel -notmatch '^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?$') {
+    throw "OllamaModel contains unsupported characters."
+}
+
+$uriRules = @(
+    @{ Name = "FrigateUrl"; Value = $FrigateUrl; Scheme = "https" },
+    @{ Name = "FrigateInternalUrl"; Value = $FrigateInternalUrl; Scheme = "https" },
+    @{ Name = "OllamaUrl"; Value = $OllamaUrl; Scheme = "https" },
+    @{ Name = "OllamaInternalUrl"; Value = $OllamaInternalUrl; Scheme = "http" },
+    @{ Name = "AsrUrl"; Value = $AsrUrl; Scheme = "https" },
+    @{ Name = "AsrInternalUrl"; Value = $AsrInternalUrl; Scheme = "http" }
+)
+foreach ($rule in $uriRules) {
+    $parsedUri = $null
+    if (-not [Uri]::TryCreate($rule.Value, [UriKind]::Absolute, [ref]$parsedUri) -or
+        $parsedUri.Scheme -ne $rule.Scheme -or
+        [string]::IsNullOrWhiteSpace($parsedUri.Host) -or
+        -not [string]::IsNullOrEmpty($parsedUri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($parsedUri.Query) -or
+        -not [string]::IsNullOrEmpty($parsedUri.Fragment) -or
+        $parsedUri.AbsolutePath -ne "/") {
+        throw "$($rule.Name) must be an absolute $($rule.Scheme.ToUpperInvariant()) authority without credentials, path, query, or fragment."
+    }
+}
+foreach ($credential in @(
+        $FrigateAuthUser, $FrigateAuthPassword,
+        $OllamaAuthUser, $OllamaAuthPassword,
+        $AsrAuthUser, $AsrAuthPassword
+    )) {
+    if ($credential -match '[\x00-\x1F\x7F]') {
+        throw "API credentials must not contain control characters."
+    }
+}
+$credentialPairs = @(
+    @{ Service = "Frigate"; User = $FrigateAuthUser; Password = $FrigateAuthPassword },
+    @{ Service = "Ollama"; User = $OllamaAuthUser; Password = $OllamaAuthPassword },
+    @{ Service = "ASR"; User = $AsrAuthUser; Password = $AsrAuthPassword }
+)
+foreach ($pair in $credentialPairs) {
+    if ([string]::IsNullOrWhiteSpace($pair.User) -or [string]::IsNullOrWhiteSpace($pair.Password)) {
+        throw "$($pair.Service) basic-auth user and password are required for the LAN smoke test."
+    }
+}
 
 function Add-Result {
     param(
@@ -63,9 +138,9 @@ function Invoke-SshText {
         "-o", "BatchMode=yes"
     )
     if ($TrustUnknownHostKeys) {
-        $sshArgs += @("-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=NUL")
-    } else {
         $sshArgs += @("-o", "StrictHostKeyChecking=accept-new")
+    } else {
+        $sshArgs += @("-o", "StrictHostKeyChecking=yes")
     }
     $sshArgs += @(
         "-o", "ConnectTimeout=10",
@@ -158,7 +233,7 @@ function Invoke-VmBashJson {
 }
 
 function Get-FrigateCurlArgs {
-    $args = @("--insecure", "--silent", "--show-error", "--fail", "--max-time", "15")
+    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
     if (-not [string]::IsNullOrWhiteSpace($FrigateAuthUser) -and -not [string]::IsNullOrWhiteSpace($FrigateAuthPassword)) {
         $args += @("--user", "$($FrigateAuthUser):$FrigateAuthPassword")
     }
@@ -166,9 +241,17 @@ function Get-FrigateCurlArgs {
 }
 
 function Get-AsrCurlArgs {
-    $args = @("--insecure", "--silent", "--show-error", "--fail", "--max-time", "15")
+    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
     if (-not [string]::IsNullOrWhiteSpace($AsrAuthUser) -and -not [string]::IsNullOrWhiteSpace($AsrAuthPassword)) {
         $args += @("--user", "$($AsrAuthUser):$AsrAuthPassword")
+    }
+    $args
+}
+
+function Get-OllamaCurlArgs {
+    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
+    if (-not [string]::IsNullOrWhiteSpace($OllamaAuthUser) -and -not [string]::IsNullOrWhiteSpace($OllamaAuthPassword)) {
+        $args += @("--user", "$($OllamaAuthUser):$OllamaAuthPassword")
     }
     $args
 }
@@ -209,21 +292,26 @@ try {
 } | ConvertTo-Json -Compress
 "@
 
-    $results.Add((Add-Result "host.identity" ($hostState.Hostname -eq "ADLER-WHITE-1W") "hostname=$($hostState.Hostname)"))
+    $results.Add((Add-Result "host.identity" ($hostState.Hostname -eq $HostName) "hostname=$($hostState.Hostname)"))
     $results.Add((Add-Result "host.winrm.powershell7_admin" ($hostState.PSVersion -match "^7\." -and [bool]$hostState.IsAdmin) "whoami=$($hostState.Whoami), ps=$($hostState.PSVersion), is_admin=$($hostState.IsAdmin)"))
     $results.Add((Add-Result "hyperv.vm.running" ($hostState.VmState -eq "Running") "state=$($hostState.VmState)"))
     $results.Add((Add-Result "hyperv.vm.memory_8gb" ([int64]$hostState.VmMemoryStartup -eq 8GB -and [int64]$hostState.VmMemoryAssigned -eq 8GB) "startup=$($hostState.VmMemoryStartup), assigned=$($hostState.VmMemoryAssigned)"))
-    $results.Add((Add-Result "hyperv.vm.autostart" ($hostState.AutomaticStartAction -eq "Start" -and [int]$hostState.AutomaticStartDelay -ge 1) "action=$($hostState.AutomaticStartAction), delay=$($hostState.AutomaticStartDelay)"))
+    $cleanLifecycle = $hostState.AutomaticStartAction -eq "Start" `
+        -and [int]$hostState.AutomaticStartDelay -ge 1 `
+        -and $hostState.AutomaticStopAction -eq "ShutDown"
+    $results.Add((Add-Result "hyperv.vm.lifecycle" $cleanLifecycle "start=$($hostState.AutomaticStartAction), delay=$($hostState.AutomaticStartDelay), stop=$($hostState.AutomaticStopAction)"))
     $results.Add((Add-Result "hyperv.gpu.assigned" ($hostState.GpuInstanceID -match "VEN_10DE" -and $hostState.GpuLocationPath -eq "PCIROOT(0)#PCI(0300)#PCI(0000)") "gpu=$($hostState.GpuInstanceID)"))
     $results.Add((Add-Result "hyperv.vm.ip" (($hostState.VmIPs -contains $VmAddress)) "ips=$($hostState.VmIPs -join ',')"))
 
     $frigateCurlArgs = Get-FrigateCurlArgs
     $certOutput = & curl.exe @frigateCurlArgs "$FrigateUrl/api/version" 2>&1
     $results.Add((Add-Result "frigate.lan.version" ($LASTEXITCODE -eq 0 -and $certOutput -match "^\d+\.\d+") "version=$certOutput"))
-    $directFrigatePortOpen = Test-NetConnection -ComputerName $VmAddress -Port 8971 -WarningAction SilentlyContinue -InformationLevel Quiet
-    $results.Add((Add-Result "frigate.direct_port.open" $directFrigatePortOpen "vm=$VmAddress, port=8971, open=$directFrigatePortOpen"))
+    $frigateUri = [Uri]$FrigateUrl
+    $directFrigatePortOpen = Test-NetConnection -ComputerName $frigateUri.Host -Port $frigateUri.Port -WarningAction SilentlyContinue -InformationLevel Quiet
+    $results.Add((Add-Result "frigate.direct_port.open" $directFrigatePortOpen "vm=$($frigateUri.Host), port=$($frigateUri.Port), open=$directFrigatePortOpen"))
 
-    $ollamaOutput = & curl.exe --silent --show-error --fail --max-time 15 "$OllamaUrl/api/version" 2>&1
+    $ollamaCurlArgs = Get-OllamaCurlArgs
+    $ollamaOutput = & curl.exe @ollamaCurlArgs "$OllamaUrl/api/version" 2>&1
     $results.Add((Add-Result "ollama.lan.version" ($LASTEXITCODE -eq 0 -and $ollamaOutput -match '"version"') $ollamaOutput))
 
     $asrCurlArgs = Get-AsrCurlArgs
@@ -270,7 +358,9 @@ try {
             } else {
                 "$asrTranscriptOutput"
             }
-            $results.Add((Add-Result "asr.audio.transcribe" $transcribePass "language=$($asrTranscript.language), chars=$($asrTranscript.text.Length), preview=$preview"))
+            $transcriptLanguage = if ($null -ne $asrTranscript) { $asrTranscript.language } else { "" }
+            $transcriptLength = if ($null -ne $asrTranscript -and $null -ne $asrTranscript.text) { $asrTranscript.text.Length } else { 0 }
+            $results.Add((Add-Result "asr.audio.transcribe" $transcribePass "language=$transcriptLanguage, chars=$transcriptLength, preview=$preview"))
         }
     }
 
@@ -286,8 +376,8 @@ import sys
 import urllib.request
 import yaml
 
-def run(args, timeout=30):
-    return subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+def run(args, timeout=30, env=None):
+    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, env=env)
 
 def read_url(url, timeout=10, insecure=False):
     import ssl
@@ -315,7 +405,7 @@ summary["nvidia_smi"] = smi
 summary["gpu_is_p40"] = "Tesla P40" in smi
 
 summary["frigate_version"] = read_url("__FRIGATE_INTERNAL_URL__/api/version", insecure=True).strip()
-summary["ollama_version"] = json.loads(read_url("http://127.0.0.1:11434/api/version"))["version"]
+summary["ollama_version"] = json.loads(read_url("__OLLAMA_INTERNAL_URL__/api/version"))["version"]
 summary["asr_health"] = json.loads(read_url("__ASR_INTERNAL_URL__/health", insecure=True))
 
 config = json.loads(read_url("__FRIGATE_INTERNAL_URL__/api/config", insecure=True))
@@ -372,11 +462,12 @@ summary["ffmpeg_uses_cuda"] = "-hwaccel cuda" in ffmpeg_ps and "scale_cuda" in f
 
 container_tags = run([
     "docker", "exec", "frigate", "python3", "-c",
-    "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=10).read().decode())"
+    "import urllib.request; print(urllib.request.urlopen('__OLLAMA_CONTAINER_URL__/api/tags', timeout=10).read().decode())"
 ], timeout=30).stdout
 summary["frigate_can_reach_ollama"] = "__OLLAMA_MODEL__" in container_tags
 
-model_list = run(["ollama", "list"], timeout=30).stdout
+ollama_env = {**os.environ, "OLLAMA_HOST": "__OLLAMA_INTERNAL_URL__"}
+model_list = run(["ollama", "list"], timeout=30, env=ollama_env).stdout
 summary["ollama_has_model"] = "__OLLAMA_MODEL__" in model_list
 
 recent_records = run(["bash", "-lc", "find /media/frigate/recordings -type f -mmin -10 | head -5"], timeout=30).stdout.strip()
@@ -388,10 +479,14 @@ PY
 
     $vmScript = $vmScript.Replace("__FRIGATE_INTERNAL_URL__", $FrigateInternalUrl.TrimEnd("/"))
     $vmScript = $vmScript.Replace("__ASR_INTERNAL_URL__", $AsrInternalUrl.TrimEnd("/"))
+    $vmScript = $vmScript.Replace("__OLLAMA_INTERNAL_URL__", $OllamaInternalUrl.TrimEnd("/"))
+    $ollamaInternalUri = [Uri]$OllamaInternalUrl
+    $ollamaContainerUrl = "http://host.docker.internal:$($ollamaInternalUri.Port)"
+    $vmScript = $vmScript.Replace("__OLLAMA_CONTAINER_URL__", $ollamaContainerUrl)
     $vmScript = $vmScript.Replace("__OLLAMA_MODEL__", $OllamaModel)
 
     $vmState = Invoke-VmBashJson -Script $vmScript -TimeoutSeconds 120
-    $results.Add((Add-Result "vm.identity" ($vmState.hostname -eq "frigate-ubuntu") "hostname=$($vmState.hostname)"))
+    $results.Add((Add-Result "vm.identity" ($vmState.hostname -eq $VmName) "hostname=$($vmState.hostname)"))
     $results.Add((Add-Result "vm.docker.active" ($vmState.docker_active -eq "active") "state=$($vmState.docker_active)"))
     $results.Add((Add-Result "vm.media.ext4" ([bool]$vmState.media_ext4) $vmState.media_df))
     $results.Add((Add-Result "gpu.nvidia_smi.p40" ([bool]$vmState.gpu_is_p40) $vmState.nvidia_smi))
@@ -399,7 +494,7 @@ PY
     $results.Add((Add-Result "frigate.api.version" ($vmState.frigate_version -match "^\d+\.\d+") "version=$($vmState.frigate_version)"))
     $genaiConfig = $vmState.frigate_genai_config
     $genaiPass = $genaiConfig.provider -eq "ollama" `
-        -and $genaiConfig.base_url -eq "http://host.docker.internal:11434" `
+        -and $genaiConfig.base_url -eq $ollamaContainerUrl `
         -and $genaiConfig.model -eq $OllamaModel `
         -and -not [bool]$genaiConfig.review_enabled `
         -and -not [bool]$genaiConfig.objects_enabled
@@ -441,7 +536,7 @@ PY
     $cameraDetail = ($cameraProps | ForEach-Object {
         "$($_.Name): camera_fps=$($_.Value.camera_fps), process_fps=$($_.Value.process_fps), skipped_fps=$($_.Value.skipped_fps)"
     }) -join "; "
-    $cameraPass = ($cameraFailures.Count -eq 0) -and ($cameraProps.Count -ge 2)
+    $cameraPass = ($cameraFailures.Count -eq 0) -and ($cameraProps.Count -ge $ExpectedCameraCount)
     $results.Add((Add-Result "frigate.cameras.fps" $cameraPass $cameraDetail))
     $results.Add((Add-Result "frigate.recordings.recent" ($vmState.recent_recording_files.Count -gt 0) (($vmState.recent_recording_files | Select-Object -First 3) -join "; ")))
 
@@ -452,7 +547,7 @@ PY
     $vmAsrHealth = $vmState.asr_health
     $vmAsrPass = $vmAsrHealth.status -eq "ok" -and $vmAsrHealth.device -eq "cuda" -and $vmAsrHealth.compute_type -eq "int8"
     $results.Add((Add-Result "asr.api.health" $vmAsrPass "model=$($vmAsrHealth.model), device=$($vmAsrHealth.device), compute_type=$($vmAsrHealth.compute_type), loaded=$($vmAsrHealth.loaded)"))
-    $results.Add((Add-Result "asr.container.up" ($vmState.asr_compose_ps -match "Up") (($vmState.asr_compose_ps -split "`n") -join " | ")))
+    $results.Add((Add-Result "asr.container.healthy" ($vmState.asr_compose_ps -match "healthy") (($vmState.asr_compose_ps -split "`n") -join " | ")))
 
     if (-not $SkipOllamaGenerate) {
         $genPrompt = "Напиши одно короткое предложение по-русски: локальная модель работает."
@@ -466,27 +561,33 @@ PY
         $genB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($genPayload))
         $genScript = @"
 set -euo pipefail
-printf '%s' '$genB64' | base64 -d > /tmp/ollama-smoke-payload.json
+payload_file="`$(mktemp /tmp/ollama-smoke-payload.XXXXXXXX.json)"
+trap 'rm -f -- "`$payload_file"' EXIT
+printf '%s' '$genB64' | base64 -d > "`$payload_file"
+export OLLAMA_SMOKE_PAYLOAD="`$payload_file"
 python3 - <<'PY'
-import base64, json, ssl, subprocess, urllib.request
+import base64, json, os, ssl, subprocess, urllib.request
 
 def read_url(url, timeout=20, insecure=False):
     ctx = ssl._create_unverified_context() if insecure else None
     with urllib.request.urlopen(url, timeout=timeout, context=ctx) as r:
         return r.read()
 
-payload=json.load(open('/tmp/ollama-smoke-payload.json'))
+with open(os.environ['OLLAMA_SMOKE_PAYLOAD'], encoding='utf-8') as payload_file:
+    payload=json.load(payload_file)
 req=urllib.request.Request(
-    'http://127.0.0.1:11434/api/generate',
+    '__OLLAMA_INTERNAL_URL__/api/generate',
     data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
     headers={'Content-Type':'application/json'},
 )
 d=json.loads(urllib.request.urlopen(req, timeout=900).read().decode())
-ps=subprocess.run(['ollama','ps'], text=True, capture_output=True, timeout=30).stdout
+ollama_env={**os.environ, 'OLLAMA_HOST':'__OLLAMA_INTERNAL_URL__'}
+ps=subprocess.run(['ollama','ps'], text=True, capture_output=True, timeout=30, env=ollama_env).stdout
 smi=subprocess.run(['nvidia-smi','--query-gpu=name,memory.used,memory.total,utilization.gpu','--format=csv,noheader,nounits'], text=True, capture_output=True, timeout=30).stdout.strip()
 print(json.dumps({'done': d.get('done'), 'response': d.get('response',''), 'ollama_ps': ps, 'nvidia_smi': smi}, ensure_ascii=True, separators=(',', ':')))
 PY
 "@
+$genScript = $genScript.Replace("__OLLAMA_INTERNAL_URL__", $OllamaInternalUrl.TrimEnd("/"))
 $genState = Invoke-VmBashJson -Script $genScript -TimeoutSeconds 900
         $hasCyrillic = $genState.response -match "[\u0400-\u04FF]"
         $textPass = [bool]$genState.done -and -not [string]::IsNullOrWhiteSpace($genState.response) -and $hasCyrillic
@@ -518,7 +619,16 @@ $reportDir = Split-Path -Parent $ReportPath
 if (-not [string]::IsNullOrWhiteSpace($reportDir)) {
     New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
 }
-$jsonReport | Set-Content -LiteralPath $ReportPath -Encoding UTF8
+$reportTempPath = "$ReportPath.$([guid]::NewGuid().ToString('N')).tmp"
+try {
+    $jsonReport | Set-Content -LiteralPath $reportTempPath -Encoding UTF8
+    [System.IO.File]::Move($reportTempPath, $ReportPath, $true)
+}
+finally {
+    if (Test-Path -LiteralPath $reportTempPath) {
+        Remove-Item -LiteralPath $reportTempPath -Force
+    }
+}
 [Console]::Error.WriteLine("Smoke report written to $ReportPath")
 $jsonReport
 

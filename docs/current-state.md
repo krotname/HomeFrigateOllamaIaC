@@ -36,8 +36,8 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Component | Value |
 | --- | --- |
 | Service | systemd `ollama`, enabled |
-| Backend HTTP | `127.0.0.1:11435` |
-| LAN URL | nginx TLS/basic-auth proxy on `192.168.1.138:11434` and `11443` |
+| Backend HTTP | Docker bridge gateway port `11435`, plus loopback proxy `127.0.0.1:11435` |
+| LAN URL | nginx TLS/basic-auth proxy on `192.168.1.138:11443` |
 | Frigate GenAI model | `qwen2.5:3b` |
 | Installed larger model | `huihui_ai/gpt-oss-abliterated:20b` |
 | Frigate GenAI | Review/object generation disabled; Frigate can still reach Ollama |
@@ -52,7 +52,7 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | Engine | `faster-whisper` |
 | Model | `Systran/faster-whisper-large-v3` |
 | Device | CUDA, `int8` compute type |
-| TLS/Auth | nginx terminates LAN TLS and basic auth on `9443`; the ASR container listens on `127.0.0.1:19443` and uses `/opt/asr/certs` |
+| TLS/Auth | nginx terminates LAN TLS and basic auth on `9443`; the ASR container uses HTTP only on `127.0.0.1:19443` |
 
 ## Validation Snapshot
 

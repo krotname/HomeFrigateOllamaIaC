@@ -1,23 +1,140 @@
 ---
+- name: Resolve service settings
+  ansible.builtin.set_fact:
+    frigate_vm_asr_enabled_resolved: "{{ asr_enabled | default(frigate_vm_asr_enabled) }}"
+    frigate_vm_asr_root_resolved: "{{ asr_root | default(frigate_vm_asr_root) }}"
+    frigate_vm_asr_port_resolved: "{{ asr_port | default(frigate_vm_asr_port) | int }}"
+    frigate_vm_asr_model_resolved: "{{ asr_model | default(frigate_vm_asr_model) }}"
+    frigate_vm_asr_device_resolved: "{{ asr_device | default(frigate_vm_asr_device) }}"
+    frigate_vm_asr_compute_type_resolved: "{{ asr_compute_type | default(frigate_vm_asr_compute_type) }}"
+    frigate_vm_asr_cpu_threads_resolved: "{{ asr_cpu_threads | default(frigate_vm_asr_cpu_threads) | int }}"
+    frigate_vm_asr_max_upload_bytes_resolved: >-
+      {{ asr_max_upload_bytes | default(frigate_vm_asr_max_upload_bytes) | int }}
+    frigate_vm_asr_max_concurrent_transcriptions_resolved: >-
+      {{ asr_max_concurrent_transcriptions |
+         default(frigate_vm_asr_max_concurrent_transcriptions) | int }}
+    frigate_vm_frigate_backend_port_resolved: >-
+      {{ frigate_backend_port | default(frigate_vm_frigate_backend_port) | int }}
+    frigate_vm_ollama_backend_port_resolved: >-
+      {{ ollama_backend_port | default(frigate_vm_ollama_backend_port) | int }}
+    frigate_vm_asr_backend_port_resolved: >-
+      {{ asr_backend_port | default(frigate_vm_asr_backend_port) | int }}
+    frigate_vm_ollama_version_resolved: >-
+      {{ ollama_version | default(frigate_vm_ollama_version) }}
+    frigate_vm_ollama_archive_sha256_resolved: >-
+      {{ ollama_archive_sha256 | default(frigate_vm_ollama_archive_sha256) }}
+
 - name: Validate required variables are not placeholders
   ansible.builtin.assert:
     that:
       - frigate_rtsp_user | length > 0
       - frigate_rtsp_password | length > 0
+      - frigate_rtsp_user is match('^[^\x00-\x1F\x7F]{1,128}$')
+      - frigate_rtsp_password is match('^[^\x00-\x1F\x7F]{1,1024}$')
       - frigate_rtsp_user != "rtsp_viewer"
       - frigate_rtsp_password != "demo_camera_password"
       - cameras | length > 0
-    fail_msg: "Set real camera credentials and cameras in ansible/group_vars/all.yml or Ansible Vault."
+      - frigate_vm_ip is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+      - frigate_vm_ip.split('.') | map('int') | select('gt', 255) | list | length == 0
+      - frigate_dns_names | length > 0
+      - home_ai_basic_user | default('') is match('^[A-Za-z0-9_.-]{1,64}$')
+      - home_ai_basic_password | default('') is match('^[^\x00-\x1F\x7F]{12,1024}$')
+      - (home_ai_basic_password | default('')) != "replace_me_securely"
+      - frigate_root is match('^/[A-Za-z0-9._/-]+$')
+      - frigate_media_path is match('^/[A-Za-z0-9._/-]+$')
+      - frigate_vm_asr_root_resolved is match('^/[A-Za-z0-9._/-]+$')
+      - "'/../' not in (frigate_root + '/')"
+      - "'/../' not in (frigate_media_path + '/')"
+      - "'/../' not in (frigate_vm_asr_root_resolved + '/')"
+      - frigate_root not in ['/', '/opt', '/media']
+      - frigate_media_path not in ['/', '/opt', '/media']
+      - frigate_vm_asr_root_resolved not in ['/', '/opt', '/media']
+      - frigate_timezone is match('^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$')
+      - ollama_model is match('^[A-Za-z0-9._/-]+(?::[A-Za-z0-9._-]+)?$')
+      - ollama_keep_alive is match('^[1-9][0-9]*[smhd]$')
+      - frigate_vm_ollama_version_resolved is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - frigate_vm_ollama_archive_sha256_resolved is match('^[A-Fa-f0-9]{64}$')
+      - ansible_architecture == 'x86_64'
+      - frigate_vm_asr_port_resolved | int >= 1
+      - frigate_vm_asr_port_resolved | int <= 65535
+      - frigate_vm_frigate_backend_port_resolved | int >= 1
+      - frigate_vm_frigate_backend_port_resolved | int <= 65535
+      - frigate_vm_ollama_backend_port_resolved | int >= 1
+      - frigate_vm_ollama_backend_port_resolved | int <= 65535
+      - frigate_vm_asr_backend_port_resolved | int >= 1
+      - frigate_vm_asr_backend_port_resolved | int <= 65535
+      - frigate_vm_asr_max_upload_bytes_resolved | int >= 1024
+      - frigate_vm_asr_max_upload_bytes_resolved | int <= 1073741824
+      - frigate_vm_asr_max_concurrent_transcriptions_resolved | int >= 1
+      - frigate_vm_asr_max_concurrent_transcriptions_resolved | int <= 8
+      - >-
+        ([8971, 8554, 8555, ollama_https_port | int,
+          frigate_vm_asr_port_resolved | int,
+          frigate_vm_frigate_backend_port_resolved | int,
+          frigate_vm_ollama_backend_port_resolved | int,
+          frigate_vm_asr_backend_port_resolved | int] | unique | list | length) == 8
+    fail_msg: >-
+      Set real camera and LAN basic-auth credentials, valid ports, and cameras in
+      ansible/group_vars/all.yml or Ansible Vault.
+
+- name: Validate local DNS names
+  ansible.builtin.assert:
+    that:
+      - >-
+        item is match(
+          '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+          ~ '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+        )
+    fail_msg: "Invalid frigate_dns_names entry: {{ item }}"
+  loop: "{{ frigate_dns_names }}"
+
+- name: Validate DNS names are unique
+  ansible.builtin.assert:
+    that:
+      - frigate_dns_names | unique | list | length == frigate_dns_names | length
+    fail_msg: "frigate_dns_names entries must be unique."
+
+- name: Validate camera definitions
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') is match('^[A-Za-z][A-Za-z0-9_-]{0,62}$')
+      - >-
+        item.host | default('') is match(
+          '^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+          ~ '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+        )
+      - >-
+        not (item.host is match('^[0-9.]+$'))
+        or (item.host is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+            and item.host.split('.') | map('int') | select('gt', 255) | list | length == 0)
+      - item.detect_width | default(0) | int >= 64
+      - item.detect_width | default(0) | int <= 8192
+      - item.detect_height | default(0) | int >= 64
+      - item.detect_height | default(0) | int <= 8192
+      - item.detect_fps | default(0) | int >= 1
+      - item.detect_fps | default(0) | int <= 60
+      - item.apple_compatibility | default(false) is boolean
+    fail_msg: "Invalid camera definition: {{ item }}"
+  loop: "{{ cameras }}"
+
+- name: Validate camera names are unique
+  ansible.builtin.assert:
+    that:
+      - cameras | map(attribute='name') | unique | list | length == cameras | length
+    fail_msg: "Camera names must be unique."
 
 - name: Install base packages
   ansible.builtin.apt:
     name:
       - ca-certificates
+      - apache2-utils
       - curl
       - gnupg
       - nginx-light
       - openssl
       - python3-yaml
+      - util-linux
+      - zstd
     state: present
     update_cache: true
 
@@ -29,6 +146,22 @@
 - name: Assert Docker is installed
   ansible.builtin.command: docker --version
   changed_when: false
+
+- name: Inspect default Docker bridge
+  ansible.builtin.command: docker network inspect bridge
+  register: frigate_vm_docker_bridge
+  changed_when: false
+
+- name: Resolve Docker bridge gateway
+  ansible.builtin.set_fact:
+    frigate_vm_docker_gateway_resolved: >-
+      {{ (frigate_vm_docker_bridge.stdout | from_json)[0].IPAM.Config[0].Gateway }}
+
+- name: Validate Docker bridge gateway
+  ansible.builtin.assert:
+    that:
+      - frigate_vm_docker_gateway_resolved is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+    fail_msg: "Docker default bridge has no usable gateway address."
 
 - name: Create Frigate directories
   ansible.builtin.file:
@@ -44,7 +177,97 @@
     - "{{ frigate_root }}/certs"
     - "{{ frigate_media_path }}"
 
-- name: Generate local self-signed certificate if missing
+- name: Inspect local TLS certificate
+  ansible.builtin.stat:
+    path: "{{ frigate_root }}/certs/fullchain.pem"
+  register: frigate_vm_tls_certificate_stat
+
+- name: Inspect local TLS private key
+  ansible.builtin.stat:
+    path: "{{ frigate_root }}/certs/privkey.pem"
+  register: frigate_vm_tls_private_key_stat
+
+- name: Read TLS identity marker
+  ansible.builtin.slurp:
+    src: "{{ frigate_root }}/certs/identity.sha256"
+  register: frigate_vm_tls_identity_marker
+  failed_when: false
+
+- name: Check TLS certificate lifetime
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -checkend
+      - "2592000"
+      - -noout
+      - -in
+      - "{{ frigate_root }}/certs/fullchain.pem"
+  register: frigate_vm_tls_lifetime_check
+  changed_when: false
+  failed_when: false
+  when: frigate_vm_tls_certificate_stat.stat.exists
+
+- name: Read TLS certificate public modulus
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -noout
+      - -modulus
+      - -in
+      - "{{ frigate_root }}/certs/fullchain.pem"
+  register: frigate_vm_tls_certificate_modulus
+  changed_when: false
+  failed_when: false
+  when: frigate_vm_tls_certificate_stat.stat.exists
+
+- name: Read TLS private-key public modulus
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rsa
+      - -noout
+      - -modulus
+      - -in
+      - "{{ frigate_root }}/certs/privkey.pem"
+  register: frigate_vm_tls_private_key_modulus
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: frigate_vm_tls_private_key_stat.stat.exists
+
+- name: Resolve TLS identity and renewal state
+  ansible.builtin.set_fact:
+    frigate_vm_tls_identity_expected: >-
+      {{ (['profile=v2', frigate_vm_ip] + (frigate_dns_names | sort))
+         | join('\n') | hash('sha256') }}
+    frigate_vm_tls_identity_actual: >-
+      {{ (frigate_vm_tls_identity_marker.content | default('') | b64decode | trim)
+         if not (frigate_vm_tls_identity_marker.failed | default(true)) else '' }}
+    frigate_vm_tls_regeneration_required: >-
+      {{ not frigate_vm_tls_certificate_stat.stat.exists
+         or not frigate_vm_tls_private_key_stat.stat.exists
+         or (frigate_vm_tls_lifetime_check.rc | default(1)) != 0
+         or (frigate_vm_tls_certificate_modulus.rc | default(1)) != 0
+         or (frigate_vm_tls_private_key_modulus.rc | default(1)) != 0
+         or (frigate_vm_tls_certificate_modulus.stdout | default('')) !=
+            (frigate_vm_tls_private_key_modulus.stdout | default(''))
+         or ((frigate_vm_tls_identity_marker.content | default('') | b64decode | trim)
+             if not (frigate_vm_tls_identity_marker.failed | default(true)) else '') !=
+            ((['profile=v2', frigate_vm_ip] + (frigate_dns_names | sort))
+             | join('\n') | hash('sha256')) }}
+
+- name: Remove stale or incomplete local TLS material
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ frigate_root }}/certs/fullchain.pem"
+    - "{{ frigate_root }}/certs/privkey.pem"
+  when: frigate_vm_tls_regeneration_required | bool
+
+- name: Generate local self-signed certificate
   ansible.builtin.command:
     argv:
       - openssl
@@ -54,7 +277,7 @@
       - -newkey
       - rsa:2048
       - -days
-      - "825"
+      - "397"
       - -keyout
       - "{{ frigate_root }}/certs/privkey.pem"
       - -out
@@ -63,8 +286,38 @@
       - "/CN={{ frigate_vm_ip }}"
       - -addext
       - "subjectAltName=IP:{{ frigate_vm_ip }}{% for name in frigate_dns_names %},DNS:{{ name }}{% endfor %}"
-  args:
-    creates: "{{ frigate_root }}/certs/fullchain.pem"
+      - -addext
+      - "basicConstraints=critical,CA:FALSE"
+      - -addext
+      - "keyUsage=critical,digitalSignature,keyEncipherment"
+      - -addext
+      - "extendedKeyUsage=serverAuth"
+  when: frigate_vm_tls_regeneration_required | bool
+  notify: Restart nginx
+
+- name: Record TLS certificate identity
+  ansible.builtin.copy:
+    dest: "{{ frigate_root }}/certs/identity.sha256"
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ frigate_vm_tls_identity_expected }}\n"
+
+- name: Restrict TLS private key
+  ansible.builtin.file:
+    path: "{{ frigate_root }}/certs/privkey.pem"
+    state: file
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Make TLS certificate readable
+  ansible.builtin.file:
+    path: "{{ frigate_root }}/certs/fullchain.pem"
+    state: file
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Render Frigate environment
   ansible.builtin.template:
@@ -73,6 +326,7 @@
     owner: root
     group: root
     mode: "0600"
+  no_log: true
 
 - name: Render Frigate config
   ansible.builtin.template:
@@ -99,10 +353,18 @@
     group: root
     mode: "0755"
 
+- name: Install model build dependency lock
+  ansible.builtin.copy:
+    src: yolov9-export-requirements.lock
+    dest: "{{ frigate_root }}/yolov9-export-requirements.lock"
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Build YOLOv9-t ONNX model if missing
   ansible.builtin.command: "{{ frigate_root }}/build-yolov9-onnx.sh"
-  args:
-    creates: "{{ frigate_root }}/config/model_cache/yolov9-t-320.onnx"
+  register: frigate_vm_yolov9_build
+  changed_when: "'MODEL_BUILT=' in frigate_vm_yolov9_build.stdout"
 
 - name: Render Docker Compose
   ansible.builtin.template:
@@ -113,22 +375,169 @@
     mode: "0644"
   notify: Restart Frigate
 
-- name: Install or update Ollama
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if ! command -v ollama >/dev/null 2>&1; then
-      install_script="$(mktemp)"
-      trap 'rm -f "$install_script"' EXIT
-      curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 --max-time 120 \
-        https://ollama.com/install.sh -o "$install_script"
-      sh "$install_script"
-    else
-      echo "ollama already installed"
-    fi
-  args:
-    executable: /bin/bash
-  register: frigate_vm_ollama_install
-  changed_when: "'ollama already installed' not in frigate_vm_ollama_install.stdout"
+- name: Create Ollama service group
+  ansible.builtin.group:
+    name: ollama
+    system: true
+
+- name: Create Ollama service user
+  ansible.builtin.user:
+    name: ollama
+    group: ollama
+    home: /usr/share/ollama
+    create_home: true
+    shell: /usr/sbin/nologin
+    system: true
+
+- name: Inspect optional GPU access groups
+  ansible.builtin.command:
+    argv:
+      - getent
+      - group
+      - "{{ item }}"
+  loop:
+    - render
+    - video
+  register: frigate_vm_ollama_gpu_groups
+  changed_when: false
+  failed_when: false
+
+- name: Add Ollama user to available GPU access groups
+  ansible.builtin.user:
+    name: ollama
+    groups: "{{ item.item }}"
+    append: true
+  loop: "{{ frigate_vm_ollama_gpu_groups.results }}"
+  when: item.rc == 0
+
+- name: Install Ollama systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ollama.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Ollama Service
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/local/bin/ollama serve
+      User=ollama
+      Group=ollama
+      Restart=always
+      RestartSec=3
+      Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      [Install]
+      WantedBy=multi-user.target
+  notify:
+    - Reload systemd
+    - Restart Ollama
+
+- name: Create Ollama download cache
+  ansible.builtin.file:
+    path: /var/cache/ollama
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect installed Ollama version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/ollama
+      - --version
+  register: frigate_vm_ollama_installed_version
+  changed_when: false
+  failed_when: false
+
+- name: Verify installed Ollama binary checksum
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - --check
+      - --status
+      - /var/cache/ollama/installed-binary.sha256
+  register: frigate_vm_ollama_installed_checksum
+  changed_when: false
+  failed_when: false
+
+- name: Resolve whether Ollama installation is required
+  ansible.builtin.set_fact:
+    frigate_vm_ollama_installation_required: >-
+      {{ frigate_vm_ollama_installed_version.rc != 0
+         or not (frigate_vm_ollama_installed_version.stdout is search(
+           (frigate_vm_ollama_version_resolved | regex_escape) ~ '$'))
+         or frigate_vm_ollama_installed_checksum.rc != 0 }}
+
+- name: Download checksum-pinned Ollama archive
+  ansible.builtin.get_url:
+    url: >-
+      {{ 'https://github.com/ollama/ollama/releases/download/v'
+         ~ frigate_vm_ollama_version_resolved
+         ~ '/ollama-linux-amd64.tar.zst' }}
+    dest: >-
+      /var/cache/ollama/ollama-linux-amd64-{{ frigate_vm_ollama_version_resolved }}.tar.zst
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "sha256:{{ frigate_vm_ollama_archive_sha256_resolved }}"
+    timeout: 900
+  when: frigate_vm_ollama_installation_required | bool
+
+- name: Stop Ollama before a binary update
+  ansible.builtin.systemd:
+    name: ollama
+    state: stopped
+    daemon_reload: true
+  when: frigate_vm_ollama_installation_required | bool
+
+- name: Remove old Ollama runtime libraries before an update
+  ansible.builtin.file:
+    path: /usr/local/lib/ollama
+    state: absent
+  when: frigate_vm_ollama_installation_required | bool
+
+- name: Install checksum-pinned Ollama archive
+  ansible.builtin.unarchive:
+    src: >-
+      /var/cache/ollama/ollama-linux-amd64-{{ frigate_vm_ollama_version_resolved }}.tar.zst
+    dest: /usr/local
+    remote_src: true
+    owner: root
+    group: root
+  when: frigate_vm_ollama_installation_required | bool
+  notify: Restart Ollama
+
+- name: Verify installed Ollama version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/ollama
+      - --version
+  register: frigate_vm_ollama_verified_version
+  changed_when: false
+  failed_when: >-
+    frigate_vm_ollama_verified_version.rc != 0
+    or not (frigate_vm_ollama_verified_version.stdout is search(
+      (frigate_vm_ollama_version_resolved | regex_escape) ~ '$'))
+
+- name: Calculate installed Ollama binary checksum
+  ansible.builtin.command:
+    argv:
+      - sha256sum
+      - /usr/local/bin/ollama
+  register: frigate_vm_ollama_binary_checksum
+  changed_when: false
+
+- name: Record installed Ollama binary checksum
+  ansible.builtin.copy:
+    dest: /var/cache/ollama/installed-binary.sha256
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ frigate_vm_ollama_binary_checksum.stdout }}\n"
 
 - name: Create Ollama systemd override directory
   ansible.builtin.file:
@@ -146,7 +555,7 @@
     mode: "0644"
     content: |
       [Service]
-      Environment=OLLAMA_HOST={{ ollama_host }}
+      Environment=OLLAMA_HOST={{ frigate_vm_docker_gateway_resolved }}:{{ frigate_vm_ollama_backend_port_resolved }}
       Environment=OLLAMA_KEEP_ALIVE={{ ollama_keep_alive }}
   notify:
     - Reload systemd
@@ -159,27 +568,93 @@
     state: started
     daemon_reload: true
 
+- name: Apply Ollama backend configuration before model operations
+  ansible.builtin.meta: flush_handlers
+
 - name: Pull Ollama model
-  ansible.builtin.command: "ollama pull {{ ollama_model }}"
+  ansible.builtin.command:
+    argv:
+      - ollama
+      - pull
+      - "{{ ollama_model }}"
+  environment:
+    OLLAMA_HOST: >-
+      http://{{ frigate_vm_docker_gateway_resolved }}:{{ frigate_vm_ollama_backend_port_resolved }}
   register: frigate_vm_ollama_pull
   changed_when: >
     'success' in (frigate_vm_ollama_pull.stdout | lower)
     or 'pulling' in (frigate_vm_ollama_pull.stdout | lower)
 
-- name: Render Ollama HTTPS nginx site
+- name: Verify nginx basic-auth database
+  ansible.builtin.command:
+    argv:
+      - htpasswd
+      - -iv
+      - /etc/nginx/.htpasswd-home-ai
+      - "{{ home_ai_basic_user }}"
+    stdin: "{{ home_ai_basic_password }}"
+  register: frigate_vm_basic_auth_verify
+  no_log: true
+  changed_when: false
+  failed_when: false
+
+- name: Read nginx basic-auth database
+  ansible.builtin.slurp:
+    src: /etc/nginx/.htpasswd-home-ai
+  register: frigate_vm_basic_auth_database
+  failed_when: false
+  no_log: true
+
+- name: Resolve nginx basic-auth users
+  ansible.builtin.set_fact:
+    frigate_vm_basic_auth_users_resolved: >-
+      {{ (frigate_vm_basic_auth_database.content | default('') | b64decode)
+         | regex_findall('(?m)^([^:]+):') }}
+
+- name: Create nginx basic-auth database
+  ansible.builtin.command:
+    argv:
+      - htpasswd
+      - -ciBC
+      - "12"
+      - /etc/nginx/.htpasswd-home-ai
+      - "{{ home_ai_basic_user }}"
+    stdin: "{{ home_ai_basic_password }}"
+  no_log: true
+  changed_when: true
+  when: >-
+    frigate_vm_basic_auth_verify.rc != 0
+    or frigate_vm_basic_auth_users_resolved != [home_ai_basic_user]
+  notify: Restart nginx
+
+- name: Restrict nginx basic-auth database
+  ansible.builtin.file:
+    path: /etc/nginx/.htpasswd-home-ai
+    state: file
+    owner: root
+    group: www-data
+    mode: "0640"
+
+- name: Render Home AI HTTPS proxies
   ansible.builtin.template:
-    src: ollama-https.nginx.j2
-    dest: /etc/nginx/sites-available/ollama-https
+    src: home-ai-proxies.nginx.j2
+    dest: /etc/nginx/sites-available/home-ai-proxies
     owner: root
     group: root
     mode: "0644"
   notify: Restart nginx
 
-- name: Enable Ollama HTTPS nginx site
+- name: Enable Home AI HTTPS proxies
   ansible.builtin.file:
-    src: /etc/nginx/sites-available/ollama-https
-    dest: /etc/nginx/sites-enabled/ollama-https
+    src: /etc/nginx/sites-available/home-ai-proxies
+    dest: /etc/nginx/sites-enabled/home-ai-proxies
     state: link
+  notify: Restart nginx
+
+- name: Remove legacy Ollama-only nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/ollama-https
+    state: absent
   notify: Restart nginx
 
 - name: Disable default nginx site
@@ -188,23 +663,13 @@
     state: absent
   notify: Restart nginx
 
-- name: Resolve ASR settings
-  ansible.builtin.set_fact:
-    frigate_vm_asr_enabled_resolved: "{{ asr_enabled | default(frigate_vm_asr_enabled) }}"
-    frigate_vm_asr_root_resolved: "{{ asr_root | default(frigate_vm_asr_root) }}"
-    frigate_vm_asr_port_resolved: "{{ asr_port | default(frigate_vm_asr_port) }}"
-    frigate_vm_asr_model_resolved: "{{ asr_model | default(frigate_vm_asr_model) }}"
-    frigate_vm_asr_device_resolved: "{{ asr_device | default(frigate_vm_asr_device) }}"
-    frigate_vm_asr_compute_type_resolved: "{{ asr_compute_type | default(frigate_vm_asr_compute_type) }}"
-    frigate_vm_asr_cpu_threads_resolved: "{{ asr_cpu_threads | default(frigate_vm_asr_cpu_threads) }}"
-
 - name: Create ASR directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    owner: root
-    group: root
-    mode: "0755"
+    owner: "10001"
+    group: "10001"
+    mode: "0750"
   loop:
     - "{{ frigate_vm_asr_root_resolved }}"
     - "{{ frigate_vm_asr_root_resolved }}/models"
@@ -217,7 +682,7 @@
     dest: "{{ frigate_vm_asr_root_resolved }}/{{ item }}"
     owner: root
     group: root
-    mode: "0644"
+    mode: "0600"
   loop:
     - .dockerignore
     - Dockerfile
@@ -237,7 +702,10 @@
       ASR_DEVICE={{ frigate_vm_asr_device_resolved }}
       ASR_COMPUTE_TYPE={{ frigate_vm_asr_compute_type_resolved }}
       ASR_CPU_THREADS={{ frigate_vm_asr_cpu_threads_resolved }}
-      ASR_PORT={{ frigate_vm_asr_port_resolved }}
+      ASR_PORT=9443
+      ASR_BACKEND_PORT={{ frigate_vm_asr_backend_port_resolved }}
+      ASR_MAX_UPLOAD_BYTES={{ frigate_vm_asr_max_upload_bytes_resolved }}
+      ASR_MAX_CONCURRENT_TRANSCRIPTIONS={{ frigate_vm_asr_max_concurrent_transcriptions_resolved }}
   when: frigate_vm_asr_enabled_resolved | bool
 
 - name: Start Frigate
@@ -249,6 +717,13 @@
   changed_when: true
   when: frigate_vm_asr_enabled_resolved | bool
 
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Apply pending service configuration
+  ansible.builtin.meta: flush_handlers
+
 - name: Enable nginx
   ansible.builtin.systemd:
     name: nginx
@@ -257,21 +732,20 @@
 
 - name: Verify Frigate API
   ansible.builtin.uri:
-    url: "https://127.0.0.1:8971/api/version"
+    url: "https://127.0.0.1:{{ frigate_vm_frigate_backend_port_resolved }}/api/version"
     validate_certs: false
     return_content: true
   register: frigate_vm_frigate_version
 
 - name: Verify Ollama API
   ansible.builtin.uri:
-    url: "http://127.0.0.1:11434/api/version"
+    url: "http://127.0.0.1:{{ frigate_vm_ollama_backend_port_resolved }}/api/version"
     return_content: true
   register: frigate_vm_ollama_version
 
 - name: Verify ASR API
   ansible.builtin.uri:
-    url: "https://127.0.0.1:{{ frigate_vm_asr_port_resolved }}/health"
-    validate_certs: false
+    url: "http://127.0.0.1:{{ frigate_vm_asr_backend_port_resolved }}/health"
     return_content: true
   register: frigate_vm_asr_health
   when: frigate_vm_asr_enabled_resolved | bool

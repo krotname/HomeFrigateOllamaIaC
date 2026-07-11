@@ -16,6 +16,9 @@ generated logs.
 - Schedule: daily at `03:20`
 - Script: `C:\ProgramData\KRT\ConfigBackup\Invoke-WinHomeConfigBackup.ps1`
 - VM SSH key: `C:\ProgramData\KRT\ConfigBackup\ssh\win-home-codex_ed25519`
+- VM host keys use `StrictHostKeyChecking=yes`. The
+  `-TrustUnknownVmHostKey` bootstrap override uses `accept-new` once and never
+  disables the known-hosts database; verify the learned key out of band.
 - Retention: `60` days, deleted only under `F:\Files\Backups\win-home-configs\config-backup-*`
 
 ## Scope
@@ -67,8 +70,8 @@ Every run writes `manifest.json` and updates:
 `F:\Files\Backups\win-home-configs\latest.json`
 
 The manifest records SHA-256 hashes and byte counts for both archives. A run is
-considered valid only when both `windows-configs.zip` and `vm-configs.tar.gz`
-exist and are larger than 1 KB.
+considered valid only when both archives exist, exceed 1 KB, can be opened and
+enumerated, and the VM inventory parses as JSON with a hostname.
 
 Manual verification:
 

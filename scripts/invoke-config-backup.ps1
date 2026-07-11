@@ -5,7 +5,8 @@ param(
     [string]$VmUser = "krt",
     [string]$VmSshKeyPath = "C:\Users\KRT\.ssh\win-home-codex_ed25519",
     [string]$VmName = "frigate-ubuntu",
-    [string]$LogRoot = "C:\ProgramData\KRT\ConfigBackup\logs"
+    [string]$LogRoot = "C:\ProgramData\KRT\ConfigBackup\logs",
+    [switch]$TrustUnknownVmHostKey
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,8 +14,38 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $transcriptPath = $null
+$backupDir = $null
+$staging = $null
+$backupComplete = $false
+
+if ($RetentionDays -lt 1 -or $RetentionDays -gt 3650) {
+    throw "RetentionDays must be in range 1..3650."
+}
+if ($VmUser -notmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$') {
+    throw "VmUser contains unsupported characters."
+}
+if ([string]::IsNullOrWhiteSpace($VmAddress) -or $VmAddress.Length -gt 253 -or
+    $VmAddress -match '[\x00-\x20\x7F]' -or $VmAddress.StartsWith('-') -or
+    [Uri]::CheckHostName($VmAddress) -notin @([UriHostNameType]::Dns, [UriHostNameType]::IPv4)) {
+    throw "VmAddress must be a valid IPv4 address or DNS name."
+}
+if ($VmAddress -match '^[0-9.]+$') {
+    $parsedVmAddress = $null
+    if ($VmAddress -notmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' -or
+        -not [Net.IPAddress]::TryParse($VmAddress, [ref]$parsedVmAddress) -or
+        $parsedVmAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+        throw "VmAddress must be a valid IPv4 address or DNS name."
+    }
+}
+foreach ($pathToValidate in @($BackupRoot, $LogRoot)) {
+    $fullPath = [System.IO.Path]::GetFullPath($pathToValidate)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.TrimEnd('\', '/') -eq $pathRoot.TrimEnd('\', '/')) {
+        throw "Refusing to use a filesystem root as a managed backup path: $fullPath"
+    }
+}
 
 function New-RestrictedDirectory {
     param([string]$Path)
@@ -59,7 +90,16 @@ function Save-Json {
         [object]$Value,
         [int]$Depth = 12
     )
-    $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
+    $tempPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        [System.IO.File]::Move($tempPath, $Path, $true)
+    }
+    finally {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force
+        }
+    }
 }
 
 function ConvertTo-SafePathPart {
@@ -136,7 +176,7 @@ function Copy-ConfigSource {
     $item = Get-Item -LiteralPath $Path -Force
 
     if ($item.PSIsContainer) {
-        $files = Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction SilentlyContinue
+        $files = Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction Stop
         foreach ($file in $files) {
             $relative = $file.FullName.Substring($item.FullName.Length).TrimStart("\", "/")
             if (-not (Test-ConfigRelativePath -RelativePath $relative) -or -not (Test-ConfigFileName -File $file)) {
@@ -333,16 +373,27 @@ try {
         "-i", $VmSshKeyPath,
         "-o", "CertificateFile=none",
         "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=NUL",
         "-o", "ConnectTimeout=10"
     )
+    if ($TrustUnknownVmHostKey) {
+        $sshBaseArgs += @("-o", "StrictHostKeyChecking=accept-new")
+    }
+    else {
+        $sshBaseArgs += @("-o", "StrictHostKeyChecking=yes")
+    }
     $target = "$VmUser@$VmAddress"
     $remoteScript = @'
 set -euo pipefail
-stamp="__STAMP__"
-tmp="/tmp/win-home-vm-configs-${stamp}.tar.gz"
-inventory="/tmp/win-home-vm-inventory-${stamp}.json"
+umask 077
+tmp="$(mktemp /tmp/win-home-vm-configs.XXXXXXXX.tar.gz)"
+inventory="$(mktemp /tmp/win-home-vm-inventory.XXXXXXXX.json)"
+completed=0
+cleanup_on_failure() {
+  if [ "$completed" -ne 1 ]; then
+    sudo rm -f -- "$tmp" "$inventory"
+  fi
+}
+trap cleanup_on_failure EXIT
 paths=(
   "/opt/frigate/config/config.yml"
   "/opt/frigate/docker-compose.yml"
@@ -351,6 +402,8 @@ paths=(
   "/opt/frigate/certs/cert.pem"
   "/opt/frigate/certs/fullchain.pem"
   "/opt/frigate/certs/KRT-Frigate-Local-Root-CA-2026.crl"
+  "/opt/asr/docker-compose.yml"
+  "/opt/asr/.env"
   "/etc/nginx/sites-available"
   "/etc/nginx/sites-enabled"
   "/etc/docker/daemon.json"
@@ -370,51 +423,86 @@ if [ "${#existing[@]}" -eq 0 ]; then
   echo "No VM config paths found" >&2
   exit 20
 fi
-sudo tar -C / --warning=no-file-changed --ignore-failed-read -czf "$tmp" "${existing[@]}"
-sudo chmod 0644 "$tmp"
+sudo tar -C / --warning=no-file-changed -czf "$tmp" "${existing[@]}"
 python3 - "${existing[@]}" <<'PY' > "$inventory"
 import json, os, pathlib, subprocess
 def run(cmd):
-    p = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    p = subprocess.run(cmd, text=True, capture_output=True)
     return {"rc": p.returncode, "out": p.stdout.strip(), "err": p.stderr.strip()}
 print(json.dumps({
-  "hostname": run("hostname")["out"],
-  "uname": run("uname -a")["out"],
+  "hostname": run(["hostname"])["out"],
+  "uname": run(["uname", "-a"])["out"],
   "os_release": pathlib.Path("/etc/os-release").read_text(),
-  "docker_ps": run("docker ps --format '{{json .}}'")["out"].splitlines(),
+  "docker_ps": run(["docker", "ps", "--format", "{{json .}}"])["out"].splitlines(),
   "services": {
-    "docker": run("systemctl is-active docker")["out"],
-    "ollama": run("systemctl is-active ollama")["out"],
-    "nginx": run("systemctl is-active nginx")["out"],
-    "ssh": run("systemctl is-active ssh")["out"],
+    "docker": run(["systemctl", "is-active", "docker"])["out"],
+    "ollama": run(["systemctl", "is-active", "ollama"])["out"],
+    "nginx": run(["systemctl", "is-active", "nginx"])["out"],
+    "ssh": run(["systemctl", "is-active", "ssh"])["out"],
   },
   "config_paths": __import__("sys").argv[1:]
 }, ensure_ascii=True))
 PY
-chmod 0644 "$inventory"
+completed=1
 printf '%s\n%s\n' "$tmp" "$inventory"
-'@.Replace("__STAMP__", $timestamp)
+'@
 
-    $remoteOutput = $remoteScript | & ssh.exe @sshBaseArgs $target "bash -s" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "VM config archive command failed with exit $LASTEXITCODE. Output: $($remoteOutput -join "`n")"
-    }
-    $remoteLines = @($remoteOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    if ($remoteLines.Count -lt 2) {
-        throw "VM config archive command did not return expected paths. Output: $($remoteOutput -join "`n")"
-    }
-    $remoteArchive = [string]$remoteLines[-2]
-    $remoteInventory = [string]$remoteLines[-1]
+    $remoteArchive = $null
+    $remoteInventory = $null
+    try {
+        $remoteOutput = $remoteScript | & ssh.exe @sshBaseArgs $target "bash -s" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "VM config archive command failed with exit $LASTEXITCODE. Output: $($remoteOutput -join "`n")"
+        }
+        $remoteLines = @($remoteOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($remoteLines.Count -lt 2) {
+            throw "VM config archive command did not return expected paths. Output: $($remoteOutput -join "`n")"
+        }
+        $remoteArchive = [string]$remoteLines[-2]
+        $remoteInventory = [string]$remoteLines[-1]
+        if ($remoteArchive -notmatch '^/tmp/win-home-vm-configs\.[A-Za-z0-9]+\.tar\.gz$' -or
+            $remoteInventory -notmatch '^/tmp/win-home-vm-inventory\.[A-Za-z0-9]+\.json$') {
+            throw "VM config archive command returned unsafe paths."
+        }
 
-    Invoke-NativeChecked -FilePath "scp.exe" -Arguments ($sshBaseArgs + @("$target`:$remoteArchive", $vmBackupPath)) | Out-Null
-    Invoke-NativeChecked -FilePath "scp.exe" -Arguments ($sshBaseArgs + @("$target`:$remoteInventory", $vmInventoryPath)) | Out-Null
-    Invoke-NativeChecked -FilePath "ssh.exe" -Arguments ($sshBaseArgs + @($target, "sudo rm -f '$remoteArchive' '$remoteInventory'")) | Out-Null
-    $vmBackup.status = "ok"
+        Invoke-NativeChecked -FilePath "scp.exe" -Arguments ($sshBaseArgs + @("$target`:$remoteArchive", $vmBackupPath)) | Out-Null
+        Invoke-NativeChecked -FilePath "scp.exe" -Arguments ($sshBaseArgs + @("$target`:$remoteInventory", $vmInventoryPath)) | Out-Null
+        $vmBackup.status = "ok"
+    }
+    finally {
+        if ($remoteArchive -and $remoteInventory) {
+            try {
+                Invoke-NativeChecked -FilePath "ssh.exe" -Arguments (
+                    $sshBaseArgs + @($target, "sudo rm -f -- '$remoteArchive' '$remoteInventory'")
+                ) | Out-Null
+            }
+            catch {
+                Write-Warning "Could not remove temporary VM backup files: $($_.Exception.Message)"
+            }
+        }
+    }
 
     Remove-Item -LiteralPath $staging -Recurse -Force
 
     $windowsZipInfo = Get-Item -LiteralPath $windowsZip
     $vmTarInfo = Get-Item -LiteralPath $vmBackupPath
+    $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($windowsZip)
+    try {
+        if ($zipArchive.Entries.Count -eq 0) {
+            throw "Windows configuration archive is empty."
+        }
+    }
+    finally {
+        $zipArchive.Dispose()
+    }
+    $vmArchiveEntries = @(Invoke-NativeChecked -FilePath "tar.exe" -Arguments @("-tzf", $vmBackupPath))
+    if ($vmArchiveEntries.Count -eq 0) {
+        throw "VM configuration archive is empty."
+    }
+    $vmInventory = Get-Content -Raw -LiteralPath $vmInventoryPath | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($vmInventory.hostname)) {
+        throw "VM inventory is invalid or has no hostname."
+    }
     $manifest = [pscustomobject]@{
         generated_at = (Get-Date).ToString("s")
         hostname = hostname
@@ -439,14 +527,18 @@ printf '%s\n%s\n' "$tmp" "$inventory"
         verification = [pscustomobject]@{
             windows_zip_present = (Test-Path -LiteralPath $windowsZip)
             windows_zip_min_size_ok = $windowsZipInfo.Length -gt 1024
+            windows_zip_readable = $true
             vm_archive_present = (Test-Path -LiteralPath $vmBackupPath)
             vm_archive_min_size_ok = $vmTarInfo.Length -gt 1024
+            vm_archive_readable = $true
+            vm_inventory_readable = $true
         }
         retention_days = $RetentionDays
         transcript = $transcriptPath
     }
     Save-Json -Path (Join-Path $backupDir "manifest.json") -Value $manifest
     Save-Json -Path (Join-Path $BackupRoot "latest.json") -Value $manifest
+    $backupComplete = $true
 
     $cutoff = (Get-Date).AddDays(-1 * $RetentionDays)
     Get-ChildItem -LiteralPath $BackupRoot -Directory -Filter "config-backup-*" -ErrorAction SilentlyContinue |
@@ -458,6 +550,20 @@ printf '%s\n%s\n' "$tmp" "$inventory"
     Write-Output "VM config archive bytes: $($vmTarInfo.Length)"
 }
 finally {
+    if ($staging -and (Test-Path -LiteralPath $staging)) {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $backupComplete -and $backupDir -and (Test-Path -LiteralPath $backupDir)) {
+        $resolvedBackupRoot = [System.IO.Path]::GetFullPath($BackupRoot).TrimEnd('\', '/')
+        $resolvedBackupDir = [System.IO.Path]::GetFullPath($backupDir)
+        if ((Split-Path -Parent $resolvedBackupDir).TrimEnd('\', '/') -eq $resolvedBackupRoot -and
+            (Split-Path -Leaf $resolvedBackupDir) -eq "config-backup-$timestamp") {
+            Remove-Item -LiteralPath $resolvedBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Warning "Refusing to clean unexpected partial backup path: $resolvedBackupDir"
+        }
+    }
     if ($transcriptPath) {
         Stop-Transcript | Out-Null
     }

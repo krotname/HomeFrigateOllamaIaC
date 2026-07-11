@@ -14,7 +14,7 @@ designed to reproduce.
 | VM | `frigate-ubuntu` |
 | GPU | NVIDIA Tesla P40 through Hyper-V DDA |
 | Frigate | CUDA ffmpeg + ONNX YOLOv9-t 320 detector |
-| Ollama | `huihui_ai/gpt-oss-abliterated:20b` over LAN HTTP |
+| Ollama | `huihui_ai/gpt-oss-abliterated:20b` over authenticated LAN HTTPS |
 | ASR | `Systran/faster-whisper-large-v3` over LAN HTTPS |
 
 ## Runtime Evidence

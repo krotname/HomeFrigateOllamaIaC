@@ -12,7 +12,9 @@ RUN apt-get update \
         ffmpeg \
         python3 \
         python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 asr \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin asr
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
@@ -21,4 +23,5 @@ RUN python3 -m pip install --break-system-packages --disable-pip-version-check -
 COPY app.py /app/app.py
 
 EXPOSE 9443
+USER 10001:10001
 CMD ["python3", "/app/app.py"]
