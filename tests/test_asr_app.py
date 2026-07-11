@@ -46,6 +46,9 @@ def load_app_module():
     whisper = types.ModuleType("faster_whisper")
     whisper.WhisperModel = object
 
+    uvicorn = types.ModuleType("uvicorn")
+    uvicorn.run = lambda *_args, **_kwargs: None
+
     concurrency = types.ModuleType("starlette.concurrency")
 
     async def direct_call(function, *args):
@@ -58,6 +61,7 @@ def load_app_module():
         "fastapi.responses": responses,
         "faster_whisper": whisper,
         "starlette.concurrency": concurrency,
+        "uvicorn": uvicorn,
     }
     app_path = Path(__file__).parents[1] / "asr" / "app.py"
     spec = importlib.util.spec_from_file_location("home_asr_app_test", app_path)
