@@ -23,6 +23,7 @@ Verified configuration:
 - Clear split between PowerShell, Ansible, Docker Compose, and runtime smoke tests.
 - GPU passthrough through Hyper-V DDA for constant Frigate/Ollama workload.
 - Demonstration configs with Russian comments instead of empty placeholders.
+- A validated OpenCode client configuration for the local Ollama models.
 - CI checks for YAML, Ansible, PowerShell, GitHub Actions, CodeQL, and OpenSSF Scorecard.
 - Documented governance, review, and supply-chain rules for a solo-maintained infrastructure repository.
 
@@ -70,7 +71,13 @@ asr/
   app.py
   docker-compose.yml
   Dockerfile
+opencode/
+  opencode.example.json
+  AGENTS.md
+  models/
 ```
+
+See [docs/opencode-ollama.md](docs/opencode-ollama.md) for OpenCode client setup.
 
 ## Quick Start
 

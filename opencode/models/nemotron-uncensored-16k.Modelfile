@@ -1,0 +1,5 @@
+FROM huihui_ai/nemotron-v1-abliterated:8b-llama-3.1-nano
+
+PARAMETER num_ctx 16384
+PARAMETER num_predict 4096
+PARAMETER temperature 0.2

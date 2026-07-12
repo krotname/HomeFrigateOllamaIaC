@@ -1,0 +1,33 @@
+FROM huihui_ai/mistral-small-abliterated:24b
+
+TEMPLATE """
+{{- range $index, $_ := .Messages }}
+{{- if eq .Role "system" }}[SYSTEM_PROMPT]{{ .Content }}[/SYSTEM_PROMPT]
+{{- else if eq .Role "user" }}
+{{- if and (le (len (slice $.Messages $index)) 2) $.Tools }}[AVAILABLE_TOOLS]{{ $.Tools }}[/AVAILABLE_TOOLS]
+{{- end }}[INST]
+{{- if $.Tools }}
+MANDATORY TOOL PROTOCOL:
+- A tool call must start with the exact token [TOOL_CALLS] followed by a JSON array.
+- Example: [TOOL_CALLS][{"name":"read","arguments":{"filePath":"C:/path/file.txt"}}]
+- Never output a bare JSON array or prose that describes a tool call.
+- Never use opencode.ai unless the user's own message explicitly asks about OpenCode.
+- webfetch is not search. If no exact relevant URL is known or supplied, do not call webfetch.
+{{- end }}
+{{ .Content }}[/INST]
+{{- else if eq .Role "assistant" }}
+{{- if .Content }}{{ .Content }}
+{{- if not (eq (len (slice $.Messages $index)) 1) }}</s>
+{{- end }}
+{{- else if .ToolCalls }}[TOOL_CALLS][
+{{- range $toolIndex, $toolCall := .ToolCalls }}{{ if $toolIndex }},{{ end }}{"name": "{{ $toolCall.Function.Name }}", "arguments": {{ $toolCall.Function.Arguments }}}
+{{- end }}]</s>
+{{- end }}
+{{- else if eq .Role "tool" }}[TOOL_RESULTS]{"content": {{ .Content }}}[/TOOL_RESULTS]
+{{- end }}
+{{- end }}
+"""
+
+PARAMETER num_ctx 16384
+PARAMETER num_predict 4096
+PARAMETER temperature 0
