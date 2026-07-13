@@ -1,0 +1,18 @@
+[Unit]
+Description=Ollama liveness and GPU-residency watchdog
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ollama-watchdog.sh
+TimeoutStartSec=240
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

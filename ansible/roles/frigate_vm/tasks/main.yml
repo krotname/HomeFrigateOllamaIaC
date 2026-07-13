@@ -718,6 +718,48 @@
   changed_when: true
   when: frigate_vm_asr_enabled_resolved | bool
 
+- name: Install watchdog scripts
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - src: container-watchdog.sh
+      dest: /usr/local/sbin/krt-container-watchdog.sh
+    - src: ollama-watchdog.sh
+      dest: /usr/local/sbin/ollama-watchdog.sh
+
+- name: Install watchdog systemd units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - krt-container-watchdog.service
+    - krt-container-watchdog.timer
+    - ollama-watchdog.service
+    - ollama-watchdog.timer
+  notify: Reload systemd
+
+- name: Remove legacy untracked Ollama watchdog script
+  ansible.builtin.file:
+    path: /usr/local/bin/ollama-watchdog.sh
+    state: absent
+
+- name: Enable watchdog timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - krt-container-watchdog.timer
+    - ollama-watchdog.timer
+
 - name: Validate nginx configuration
   ansible.builtin.command: nginx -t
   changed_when: false

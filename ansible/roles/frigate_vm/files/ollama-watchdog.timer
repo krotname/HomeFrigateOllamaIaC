@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Ollama watchdog every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+AccuracySec=10s
+Persistent=false
+Unit=ollama-watchdog.service
+
+[Install]
+WantedBy=timers.target

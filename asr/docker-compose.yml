@@ -13,12 +13,15 @@ services:
       ASR_COMPUTE_TYPE: ${ASR_COMPUTE_TYPE:-int8}
       ASR_CPU_THREADS: ${ASR_CPU_THREADS:-4}
       ASR_PORT: ${ASR_PORT:-9443}
+      ASR_CERT_FILE: /certs/fullchain.pem
+      ASR_KEY_FILE: /certs/privkey.pem
       ASR_TMP_DIR: /tmp/asr
       ASR_MAX_UPLOAD_BYTES: ${ASR_MAX_UPLOAD_BYTES:-104857600}
       ASR_MAX_CONCURRENT_TRANSCRIPTIONS: ${ASR_MAX_CONCURRENT_TRANSCRIPTIONS:-1}
     volumes:
       - ./models:/models
       - ./tmp:/tmp/asr
+      - /opt/asr/certs:/certs:ro
     ports:
       - "127.0.0.1:${ASR_BACKEND_PORT:-19443}:${ASR_PORT:-9443}"
     read_only: true
@@ -29,10 +32,12 @@ services:
     pids_limit: 512
     healthcheck:
       test:
-        - CMD
-        - python3
-        - -c
-        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['ASR_PORT'] + '/health', timeout=5)"
+        - CMD-SHELL
+        - >-
+          python3 -c "import os, ssl, urllib.request;
+          urllib.request.urlopen('https://127.0.0.1:' + os.environ['ASR_PORT'] + '/health',
+          timeout=5, context=ssl._create_unverified_context()).read()"
+          && nvidia-smi -L >/dev/null
       interval: 30s
       timeout: 6s
       retries: 3
