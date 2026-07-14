@@ -33,6 +33,7 @@ Get-ChildItem .\scripts -Filter *.ps1 -Recurse | ForEach-Object {
 }
 
 Invoke-Pester -Path tests -CI
+pwsh -NoProfile -File tests/run-offline-tests.ps1
 ```
 
 ## Runtime smoke test

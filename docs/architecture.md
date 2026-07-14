@@ -28,7 +28,7 @@ flowchart LR
     Media["Frigate media volume\nrecordings and events"]
     Ollama["Ollama\nhuihui_ai/gpt-oss-abliterated:20b"]
     ASR["ASR\nfaster-whisper large-v3\n127.0.0.1:19443"]
-    Nginx["nginx HTTPS proxy\n8971 / 9443"]
+    Nginx["nginx HTTPS + basic auth\n8971 / 11443 / 9443"]
     Operator["Operator browser / smoke-test"]
 
     Cameras --> Frigate
@@ -65,11 +65,12 @@ certificates, model generation and GPU runtime checks are host-level concerns.
 - Frigate TLS: `/opt/frigate/certs/fullchain.pem`, `/opt/frigate/certs/privkey.pem`
 - YOLO model: `/opt/frigate/config/model_cache/yolov9-t-320.onnx`
 - YOLO labelmap: `/opt/frigate/config/model_cache/coco-yolo-80.txt`
-- Ollama API: `http://0.0.0.0:11434`
+- Ollama backend API: Docker bridge gateway port `11435`; nginx also exposes a
+  host-only compatibility proxy at `http://127.0.0.1:11435`
 - ASR root: `/opt/asr`
 - ASR model cache: `/opt/asr/models`
-- ASR container API: `https://127.0.0.1:19443`
+- ASR container API: `http://127.0.0.1:19443`
 - Frigate container API: `https://127.0.0.1:18971`
 - LAN Frigate URL: `https://192.168.1.138:8971`
-- LAN Ollama URL: `http://192.168.1.138:11434`
+- LAN Ollama URL: `https://192.168.1.138:11443`
 - LAN ASR URL: `https://192.168.1.138:9443`

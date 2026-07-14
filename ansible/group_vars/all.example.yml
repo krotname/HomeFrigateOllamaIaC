@@ -3,6 +3,7 @@
 frigate_root: /opt/frigate
 frigate_media_path: /media/frigate
 frigate_timezone: Europe/Moscow
+frigate_backend_port: 18971
 
 # Адрес VM и локальные DNS-имена, которые попадут в self-signed сертификат.
 frigate_vm_ip: 192.168.50.20
@@ -17,20 +18,31 @@ frigate_image: ghcr.io/blakeblackshear/frigate:stable-tensorrt
 frigate_model_path: /config/model_cache/yolov9-t-320.onnx
 frigate_labelmap_path: /config/model_cache/coco-yolo-80.txt
 
-# Ollama слушает HTTP внутри VM, а наружу отдается через nginx HTTPS proxy.
-ollama_host: 0.0.0.0:11434
+# Ollama слушает только адрес Docker bridge, доступный контейнеру Frigate и nginx,
+# но не LAN-интерфейсу. Адрес bridge Ansible определяет автоматически.
+ollama_backend_port: 11435
 ollama_https_port: 11443
+ollama_version: 0.30.8
+ollama_archive_sha256: ffe2b2c2f2f5f5b30c081ec353c2e0bb2d9ead516064a8e22663b24b8fd8dca0
 ollama_model: huihui_ai/gpt-oss-abliterated:20b
 ollama_keep_alive: 10m
+
+# Одна локальная basic-auth учётка защищает Frigate, Ollama и ASR в LAN.
+# Скрипт init-local-config.ps1 заменяет эти демонстрационные значения.
+home_ai_basic_user: home_ai_admin
+home_ai_basic_password: replace_me_securely
 
 # Separate HTTPS ASR API on the same VM.
 asr_enabled: true
 asr_root: /opt/asr
 asr_port: 9443
+asr_backend_port: 19443
 asr_model: Systran/faster-whisper-large-v3
 asr_device: cuda
 asr_compute_type: int8
 asr_cpu_threads: 4
+asr_max_upload_bytes: 104857600
+asr_max_concurrent_transcriptions: 1
 
 # Демонстрационные RTSP-учетные данные. Для реального стенда замените их
 # в ansible/group_vars/all.yml и при необходимости зашифруйте файл Ansible Vault.

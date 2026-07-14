@@ -43,10 +43,12 @@ Describe "init-local-config.ps1" {
     It "creates ignored local config from the public templates" {
         & $ScriptPath `
             -VmAddress "192.168.77.20" `
-            -VmUser "vm'admin" `
+            -VmUser "vm-admin" `
             -SshKeyPath "C:\Keys\home key's\id_ed25519" `
             -RtspUser "viewer'user" `
             -RtspPassword (New-TestSecureString "pa:ss #demo") `
+            -BasicAuthUser "home.admin" `
+            -BasicAuthPassword (New-TestSecureString "long basic:pass #demo") `
             -Camera1Host "192.168.77.31" `
             -Camera2Host "192.168.77.32"
 
@@ -57,12 +59,14 @@ Describe "init-local-config.ps1" {
         $vars = Get-Content -Raw -LiteralPath $VarsPath
 
         $inventory | Should -BeLike "*ansible_host: '192.168.77.20'*"
-        $inventory | Should -BeLike "*ansible_user: 'vm''admin'*"
+        $inventory | Should -BeLike "*ansible_user: 'vm-admin'*"
         $inventory | Should -BeLike "*ansible_ssh_private_key_file: 'C:\Keys\home key''s\id_ed25519'*"
 
         $vars | Should -BeLike "*frigate_vm_ip: '192.168.77.20'*"
         $vars | Should -BeLike "*frigate_rtsp_user: 'viewer''user'*"
         $vars | Should -BeLike "*frigate_rtsp_password: 'pa:ss #demo'*"
+        $vars | Should -BeLike "*home_ai_basic_user: 'home.admin'*"
+        $vars | Should -BeLike "*home_ai_basic_password: 'long basic:pass #demo'*"
         $vars | Should -BeLike "*host: 192.168.77.31*"
         $vars | Should -BeLike "*host: 192.168.77.32*"
     }
@@ -70,17 +74,44 @@ Describe "init-local-config.ps1" {
     It "does not overwrite existing local config without Force" {
         & $ScriptPath `
             -RtspUser "viewer" `
-            -RtspPassword (New-TestSecureString "first-pass")
+            -RtspPassword (New-TestSecureString "first-pass") `
+            -BasicAuthUser "home-admin" `
+            -BasicAuthPassword (New-TestSecureString "first-basic-pass")
 
-        { & $ScriptPath -RtspUser "viewer" -RtspPassword (New-TestSecureString "second-pass") } |
+        { & $ScriptPath -RtspUser "viewer" -RtspPassword (New-TestSecureString "second-pass") `
+                -BasicAuthUser "home-admin" -BasicAuthPassword (New-TestSecureString "second-basic-pass") } |
             Should -Throw -ExpectedMessage "*already exists*"
     }
 
     It "rejects an empty RTSP password" {
         $emptyPassword = [securestring]::new()
 
-        { & $ScriptPath -RtspUser "viewer" -RtspPassword $emptyPassword -Force } |
+        { & $ScriptPath -RtspUser "viewer" -RtspPassword $emptyPassword `
+                -BasicAuthUser "home-admin" -BasicAuthPassword (New-TestSecureString "valid-basic-pass") -Force } |
             Should -Throw -ExpectedMessage "*RTSP password must not be empty*"
+    }
+
+    It "rejects weak API credentials" {
+        { & $ScriptPath -RtspUser "viewer" -RtspPassword (New-TestSecureString "camera-pass") `
+                -BasicAuthUser "bad user" -BasicAuthPassword (New-TestSecureString "short") -Force } |
+            Should -Throw -ExpectedMessage "*Basic-auth user*"
+    }
+
+    It "rejects unsafe VM and camera host values" {
+        { & $ScriptPath -VmAddress "-oProxyCommand=bad" -RtspUser "viewer" `
+                -RtspPassword (New-TestSecureString "camera-pass") `
+                -BasicAuthUser "home-admin" -BasicAuthPassword (New-TestSecureString "valid-basic-pass") } |
+            Should -Throw -ExpectedMessage "*VmAddress*"
+
+        { & $ScriptPath -Camera1Host "camera host" -RtspUser "viewer" `
+                -RtspPassword (New-TestSecureString "camera-pass") `
+                -BasicAuthUser "home-admin" -BasicAuthPassword (New-TestSecureString "valid-basic-pass") } |
+            Should -Throw -ExpectedMessage "*Camera host*"
+
+        { & $ScriptPath -VmAddress "999.999.999.999" -RtspUser "viewer" `
+                -RtspPassword (New-TestSecureString "camera-pass") `
+                -BasicAuthUser "home-admin" -BasicAuthPassword (New-TestSecureString "valid-basic-pass") } |
+            Should -Throw -ExpectedMessage "*VmAddress*"
     }
 }
 

@@ -20,7 +20,7 @@ detect:
 
 genai:
   provider: ollama
-  base_url: http://host.docker.internal:11434
+  base_url: http://host.docker.internal:{{ frigate_vm_ollama_backend_port_resolved }}
   model: {{ ollama_model }}
   provider_options:
     options:

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "adler": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Adler home GPU",
+      "options": {
+        "baseURL": "{env:ADLER_OLLAMA_URL}/v1",
+        "headers": {
+          "Authorization": "Basic {env:ADLER_BASIC_B64}"
+        },
+        "timeout": 900000
+      },
+      "models": {
+        "mistral-adler:16k": {
+          "name": "Mistral Small 24B abliterated (16K)",
+          "tool_call": true,
+          "options": {
+            "temperature": 0
+          },
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          }
+        },
+        "gpt-oss-uncensored:16k": {
+          "name": "GPT-OSS 20B Abliterated Reasoning (16K)",
+          "reasoning": true,
+          "interleaved": {
+            "field": "reasoning_content"
+          },
+          "tool_call": true,
+          "options": {
+            "temperature": 1,
+            "reasoningEffort": "high"
+          },
+          "variants": {
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          }
+        },
+        "qwen3-uncensored:16k": {
+          "name": "Qwen3 8B Abliterated Reasoning (16K)",
+          "reasoning": true,
+          "interleaved": {
+            "field": "reasoning_content"
+          },
+          "tool_call": true,
+          "options": {
+            "temperature": 0.6
+          },
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          }
+        },
+        "nemotron-uncensored:16k": {
+          "name": "Nemotron Nano 8B Abliterated (16K)",
+          "tool_call": true,
+          "options": {
+            "temperature": 0.2
+          },
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          }
+        }
+      }
+    }
+  },
+  "model": "adler/gpt-oss-uncensored:16k",
+  "small_model": "adler/qwen3-uncensored:16k"
+}

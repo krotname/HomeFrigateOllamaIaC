@@ -44,6 +44,12 @@ jobs:
           ansible/playbooks/site.yml
           --syntax-check
           -e @ansible/group_vars/all.example.yml
+      - name: Run dependency-free Python tests
+        run: |
+          python -m compileall -q asr ollama-audio-transcription tests
+          python -m unittest discover -s tests -p 'test_*.py'
+      - name: Validate ASR Compose model
+        run: docker compose -f asr/docker-compose.yml config --quiet
 
   powershell-validation:
     name: PowerShell validation

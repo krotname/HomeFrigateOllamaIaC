@@ -2,20 +2,49 @@ param(
     [string]$FrigateUrl = "https://192.168.1.138:8971",
     [string]$OutFile = "$env:TEMP\frigate-local-ca.cer",
     [string]$CaCertPath = "",
+    [string]$ExpectedSha256Thumbprint = "",
     [string]$CrlPath = "",
-    [switch]$MachineStore
+    [switch]$MachineStore,
+    [switch]$TrustOnFirstUse
 )
 
 $ErrorActionPreference = "Stop"
 
-$uri = [Uri]$FrigateUrl
-if ($uri.Scheme -ne "https") {
-    throw "FrigateUrl must use https so a certificate can be captured safely"
+$uri = $null
+if (-not [Uri]::TryCreate($FrigateUrl, [UriKind]::Absolute, [ref]$uri) -or
+    $uri.Scheme -ne "https" -or
+    [string]::IsNullOrWhiteSpace($uri.Host) -or
+    -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+    -not [string]::IsNullOrEmpty($uri.Query) -or
+    -not [string]::IsNullOrEmpty($uri.Fragment) -or
+    $uri.AbsolutePath -ne "/") {
+    throw "FrigateUrl must be an absolute HTTPS authority without credentials, path, query, or fragment."
+}
+$frigateEndpoint = $uri.GetLeftPart([UriPartial]::Authority)
+
+if ($ExpectedSha256Thumbprint -notmatch '^[A-Fa-f0-9:\s-]*$') {
+    throw "ExpectedSha256Thumbprint contains unsupported characters."
+}
+$normalizedExpectedThumbprint = $ExpectedSha256Thumbprint -replace "[^A-Fa-f0-9]", ""
+if ($normalizedExpectedThumbprint -and $normalizedExpectedThumbprint.Length -ne 64) {
+    throw "ExpectedSha256Thumbprint must contain exactly 64 hexadecimal characters."
+}
+if ([string]::IsNullOrWhiteSpace($CaCertPath) -and
+    -not $normalizedExpectedThumbprint -and
+    -not $TrustOnFirstUse) {
+    throw "Provide CaCertPath or an out-of-band ExpectedSha256Thumbprint. Use TrustOnFirstUse only for deliberate bootstrap."
+}
+if (-not [string]::IsNullOrWhiteSpace($CaCertPath) -and -not (Test-Path -LiteralPath $CaCertPath -PathType Leaf)) {
+    throw "CA certificate not found: $CaCertPath"
+}
+if (-not [string]::IsNullOrWhiteSpace($CrlPath) -and -not (Test-Path -LiteralPath $CrlPath -PathType Leaf)) {
+    throw "CRL not found: $CrlPath"
 }
 
 if ([string]::IsNullOrWhiteSpace($CaCertPath)) {
     $capturedCertificate = $null
     $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
     $handler.ServerCertificateCustomValidationCallback = {
         param($requestMessage, $certificate, $chain, $sslPolicyErrors)
         if ($certificate) {
@@ -26,7 +55,7 @@ if ([string]::IsNullOrWhiteSpace($CaCertPath)) {
     $client = [System.Net.Http.HttpClient]::new($handler)
     $client.Timeout = [TimeSpan]::FromSeconds(15)
     try {
-        $response = $client.GetAsync("$FrigateUrl/api/version").GetAwaiter().GetResult()
+        $response = $client.GetAsync("$frigateEndpoint/api/version").GetAwaiter().GetResult()
         try {
             $response.EnsureSuccessStatusCode() | Out-Null
         }
@@ -50,16 +79,45 @@ if ([string]::IsNullOrWhiteSpace($CaCertPath)) {
     $certificate = $capturedCertificate
 }
 else {
-    if (-not (Test-Path -LiteralPath $CaCertPath)) {
-        throw "CA certificate not found: $CaCertPath"
-    }
     $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CaCertPath)
 }
 
-[System.IO.File]::WriteAllBytes($OutFile, $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+$sha256Bytes = $certificate.GetCertHash([System.Security.Cryptography.HashAlgorithmName]::SHA256)
+$actualSha256Thumbprint = ([BitConverter]::ToString($sha256Bytes)).Replace("-", "")
+if ($normalizedExpectedThumbprint -and
+    $actualSha256Thumbprint -ne $normalizedExpectedThumbprint.ToUpperInvariant()) {
+    throw "Certificate SHA-256 thumbprint mismatch. Expected $($normalizedExpectedThumbprint.ToUpperInvariant()), got $actualSha256Thumbprint."
+}
+$now = [DateTime]::UtcNow
+if ($certificate.NotBefore.ToUniversalTime() -gt $now -or $certificate.NotAfter.ToUniversalTime() -le $now) {
+    throw "Certificate is not currently valid: $($certificate.NotBefore) .. $($certificate.NotAfter)."
+}
+if ($TrustOnFirstUse -and -not $normalizedExpectedThumbprint -and [string]::IsNullOrWhiteSpace($CaCertPath)) {
+    Write-Warning "Trust-on-first-use accepted SHA-256 $actualSha256Thumbprint. Verify it out of band."
+}
+
+$publicCertificateBytes = $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+$certificate.Dispose()
+$certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($publicCertificateBytes)
+$basicConstraintsExtension = $certificate.Extensions | Where-Object {
+    $_.Oid.Value -eq "2.5.29.19"
+} | Select-Object -First 1
+$isCertificateAuthority = $false
+if ($basicConstraintsExtension) {
+    $basicConstraints = [System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new(
+        $basicConstraintsExtension,
+        $basicConstraintsExtension.Critical
+    )
+    $isCertificateAuthority = $basicConstraints.CertificateAuthority
+}
+if (-not [string]::IsNullOrWhiteSpace($CrlPath) -and -not $isCertificateAuthority) {
+    throw "A CRL can be installed only with a CA certificate."
+}
+[System.IO.File]::WriteAllBytes($OutFile, $publicCertificateBytes)
 
 $storeLocation = if ($MachineStore) { "LocalMachine" } else { "CurrentUser" }
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", $storeLocation)
+$storeName = if ($isCertificateAuthority) { "Root" } else { "TrustedPeople" }
+$store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, $storeLocation)
 $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
 try {
     $existing = $store.Certificates | Where-Object { $_.Thumbprint -eq $certificate.Thumbprint } | Select-Object -First 1
@@ -71,13 +129,11 @@ finally {
     $store.Close()
 }
 
-Write-Host "Installed $($certificate.Subject) into Cert:\$storeLocation\Root"
+Write-Host "Installed $($certificate.Subject) into Cert:\$storeLocation\$storeName"
+Write-Host "SHA-256: $actualSha256Thumbprint"
 Write-Host "Exported certificate to $OutFile"
 
 if (-not [string]::IsNullOrWhiteSpace($CrlPath)) {
-    if (-not (Test-Path -LiteralPath $CrlPath)) {
-        throw "CRL not found: $CrlPath"
-    }
     $certutilArgs = @()
     if (-not $MachineStore) {
         $certutilArgs += "-user"
@@ -88,3 +144,5 @@ if (-not [string]::IsNullOrWhiteSpace($CrlPath)) {
         throw "certutil failed to install CRL from $CrlPath"
     }
 }
+
+$certificate.Dispose()

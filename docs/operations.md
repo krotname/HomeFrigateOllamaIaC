@@ -28,6 +28,12 @@ bootstrap/recovery of WinRM itself.
 ansible-vault encrypt ansible/group_vars/all.yml
 ```
 
+Before the first Ansible connection, obtain the VM SSH host key with
+`ssh-keyscan`, compare its fingerprint with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the VM console, and only
+then append the verified public key to the operator's `known_hosts`. The sample
+inventory uses `StrictHostKeyChecking=yes` and will not learn a key silently.
+
 4. Run:
 
 ```powershell
@@ -48,10 +54,13 @@ the VM. That operation changes host PCI device state.
 
 ## Trust Local Certificate
 
-Run on a Windows client:
+Copy the public certificate over an authenticated channel and run on a Windows
+client:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 -FrigateUrl https://192.168.1.138:8971
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 `
+  -FrigateUrl https://192.168.1.138:8971 `
+  -CaCertPath C:\secure-transfer\fullchain.pem
 ```
 
 If the Frigate service uses the local root CA from the server, copy the public
@@ -60,6 +69,10 @@ CA and CRL to the Windows client first, then install both explicitly:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 -CaCertPath $env:TEMP\KRT-Frigate-Local-Root-CA-2026.pem -CrlPath $env:TEMP\KRT-Frigate-Local-Root-CA-2026.crl
 ```
+
+Alternatively, pass an out-of-band SHA-256 with
+`-ExpectedSha256Thumbprint`. Bare remote capture is rejected;
+`-TrustOnFirstUse` is an explicit bootstrap-only escape hatch.
 
 ## Config Backups
 
@@ -94,11 +107,9 @@ Run after deploy and after host reboots:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
-If Frigate is protected by nginx basic auth, provide the credentials with
-`-FrigateAuthUser` / `-FrigateAuthPassword` or the `FRIGATE_BASIC_USER` /
-`FRIGATE_BASIC_PASSWORD` environment variables.
-If ASR is protected by nginx basic auth, provide `-AsrAuthUser` /
-`-AsrAuthPassword` or the `ASR_BASIC_USER` / `ASR_BASIC_PASSWORD` environment
+All LAN APIs are protected by nginx basic auth. Provide the shared credentials
+with the `-FrigateAuth*`, `-OllamaAuth*`, and `-AsrAuth*` parameters or the
+matching `FRIGATE_BASIC_*`, `OLLAMA_BASIC_*`, and `ASR_BASIC_*` environment
 variables.
 
 The test writes `scripts\logs\frigate-vm-smoke-latest.json` unless a custom
@@ -115,28 +126,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1 -As
 
 ## LAN API Usage
 
+Install and verify the local certificate with `install-frigate-local-ca.ps1`
+before using these endpoints. The examples intentionally do not disable TLS
+verification.
+
 Frigate is published on the VM LAN address:
 
 ```powershell
-curl.exe -k -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://192.168.1.138:8971/api/version
+curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://192.168.1.138:8971/api/version
 ```
 
 Ollama is published on the VM LAN address:
 
 ```powershell
-curl.exe http://192.168.1.138:11434/api/version
+curl.exe -u "$env:OLLAMA_BASIC_USER`:$env:OLLAMA_BASIC_PASSWORD" https://192.168.1.138:11443/api/version
 ```
 
 ASR is published on the VM LAN address over HTTPS:
 
 ```powershell
-curl.exe -k -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" https://192.168.1.138:9443/health
+curl.exe -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" https://192.168.1.138:9443/health
 ```
 
 Transcribe audio with the OpenAI-compatible endpoint:
 
 ```powershell
-curl.exe -k -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
+curl.exe -u "$env:ASR_BASIC_USER`:$env:ASR_BASIC_PASSWORD" -X POST "https://192.168.1.138:9443/v1/audio/transcriptions" `
   -F "file=@C:\path\audio.m4a" `
   -F "language=ru" `
   -F "response_format=json"
@@ -152,7 +167,9 @@ $body = @{
   think = "low"
   options = @{ num_predict = 256; num_ctx = 2048 }
 } | ConvertTo-Json -Depth 4
-Invoke-RestMethod -Uri "http://192.168.1.138:11434/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 600
+curl.exe -u "$env:OLLAMA_BASIC_USER`:$env:OLLAMA_BASIC_PASSWORD" `
+  --max-time 600 -H "Content-Type: application/json" `
+  --data-binary $body https://192.168.1.138:11443/api/generate
 ```
 
 For this gpt-oss model, keep `num_predict` at `256` or higher for normal visible

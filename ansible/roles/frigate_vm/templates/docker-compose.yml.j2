@@ -31,7 +31,12 @@ services:
         tmpfs:
           size: 1000000000
     ports:
-      - "0.0.0.0:8971:8971"
-      - "8554:8554"
-      - "8555:8555/tcp"
-      - "8555:8555/udp"
+      - "127.0.0.1:{{ frigate_vm_frigate_backend_port_resolved }}:8971"
+      - "{{ frigate_vm_ip }}:8554:8554"
+      - "{{ frigate_vm_ip }}:8555:8555/tcp"
+      - "{{ frigate_vm_ip }}:8555:8555/udp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
