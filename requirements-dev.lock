@@ -8,16 +8,16 @@ ansible-compat==26.3.0 \
     --hash=sha256:15f0ea5ff6fcc5587b6b11a4a436fdeefd0fd4a46afe92d4e483c28370082ae0 \
     --hash=sha256:4fb48f324383033cf24df5ccb63bca4da766cb4ebbd4bc9dbad91b108f512a73
     # via ansible-lint
-ansible-core==2.21.0 \
-    --hash=sha256:28ccd0e2d1849f1c7272cec39a74a8a5c83f3d51314658fa5ca57ea85a87f454 \
-    --hash=sha256:fed7dd076365aad9ccf885c6b8f938e0fd508f5dcdffe5d2ca87cfb5fac47940
+ansible-core==2.21.2 \
+    --hash=sha256:c6139e662eda1bfb5af16029f12afa5edfc7f95f8cd44281b1bdb434a6d9dc70 \
+    --hash=sha256:c7d696c717da03109a32a569a5fe57925812a86734344eab775cba169bf57cf8
     # via
     #   -r requirements-dev.txt
     #   ansible-compat
     #   ansible-lint
-ansible-lint==26.4.0 \
-    --hash=sha256:29e0438f8af685a4fec96f9ea3404a3beb50d2911bc8df43f283256954ceea5b \
-    --hash=sha256:f33c4823544a5a8e5e36614866e111d1a929eeffee5e84481ede10d524a9d6d6
+ansible-lint==26.6.0 \
+    --hash=sha256:162939615eae3b59f38bd829542642b586ccee17eefb0df8718ea4b092eee222 \
+    --hash=sha256:790d08ff6ee56525244677411c90a17b374245d3913bc6a462b5d913ece6d615
     # via -r requirements-dev.txt
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309 \
@@ -210,9 +210,9 @@ distro==1.9.0 \
     --hash=sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed \
     --hash=sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2
     # via ansible-lint
-filelock==3.29.4 \
-    --hash=sha256:10cdb3656fc44541cdf30652a93fb10ec6b05325620eb316bd26893e4201538a \
-    --hash=sha256:dac1648087d5115554850d113e7dd8c83ab2d38e3435dde2d4f163847e57b767
+filelock==3.31.0 \
+    --hash=sha256:739b73e580fe88bb78d830aeddbc492519ece3d97ac8368de13a2032c61010c1 \
+    --hash=sha256:c188cbc4307c18894c5424fa73f97ea7fa127ddf62192487546da3a214d0a381
     # via
     #   -r requirements-dev.txt
     #   ansible-lint
