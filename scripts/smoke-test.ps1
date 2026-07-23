@@ -233,27 +233,27 @@ function Invoke-VmBashJson {
 }
 
 function Get-FrigateCurlArgs {
-    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
+    $curlArgs = @("--silent", "--show-error", "--fail", "--max-time", "15")
     if (-not [string]::IsNullOrWhiteSpace($FrigateAuthUser) -and -not [string]::IsNullOrWhiteSpace($FrigateAuthPassword)) {
-        $args += @("--user", "$($FrigateAuthUser):$FrigateAuthPassword")
+        $curlArgs += @("--user", "$($FrigateAuthUser):$FrigateAuthPassword")
     }
-    $args
+    $curlArgs
 }
 
 function Get-AsrCurlArgs {
-    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
+    $curlArgs = @("--silent", "--show-error", "--fail", "--max-time", "15")
     if (-not [string]::IsNullOrWhiteSpace($AsrAuthUser) -and -not [string]::IsNullOrWhiteSpace($AsrAuthPassword)) {
-        $args += @("--user", "$($AsrAuthUser):$AsrAuthPassword")
+        $curlArgs += @("--user", "$($AsrAuthUser):$AsrAuthPassword")
     }
-    $args
+    $curlArgs
 }
 
 function Get-OllamaCurlArgs {
-    $args = @("--silent", "--show-error", "--fail", "--max-time", "15")
+    $curlArgs = @("--silent", "--show-error", "--fail", "--max-time", "15")
     if (-not [string]::IsNullOrWhiteSpace($OllamaAuthUser) -and -not [string]::IsNullOrWhiteSpace($OllamaAuthPassword)) {
-        $args += @("--user", "$($OllamaAuthUser):$OllamaAuthPassword")
+        $curlArgs += @("--user", "$($OllamaAuthUser):$OllamaAuthPassword")
     }
-    $args
+    $curlArgs
 }
 
 $results = New-Object System.Collections.Generic.List[object]

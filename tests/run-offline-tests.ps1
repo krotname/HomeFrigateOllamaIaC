@@ -113,6 +113,7 @@ if not declared or any(locked.get(name) != version for name, version in declared
     $checks++
 
     $tasks = Get-Content -Raw ansible/roles/frigate_vm/tasks/main.yml
+    $handlers = Get-Content -Raw ansible/roles/frigate_vm/handlers/main.yml
     $nginx = Get-Content -Raw ansible/roles/frigate_vm/templates/home-ai-proxies.nginx.j2
     $compose = Get-Content -Raw ansible/roles/frigate_vm/templates/docker-compose.yml.j2
     $asr = Get-Content -Raw asr/app.py
@@ -137,7 +138,8 @@ if not declared or any(locked.get(name) != version for name, version in declared
     Assert-True ($backupScript -notmatch 'UserKnownHostsFile=NUL') "Backup SSH known_hosts bypass returned"
     Assert-True ($caInstaller -match 'ExpectedSha256Thumbprint') "CA installer has no out-of-band fingerprint check"
     Assert-True ($caInstaller -match 'Provide CaCertPath') "CA installer still trusts remote certificates by default"
-    Assert-True ($caInstaller -match 'AllowAutoRedirect = \$false') "CA capture follows redirects"
+    Assert-True ($caInstaller -match 'AuthenticateAsClient') "CA capture does not use a synchronous TLS handshake"
+    Assert-True ($caInstaller -notmatch '\[System\.Net\.Http') "CA capture uses an async HTTP client whose TLS callback cannot run on a runspace-less thread"
     Assert-True ($hypervSetup -match 'AutomaticStopAction ShutDown') "Hyper-V still uses an abrupt power-off action"
     Assert-True ($hypervSetup -match 'must be off before assigning') "DDA assignment has no VM-state guard"
     Assert-True ($hypervSetup -match 'Mount-VMHostAssignableDevice') "DDA failure has no host-device rollback"
@@ -149,6 +151,8 @@ if not declared or any(locked.get(name) != version for name, version in declared
     Assert-True ($tasks -notmatch 'ollama\.com/install\.sh') "Unverified Ollama installer returned"
     Assert-True ($smokeTest -notmatch '--insecure') "LAN smoke test disables TLS verification"
     Assert-True ($inventoryExample -match 'StrictHostKeyChecking=yes') "Ansible inventory learns unknown SSH host keys"
+    Assert-True ($handlers -match 'up -d --force-recreate') "Frigate restart handler does not recreate the container on config-only changes"
+    Assert-True ($tasks -match '(?s)Generate local self-signed certificate.*?notify:\s*\r?\n\s*- Restart nginx\s*\r?\n\s*- Restart Frigate') "Certificate rotation does not restart Frigate"
 
     $gitBash = "C:\Program Files\Git\bin\bash.exe"
     if (Test-Path -LiteralPath $gitBash) {
@@ -192,8 +196,26 @@ if not declared or any(locked.get(name) != version for name, version in declared
     }
 
     if (Get-Command docker -ErrorAction SilentlyContinue) {
-        Invoke-Checked docker @("compose", "-f", "asr/docker-compose.yml", "config", "--quiet")
-        $checks++
+        # A docker CLI can be present but unable to read local files (remote daemon
+        # relay, missing compose plugin). Probe with a trivial compose file first.
+        $probeDir = Join-Path ([System.IO.Path]::GetTempPath()) "HomeFrigate-compose-probe-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
+        try {
+            "services:`n  probe:`n    image: busybox" |
+                Set-Content -LiteralPath (Join-Path $probeDir "docker-compose.yml") -Encoding UTF8
+            & docker compose -f (Join-Path $probeDir "docker-compose.yml") config --quiet 2>$null | Out-Null
+            $dockerComposeUsable = ($LASTEXITCODE -eq 0)
+        }
+        finally {
+            Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($dockerComposeUsable) {
+            Invoke-Checked docker @("compose", "-f", "asr/docker-compose.yml", "config", "--quiet")
+            $checks++
+        }
+        else {
+            Write-Warning "docker CLI cannot validate local compose files here; skipping ASR compose validation."
+        }
     }
     if (Get-Command ansible-playbook -ErrorAction SilentlyContinue) {
         $env:ANSIBLE_CONFIG = Join-Path $root "ansible.cfg"
