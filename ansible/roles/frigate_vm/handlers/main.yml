@@ -1,6 +1,9 @@
 ---
+# --force-recreate: bind-mounted files such as config.yml are not part of the
+# container definition, so a plain "up -d" would keep the old configuration running.
 - name: Restart Frigate
-  ansible.builtin.command: docker compose -f "{{ frigate_root }}/docker-compose.yml" up -d
+  ansible.builtin.command: >-
+    docker compose -f "{{ frigate_root }}/docker-compose.yml" up -d --force-recreate
   changed_when: true
 
 - name: Reload systemd
