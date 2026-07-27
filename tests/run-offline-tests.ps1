@@ -192,7 +192,11 @@ if not declared or any(locked.get(name) != version for name, version in declared
     }
 
     if (Get-Command docker -ErrorAction SilentlyContinue) {
-        Invoke-Checked docker @("compose", "-f", "asr/docker-compose.yml", "config", "--quiet")
+        Get-Content -Raw -LiteralPath "asr/docker-compose.yml" |
+            docker compose -f - config --quiet
+        if ($LASTEXITCODE -ne 0) {
+            throw "docker compose validation failed with exit code $LASTEXITCODE"
+        }
         $checks++
     }
     if (Get-Command ansible-playbook -ErrorAction SilentlyContinue) {
