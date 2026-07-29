@@ -42,35 +42,38 @@ if (-not [string]::IsNullOrWhiteSpace($CrlPath) -and -not (Test-Path -LiteralPat
 }
 
 if ([string]::IsNullOrWhiteSpace($CaCertPath)) {
+    # The capture must use a synchronous TLS handshake: an async client such as
+    # HttpClient runs the validation scriptblock on a thread-pool thread that has
+    # no PowerShell runspace, so the callback throws and no certificate is captured.
     $capturedCertificate = $null
-    $handler = [System.Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $handler.ServerCertificateCustomValidationCallback = {
-        param($requestMessage, $certificate, $chain, $sslPolicyErrors)
-        if ($certificate) {
-            $script:capturedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
-        }
-        return $true
-    }
-    $client = [System.Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [TimeSpan]::FromSeconds(15)
+    $tcpClient = $null
+    $sslStream = $null
     try {
-        $response = $client.GetAsync("$frigateEndpoint/api/version").GetAwaiter().GetResult()
-        try {
-            $response.EnsureSuccessStatusCode() | Out-Null
+        $tcpClient = [System.Net.Sockets.TcpClient]::new()
+        if (-not $tcpClient.ConnectAsync($uri.Host, $uri.Port).Wait(15000)) {
+            throw "Timed out connecting to $frigateEndpoint"
         }
-        finally {
-            $response.Dispose()
-        }
-    }
-    catch {
-        if (-not $capturedCertificate) {
-            throw
+        $sslStream = [System.Net.Security.SslStream]::new(
+            $tcpClient.GetStream(),
+            $false,
+            {
+                param($tlsSender, $certificate, $chain, $sslPolicyErrors)
+                if ($certificate) {
+                    $script:capturedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
+                }
+                return $true
+            }
+        )
+        $sslStream.ReadTimeout = 15000
+        $sslStream.WriteTimeout = 15000
+        $sslStream.AuthenticateAsClient($uri.Host)
+        if (-not $capturedCertificate -and $sslStream.RemoteCertificate) {
+            $capturedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($sslStream.RemoteCertificate)
         }
     }
     finally {
-        $client.Dispose()
-        $handler.Dispose()
+        if ($sslStream) { $sslStream.Dispose() }
+        if ($tcpClient) { $tcpClient.Dispose() }
     }
 
     if (-not $capturedCertificate) {

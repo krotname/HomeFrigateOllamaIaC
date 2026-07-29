@@ -294,7 +294,11 @@
       - "extendedKeyUsage=serverAuth"
   changed_when: true
   when: frigate_vm_tls_regeneration_required | bool
-  notify: Restart nginx
+  # Frigate mounts {{ frigate_root }}/certs and terminates TLS on its own port,
+  # so a rotated certificate must restart both nginx and the Frigate container.
+  notify:
+    - Restart nginx
+    - Restart Frigate
 
 - name: Record TLS certificate identity
   ansible.builtin.copy:
