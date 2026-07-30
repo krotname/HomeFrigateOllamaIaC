@@ -126,6 +126,7 @@ if not declared or any(locked.get(name) != version for name, version in declared
     $inventoryExample = Get-Content -Raw ansible/inventory.example.yml
     Assert-True ($tasks -match 'home_ai_basic_password') "Basic-auth provisioning is missing"
     Assert-True ($tasks -match 'docker network inspect bridge') "Docker bridge discovery is missing"
+    Assert-True ($tasks -match '(?s)Disable Azure Linux Agent on the home Hyper-V VM.*?name: walinuxagent\.service.*?enabled: false.*?masked: true.*?state: stopped') "Azure Linux Agent DHCP-probe guard is missing"
     Assert-True ($nginx -match 'auth_basic_user_file') "Nginx basic auth is missing"
     Assert-True ($nginx -match 'listen 8971 ssl') "Frigate HTTPS proxy is missing"
     Assert-True ($nginx -match 'frigate_vm_asr_port_resolved') "ASR HTTPS proxy is missing"
