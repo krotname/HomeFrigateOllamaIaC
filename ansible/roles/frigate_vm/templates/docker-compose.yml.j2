@@ -35,6 +35,16 @@ services:
       - "{{ frigate_vm_ip }}:8554:8554"
       - "{{ frigate_vm_ip }}:8555:8555/tcp"
       - "{{ frigate_vm_ip }}:8555:8555/udp"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsSk --max-time 5 https://127.0.0.1:8971/api/version >/dev/null
+          && nvidia-smi -L >/dev/null
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 5m
     logging:
       driver: json-file
       options:

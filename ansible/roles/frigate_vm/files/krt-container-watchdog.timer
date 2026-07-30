@@ -1,0 +1,13 @@
+[Unit]
+Description=Run KRT container watchdog every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+RandomizedDelaySec=10
+AccuracySec=5s
+Persistent=false
+Unit=krt-container-watchdog.service
+
+[Install]
+WantedBy=timers.target

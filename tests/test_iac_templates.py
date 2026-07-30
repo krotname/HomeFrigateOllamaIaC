@@ -45,6 +45,55 @@ def render(relative_path, context):
 
 
 class IacTemplateTests(unittest.TestCase):
+    def test_ollama_watchdog_recovery_is_conservative(self):
+        role_files = ROOT / "ansible/roles/frigate_vm/files"
+        script = (role_files / "ollama-watchdog.sh").read_text(encoding="utf-8")
+        service = render(
+            "ansible/roles/frigate_vm/templates/ollama-watchdog.service.j2",
+            template_context(),
+        )
+
+        self.assertIn("OLLAMA_WATCHDOG_FAILURE_THRESHOLD:-2", script)
+        self.assertIn("OLLAMA_WATCHDOG_COOLDOWN_SECONDS:-900", script)
+        self.assertIn("restart deferred until the failure is confirmed", script)
+        self.assertIn("restart suppressed by ${COOLDOWN_SECONDS}s cooldown", script)
+        self.assertIn("RuntimeDirectory=krt-ollama-watchdog", service)
+        self.assertIn("RuntimeDirectoryPreserve=yes", service)
+
+    def test_ollama_watchdog_probes_deployed_model_and_port(self):
+        service = render(
+            "ansible/roles/frigate_vm/templates/ollama-watchdog.service.j2",
+            template_context(),
+        )
+
+        self.assertIn(
+            "Environment=OLLAMA_WATCHDOG_URL=http://127.0.0.1:11435", service
+        )
+        self.assertIn(
+            "Environment=OLLAMA_WATCHDOG_PROBE_MODEL=huihui_ai/gpt-oss-abliterated:20b",
+            service,
+        )
+
+    def test_container_watchdog_allowlist_follows_asr_setting(self):
+        script = (
+            ROOT / "ansible/roles/frigate_vm/files/container-watchdog.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CONTAINER_WATCHDOG_CONTAINERS", script)
+
+        context = template_context()
+        enabled = render(
+            "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
+            context,
+        )
+        self.assertIn("Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate asr\n", enabled)
+
+        context["frigate_vm_asr_enabled_resolved"] = False
+        disabled = render(
+            "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
+            context,
+        )
+        self.assertIn("Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate\n", disabled)
+
     def test_declared_dev_dependencies_match_lock(self):
         def pinned_requirements(path):
             result = {}
