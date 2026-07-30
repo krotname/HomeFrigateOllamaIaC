@@ -6,6 +6,7 @@ Wants=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/krt-container-watchdog.sh
+Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate{% if frigate_vm_asr_enabled_resolved | bool %} asr{% endif %}
 TimeoutStartSec=240
 RuntimeDirectory=krt-container-watchdog
 RuntimeDirectoryMode=0750

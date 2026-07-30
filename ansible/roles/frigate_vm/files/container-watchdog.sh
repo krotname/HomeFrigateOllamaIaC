@@ -5,7 +5,8 @@ readonly STATE_DIR=/run/krt-container-watchdog
 readonly FAILURE_THRESHOLD=3
 readonly COOLDOWN_SECONDS=900
 readonly RECOVERY_TIMEOUT_SECONDS=180
-readonly CONTAINERS=(frigate asr)
+read -r -a CONTAINERS <<<"${CONTAINER_WATCHDOG_CONTAINERS:-frigate asr}"
+readonly CONTAINERS
 
 log() {
   printf '[container-watchdog] %s\n' "$*"

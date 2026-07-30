@@ -120,6 +120,7 @@ try {
       exit 1
     }
     $state.lastRecovery = (Get-Date).ToString('o')
+    Save-State $state
     Recover-Vm -StartOnly
     $state.failureStreak = 0
     Save-State $state
@@ -162,6 +163,7 @@ try {
     exit 1
   }
   $state.lastRecovery = (Get-Date).ToString('o')
+  Save-State $state
   Recover-Vm
   $state.failureStreak = 0
   Save-State $state

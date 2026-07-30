@@ -6,6 +6,8 @@ Wants=network-online.target ollama.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/ollama-watchdog.sh
+Environment=OLLAMA_WATCHDOG_URL=http://127.0.0.1:{{ frigate_vm_ollama_backend_port_resolved }}
+Environment=OLLAMA_WATCHDOG_PROBE_MODEL={{ ollama_model }}
 TimeoutStartSec=240
 UMask=0027
 RuntimeDirectory=krt-ollama-watchdog
