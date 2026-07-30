@@ -196,26 +196,12 @@ if not declared or any(locked.get(name) != version for name, version in declared
     }
 
     if (Get-Command docker -ErrorAction SilentlyContinue) {
-        # A docker CLI can be present but unable to read local files (remote daemon
-        # relay, missing compose plugin). Probe with a trivial compose file first.
-        $probeDir = Join-Path ([System.IO.Path]::GetTempPath()) "HomeFrigate-compose-probe-$([guid]::NewGuid())"
-        New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
-        try {
-            "services:`n  probe:`n    image: busybox" |
-                Set-Content -LiteralPath (Join-Path $probeDir "docker-compose.yml") -Encoding UTF8
-            & docker compose -f (Join-Path $probeDir "docker-compose.yml") config --quiet 2>$null | Out-Null
-            $dockerComposeUsable = ($LASTEXITCODE -eq 0)
+        Get-Content -Raw -LiteralPath "asr/docker-compose.yml" |
+            docker compose -f - config --quiet
+        if ($LASTEXITCODE -ne 0) {
+            throw "docker compose validation failed with exit code $LASTEXITCODE"
         }
-        finally {
-            Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if ($dockerComposeUsable) {
-            Invoke-Checked docker @("compose", "-f", "asr/docker-compose.yml", "config", "--quiet")
-            $checks++
-        }
-        else {
-            Write-Warning "docker CLI cannot validate local compose files here; skipping ASR compose validation."
-        }
+        $checks++
     }
     if (Get-Command ansible-playbook -ErrorAction SilentlyContinue) {
         $env:ANSIBLE_CONFIG = Join-Path $root "ansible.cfg"
