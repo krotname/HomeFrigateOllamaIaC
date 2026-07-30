@@ -123,6 +123,17 @@
       - cameras | map(attribute='name') | unique | list | length == cameras | length
     fail_msg: "Camera names must be unique."
 
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Disable Azure Linux Agent on the home Hyper-V VM
+  ansible.builtin.systemd_service:
+    name: walinuxagent.service
+    enabled: false
+    masked: true
+    state: stopped
+  when: "'walinuxagent.service' in ansible_facts.services"
+
 - name: Install base packages
   ansible.builtin.apt:
     name:

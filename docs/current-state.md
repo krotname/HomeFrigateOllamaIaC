@@ -15,6 +15,7 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 | VM autostart | `AutomaticStartAction=Start`, delay `60` seconds |
 | VM CPU/RAM | `8` vCPU, `8 GB` startup RAM |
 | GPU | NVIDIA Tesla P40 via Hyper-V DDA, `PCIROOT(0)#PCI(0300)#PCI(0000)` |
+| Azure guest agent | `walinuxagent.service` disabled and masked; this non-Azure VM must not probe WireServer through DHCP |
 | Config backups | Scheduled task `WinHome Config Backup`, daily `03:20`, retained at `F:\Files\Backups\win-home-configs` |
 
 ## Frigate
