@@ -1,5 +1,5 @@
 ansible-core==2.21.2
 ansible-lint==26.6.0
 colorama==0.4.6; sys_platform == "win32"
-filelock==3.32.0
+filelock==3.32.2
 yamllint==1.38.0
