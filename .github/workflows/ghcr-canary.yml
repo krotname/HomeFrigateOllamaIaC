@@ -109,3 +109,52 @@ jobs:
                 `Reference: ${process.env.PACKAGE_REFERENCE}@${process.env.PACKAGE_DIGEST}`,
               ])
               .write();
+
+      - name: Remove a public probe-only package
+        if: ${{ failure() }}
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const packageName = `${context.repo.repo.toLowerCase()}-ci-artifacts`;
+            const packageResponse = await github.request(
+              'GET /user/packages/{package_type}/{package_name}',
+              {
+                package_type: 'container',
+                package_name: packageName,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              },
+            );
+            const packageInfo = packageResponse.data;
+            const versions = await github.paginate(
+              'GET /user/packages/{package_type}/{package_name}/versions',
+              {
+                package_type: 'container',
+                package_name: packageName,
+                per_page: 100,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              },
+            );
+            const probeOnly = versions.length > 0 && versions.every((version) => {
+              const tags = version.metadata?.container?.tags ?? [];
+              return tags.length > 0 && tags.every((tag) => /^probe-\d+-\d+$/.test(tag));
+            });
+
+            if (
+              packageInfo.name !== packageName
+              || packageInfo.visibility !== 'public'
+              || packageInfo.owner?.login?.toLowerCase() !== context.repo.owner.toLowerCase()
+              || !probeOnly
+            ) {
+              throw new Error(`Refusing to delete non-probe package ${packageName}`);
+            }
+
+            await github.request(
+              'DELETE /user/packages/{package_type}/{package_name}',
+              {
+                package_type: 'container',
+                package_name: packageName,
+                headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+              },
+            );
+            core.notice(`Deleted public probe-only package ${packageName}`);
