@@ -94,6 +94,30 @@ class IacTemplateTests(unittest.TestCase):
         )
         self.assertIn("Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate\n", disabled)
 
+    def test_container_watchdog_timeout_covers_sequential_recovery(self):
+        script = (
+            ROOT / "ansible/roles/frigate_vm/files/container-watchdog.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("RECOVERY_TIMEOUT_SECONDS=180", script)
+        # Отказ docker restart/start не должен обрывать обход остальных контейнеров.
+        self.assertIn("docker restart failed for container", script)
+        self.assertIn("docker start failed for container", script)
+
+        context = template_context()
+        enabled = render(
+            "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
+            context,
+        )
+        # frigate и asr ждутся последовательно: 180 с на каждый плюс запас.
+        self.assertIn("TimeoutStartSec=420\n", enabled)
+
+        context["frigate_vm_asr_enabled_resolved"] = False
+        disabled = render(
+            "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
+            context,
+        )
+        self.assertIn("TimeoutStartSec=240\n", disabled)
+
     def test_declared_dev_dependencies_match_lock(self):
         def pinned_requirements(path):
             result = {}
