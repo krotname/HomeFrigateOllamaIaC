@@ -42,6 +42,12 @@ ansible-playbook -i ansible/inventory.yml ansible/playbooks/site.yml --ask-becom
 
 ## Hyper-V Host
 
+Current production note (2026-09-14): `ADLER-WHITE-W1` no longer contains the
+Tesla P40. Do not run this host setup with `-AssignGpu` against White unless a
+new compatible device and its exact current location path have first been
+verified. `frigate-ubuntu` is intentionally off with autostart disabled; the Pi
+kiosk streams directly from the cameras through Red.
+
 Run against the Windows Server host through WinRM HTTPS:
 
 ```powershell

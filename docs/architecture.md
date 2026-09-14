@@ -2,6 +2,11 @@
 
 This repository deploys the home video AI stack as code.
 
+The architecture below is the retained GPU reference design. In current
+production (2026-09-14), the Tesla P40 is no longer installed in White and the
+Frigate VM is off. The Pi kiosk camera path is now camera -> go2rtc on Red ->
+HTTPS kiosk, with no Frigate hop. See [Current Production State](current-state.md).
+
 ## Components
 
 - Windows Server host: Hyper-V, VM autostart, Tesla P40 DDA passthrough.
