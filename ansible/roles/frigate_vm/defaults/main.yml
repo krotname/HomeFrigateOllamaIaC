@@ -1,4 +1,10 @@
 ---
+frigate_vm_profile: gpu_analytics
+frigate_vm_recorder_image: ghcr.io/blakeblackshear/frigate:stable
+frigate_vm_ollama_enabled: true
+frigate_vm_record_continuous_days: 3
+frigate_vm_record_audio_preset: preset-record-generic-audio-copy
+frigate_vm_recorder_detect_fps: 1
 frigate_vm_asr_enabled: true
 frigate_vm_asr_root: /opt/asr
 frigate_vm_asr_port: 9443

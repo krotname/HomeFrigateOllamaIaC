@@ -1,4 +1,5 @@
 import re
+import importlib.util
 import unittest
 from pathlib import Path
 from urllib.parse import quote
@@ -8,6 +9,11 @@ import yaml
 
 
 ROOT = Path(__file__).parents[1]
+RECORDER_SPEC = importlib.util.spec_from_file_location(
+    "apply_recorder_profile", ROOT / "scripts/apply-recorder-profile.py"
+)
+RECORDER_MODULE = importlib.util.module_from_spec(RECORDER_SPEC)
+RECORDER_SPEC.loader.exec_module(RECORDER_MODULE)
 
 
 def template_context():
@@ -20,13 +26,31 @@ def template_context():
     context = {**defaults, **values}
     context.update(
         {
-            "frigate_vm_asr_enabled_resolved": values["asr_enabled"],
+            "frigate_vm_profile_resolved": "gpu_analytics",
+            "frigate_vm_recorder_image_resolved": defaults["frigate_vm_recorder_image"],
+            "frigate_vm_ollama_enabled_resolved": True,
+            "frigate_vm_asr_enabled_resolved": True,
+            "frigate_vm_record_continuous_days_resolved": 3,
+            "frigate_vm_record_audio_preset_resolved": "preset-record-generic-audio-copy",
+            "frigate_vm_recorder_detect_fps_resolved": 1,
             "frigate_vm_asr_port_resolved": values["asr_port"],
             "frigate_vm_asr_max_upload_bytes_resolved": values["asr_max_upload_bytes"],
             "frigate_vm_frigate_backend_port_resolved": values["frigate_backend_port"],
             "frigate_vm_ollama_backend_port_resolved": values["ollama_backend_port"],
             "frigate_vm_asr_backend_port_resolved": values["asr_backend_port"],
             "frigate_vm_docker_gateway_resolved": "172.17.0.1",
+        }
+    )
+    return context
+
+
+def recorder_context():
+    context = template_context()
+    context.update(
+        {
+            "frigate_vm_profile_resolved": "recorder",
+            "frigate_vm_ollama_enabled_resolved": False,
+            "frigate_vm_asr_enabled_resolved": False,
         }
     )
     return context
@@ -45,6 +69,34 @@ def render(relative_path, context):
 
 
 class IacTemplateTests(unittest.TestCase):
+    def test_live_transition_preserves_streams_and_removes_gpu_runtime(self):
+        source_config = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", template_context())
+        )
+        source_compose = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/docker-compose.yml.j2", template_context())
+        )
+        for camera in source_config["cameras"].values():
+            camera["face_recognition"] = {"enabled": True}
+
+        config = RECORDER_MODULE.recorder_config(source_config, 3, 1)
+        compose = RECORDER_MODULE.recorder_compose(
+            source_compose, "ghcr.io/blakeblackshear/frigate:stable"
+        )
+        self.assertEqual(source_config["go2rtc"], config["go2rtc"])
+        self.assertEqual(set(source_config["cameras"]), set(config["cameras"]))
+        self.assertTrue(
+            all("face_recognition" not in camera for camera in config["cameras"].values())
+        )
+        self.assertNotIn("detectors", config)
+        self.assertNotIn("model", config)
+        self.assertNotIn("genai", config)
+        self.assertEqual(3, config["record"]["continuous"]["days"])
+        service = compose["services"]["frigate"]
+        self.assertNotIn("runtime", service)
+        self.assertNotIn("deploy", service)
+        self.assertNotIn("NVIDIA_VISIBLE_DEVICES", service["environment"])
+
     def test_ollama_watchdog_recovery_is_conservative(self):
         role_files = ROOT / "ansible/roles/frigate_vm/files"
         script = (role_files / "ollama-watchdog.sh").read_text(encoding="utf-8")
@@ -125,6 +177,47 @@ class IacTemplateTests(unittest.TestCase):
         self.assertEqual(
             "http://host.docker.internal:11435", config_data["genai"]["base_url"]
         )
+
+    def test_recorder_profile_has_no_gpu_or_analytics_runtime(self):
+        context = recorder_context()
+        compose = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/docker-compose.yml.j2", context)
+        )
+        config = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", context)
+        )
+        service = compose["services"]["frigate"]
+
+        self.assertEqual("ghcr.io/blakeblackshear/frigate:stable", service["image"])
+        self.assertNotIn("runtime", service)
+        self.assertNotIn("deploy", service)
+        self.assertNotIn("NVIDIA_VISIBLE_DEVICES", service["environment"])
+        self.assertNotIn("nvidia-smi", " ".join(service["healthcheck"]["test"]))
+        self.assertNotIn("detectors", config)
+        self.assertNotIn("model", config)
+        self.assertNotIn("genai", config)
+        self.assertFalse(config["detect"]["enabled"])
+        self.assertFalse(config["motion"]["enabled"])
+        self.assertFalse(config["birdseye"]["enabled"])
+        self.assertFalse(config["snapshots"]["enabled"])
+        self.assertEqual(3, config["record"]["continuous"]["days"])
+        self.assertEqual(
+            "preset-record-generic-audio-copy", config["ffmpeg"]["output_args"]["record"]
+        )
+        for camera in config["cameras"].values():
+            self.assertEqual(1, camera["detect"]["fps"])
+            self.assertFalse(camera["motion"]["enabled"])
+
+    def test_recorder_nginx_exposes_only_frigate(self):
+        nginx = render(
+            "ansible/roles/frigate_vm/templates/home-ai-proxies.nginx.j2",
+            recorder_context(),
+        )
+
+        self.assertEqual(1, nginx.count('auth_basic "Home AI";'))
+        self.assertIn("listen 8971 ssl;", nginx)
+        self.assertNotIn("listen 11443 ssl;", nginx)
+        self.assertNotIn("listen 9443 ssl;", nginx)
 
     def test_nginx_proxies_are_authenticated_and_target_loopback(self):
         context = template_context()

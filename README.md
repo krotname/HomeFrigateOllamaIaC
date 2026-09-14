@@ -1,4 +1,4 @@
-# Frigate + Ollama на Hyper-V VM с NVIDIA Tesla
+# Frigate Recorder на Hyper-V VM
 
 [English](README.en.md)
 
@@ -9,19 +9,26 @@
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![IaC](https://img.shields.io/badge/IaC-Ansible%20%2B%20PowerShell-2f6f9f)](ansible/)
 
-Репозиторий для воспроизводимого разворачивания домашнего video/audio AI стека:
-Frigate смотрит камеры, пишет архив и детектит объекты на GPU. Ollama живет в
-той же Ubuntu VM и доступна по локальной сети. Отдельный ASR API распознает
-аудио через faster-whisper по HTTPS. Windows Server остается основным хостом,
-а Linux/CUDA стек живет внутри Ubuntu VM.
+Репозиторий поддерживает два профиля: текущий production-профиль `recorder`
+для непрерывной записи камер без GPU-аналитики и сохранённый профиль
+`gpu_analytics` для прежнего Frigate + Ollama + ASR стека.
 
-> Текущее состояние production на 14.09.2026: Tesla P40 больше не установлена
-> в `ADLER-WHITE-W1`, VM `frigate-ubuntu` выключена и исключена из автозапуска.
-> GPU/DDA-разделы ниже сохранены как описание прежней проверенной конфигурации.
+> Текущее состояние production на 15.09.2026: Tesla P40 не установлена,
+> VM `frigate-ubuntu` работает с `2` vCPU и `4 GB` RAM, включена в автозапуск и
+> пишет непрерывный архив за `3` дня без детекции, снимков, Ollama и ASR.
 > Камеры Pi kiosk поступают напрямую с камер через go2rtc на Red и от Frigate не
 > зависят. Подробный live-state: [docs/current-state.md](docs/current-state.md).
 
-Проверенная рабочая конфигурация:
+Для production задайте в inventory:
+
+```yaml
+frigate_profile: recorder
+ollama_enabled: false
+asr_enabled: false
+record_continuous_days: 3
+```
+
+Сохранённая GPU-конфигурация (`gpu_analytics`):
 
 - Windows Server host: `ADLER-WHITE-1W`.
 - Hyper-V VM: `frigate-ubuntu`.

@@ -5,10 +5,13 @@ mqtt:
   enabled: false
 
 ffmpeg:
+{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
   hwaccel_args: preset-nvidia
+{% endif %}
   output_args:
-    record: preset-record-generic-audio-aac
+    record: {{ frigate_vm_record_audio_preset_resolved }}
 
+{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
 detectors:
   onnx:
     type: onnx
@@ -101,6 +104,39 @@ objects:
     prompt: >
       Answer only in Russian. Briefly describe what the {label} is doing in these
       security camera frames. Mention only observed behavior; do not guess. Use one sentence.
+{% else %}
+detect:
+  enabled: false
+  fps: {{ frigate_vm_recorder_detect_fps_resolved }}
+
+motion:
+  enabled: false
+
+birdseye:
+  enabled: false
+
+review:
+  alerts:
+    enabled: false
+  detections:
+    enabled: false
+
+snapshots:
+  enabled: false
+
+record:
+  enabled: true
+  continuous:
+    days: {{ frigate_vm_record_continuous_days_resolved }}
+  motion:
+    days: 0
+  alerts:
+    retain:
+      days: 0
+  detections:
+    retain:
+      days: 0
+{% endif %}
 
 go2rtc:
   streams:
@@ -131,7 +167,11 @@ cameras:
     detect:
       width: {{ camera.detect_width }}
       height: {{ camera.detect_height }}
-      fps: {{ camera.detect_fps }}
+      fps: {{ frigate_vm_recorder_detect_fps_resolved if frigate_vm_profile_resolved == 'recorder' else camera.detect_fps }}
+{% if frigate_vm_profile_resolved == 'recorder' %}
+    motion:
+      enabled: false
+{% endif %}
     live:
       streams:
         {{ camera.name }}_sub: {{ camera.name }}_sub
@@ -139,6 +179,7 @@ cameras:
 
 version: 0.17-0
 
+{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
 model:
   model_type: yolo-generic
   width: 320
@@ -147,3 +188,4 @@ model:
   input_dtype: float
   path: {{ frigate_model_path }}
   labelmap_path: {{ frigate_labelmap_path }}
+{% endif %}

@@ -1,17 +1,21 @@
-# Frigate + Ollama + ASR on a Hyper-V VM with NVIDIA Tesla
+# Frigate Recorder on a Hyper-V VM
 
 [Russian](README.md)
 
 
-A reproducible IaC repository for a home video/audio AI stack: Frigate watches cameras, records footage, detects objects on GPU, Ollama serves a local text model, and a separate HTTPS ASR service transcribes audio with faster-whisper. Windows Server remains the main host, while the Linux/CUDA stack runs inside an Ubuntu VM.
+A reproducible IaC repository with two profiles: the current `recorder`
+production profile continuously records cameras without GPU analytics, while
+the retained `gpu_analytics` profile describes the former Frigate, Ollama and
+ASR stack.
 
-> Production status as of 2026-09-14: the Tesla P40 is no longer installed in
-> `ADLER-WHITE-W1`; `frigate-ubuntu` is powered off and excluded from autostart.
-> The GPU/DDA sections below remain as documentation of the former validated
+> Production status as of 2026-09-15: the Tesla P40 is not installed;
+> `frigate-ubuntu` runs with 2 vCPUs and 4 GB RAM, starts automatically and
+> keeps three days of continuous recordings without detection, snapshots,
+> Ollama or ASR. The GPU/DDA sections below document the former validated
 > configuration. The Pi kiosk now reads cameras directly through go2rtc on Red
 > and no longer depends on Frigate. See [docs/current-state.md](docs/current-state.md).
 
-Verified configuration:
+Retained GPU configuration (`gpu_analytics`):
 
 - Windows Server host: `ADLER-WHITE-1W`.
 - Hyper-V VM: `frigate-ubuntu`.
