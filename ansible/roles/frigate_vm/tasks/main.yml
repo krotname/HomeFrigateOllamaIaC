@@ -924,5 +924,14 @@
       - "Profile: {{ frigate_vm_profile_resolved }}"
       - "GPU: {{ frigate_vm_nvidia_smi.stdout | default('disabled') }}"
       - "Frigate: {{ frigate_vm_frigate_version.content }}"
-      - "Ollama: {{ (frigate_vm_ollama_version.json.version | default(frigate_vm_ollama_version.content)) if (frigate_vm_ollama_enabled_resolved | bool) else 'disabled' }}"
-      - "ASR: {{ frigate_vm_asr_health.json.model | default('disabled') if (frigate_vm_asr_enabled_resolved | bool) else 'disabled' }}"
+      - >-
+        Ollama: {{
+          (frigate_vm_ollama_version.json.version
+           | default(frigate_vm_ollama_version.content))
+          if (frigate_vm_ollama_enabled_resolved | bool) else 'disabled'
+        }}
+      - >-
+        ASR: {{
+          (frigate_vm_asr_health.json.model | default('disabled'))
+          if (frigate_vm_asr_enabled_resolved | bool) else 'disabled'
+        }}
