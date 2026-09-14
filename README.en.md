@@ -5,6 +5,12 @@
 
 A reproducible IaC repository for a home video/audio AI stack: Frigate watches cameras, records footage, detects objects on GPU, Ollama serves a local text model, and a separate HTTPS ASR service transcribes audio with faster-whisper. Windows Server remains the main host, while the Linux/CUDA stack runs inside an Ubuntu VM.
 
+> Production status as of 2026-09-14: the Tesla P40 is no longer installed in
+> `ADLER-WHITE-W1`; `frigate-ubuntu` is powered off and excluded from autostart.
+> The GPU/DDA sections below remain as documentation of the former validated
+> configuration. The Pi kiosk now reads cameras directly through go2rtc on Red
+> and no longer depends on Frigate. See [docs/current-state.md](docs/current-state.md).
+
 Verified configuration:
 
 - Windows Server host: `ADLER-WHITE-1W`.

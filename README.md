@@ -15,6 +15,12 @@ Frigate смотрит камеры, пишет архив и детектит �
 аудио через faster-whisper по HTTPS. Windows Server остается основным хостом,
 а Linux/CUDA стек живет внутри Ubuntu VM.
 
+> Текущее состояние production на 14.09.2026: Tesla P40 больше не установлена
+> в `ADLER-WHITE-W1`, VM `frigate-ubuntu` выключена и исключена из автозапуска.
+> GPU/DDA-разделы ниже сохранены как описание прежней проверенной конфигурации.
+> Камеры Pi kiosk поступают напрямую с камер через go2rtc на Red и от Frigate не
+> зависят. Подробный live-state: [docs/current-state.md](docs/current-state.md).
+
 Проверенная рабочая конфигурация:
 
 - Windows Server host: `ADLER-WHITE-1W`.

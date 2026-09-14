@@ -1,24 +1,26 @@
 # Current Production State
 
-Last live LAN/API check verified: `2026-07-06`.
-Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
+Last live host, VM, LAN camera and Pi kiosk check verified: `2026-09-14`.
 
 ## Host and VM
 
 | Component | Value |
 | --- | --- |
-| Windows host | `ADLER-WHITE-1W`, `192.168.1.33` |
-| Windows host admin transport | WinRM over HTTPS `5986`, endpoint `PowerShell.7`, credential `C:\Users\KRT\.codex\secrets\adler-winrm.credential.xml` |
-| Hyper-V VM | `frigate-ubuntu`, `192.168.1.138` |
-| Frigate LAN address | `192.168.1.138:8971` |
-| ASR LAN address | `192.168.1.138:9443` |
-| VM autostart | `AutomaticStartAction=Start`, delay `60` seconds |
+| Windows host | `ADLER-WHITE-W1`, `192.168.1.104` |
+| Windows host admin transport | Key-only OpenSSH through the managed `adler-white-w1.lan` host profile |
+| Hyper-V VM | `frigate-ubuntu`, retained but `Off`; former address `192.168.1.138` is offline |
+| Frigate / ASR LAN addresses | Offline with the VM |
+| VM autostart | `AutomaticStartAction=Nothing` |
 | VM CPU/RAM | `8` vCPU, `8 GB` startup RAM |
-| GPU | NVIDIA Tesla P40 via Hyper-V DDA, `PCIROOT(0)#PCI(0300)#PCI(0000)` |
+| GPU | No Tesla P40 is present in White; one stale DDA assignment remains on the stopped VM and must not be treated as hardware presence |
+| Pi kiosk camera path | Direct camera RTSP substreams -> go2rtc sidecar on Red -> trusted HTTPS kiosk; no Frigate dependency |
 | Azure guest agent | `walinuxagent.service` disabled and masked; this non-Azure VM must not probe WireServer through DHCP |
 | Config backups | Scheduled task `WinHome Config Backup`, daily `03:20`, retained at `F:\Files\Backups\win-home-configs` |
 
 ## Frigate
+
+`frigate-ubuntu` is intentionally offline. The values below describe its last
+known retained configuration, not currently reachable production services.
 
 | Component | Value |
 | --- | --- |
@@ -58,12 +60,13 @@ Windows host WinRM HTTPS administration verified: `2026-06-15 20:54`.
 ## Validation Snapshot
 
 ```text
-Smoke-test after RAM upgrade: failed_count=0
-Hyper-V VM memory: startup=8589934592, assigned=8589934592
-Frigate API: 0.17.1-416a9b7, container healthy
-Ollama API: 0.30.8, Frigate model=qwen2.5:3b
-ASR API: Systran/faster-whisper-large-v3, cuda, int8
-GPU: Tesla P40, detector inference about 8.34 ms
+Live check 2026-09-14:
+White host: 192.168.1.104 reachable
+Tesla P40 present devices: 0
+frigate-ubuntu: Off, autostart=Nothing, stale DDA assignments=1
+Camera 1: 192.168.1.12:554 reachable
+Camera 3: 192.168.1.51:554 unreachable
+Pi kiosk: trusted HTTPS on Red; camera source configuration is direct RTSP
 ```
 
 The full validation command is:
