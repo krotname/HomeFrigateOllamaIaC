@@ -31,6 +31,7 @@ server {
     }
 }
 
+{% if frigate_vm_ollama_enabled_resolved | bool %}
 server {
     listen {{ ollama_https_port }} ssl;
     server_name {{ frigate_vm_ip }}{% for name in frigate_dns_names %} {{ name }}{% endfor %};
@@ -56,8 +57,10 @@ server {
         proxy_send_timeout 900s;
     }
 }
+{% endif %}
 
 # Host-local compatibility endpoint for CLI tools and the authenticated SSH tunnel.
+{% if frigate_vm_ollama_enabled_resolved | bool %}
 server {
     listen 127.0.0.1:{{ frigate_vm_ollama_backend_port_resolved }};
     server_name localhost;
@@ -70,6 +73,7 @@ server {
         proxy_send_timeout 900s;
     }
 }
+{% endif %}
 
 {% if frigate_vm_asr_enabled_resolved | bool %}
 server {

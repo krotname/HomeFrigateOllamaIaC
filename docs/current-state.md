@@ -1,84 +1,51 @@
 # Current Production State
 
-Last live host, VM, LAN camera and Pi kiosk check verified: `2026-09-14`.
+Last live host and VM check: `2026-09-15`.
 
 ## Host and VM
 
 | Component | Value |
 | --- | --- |
 | Windows host | `ADLER-WHITE-W1`, `192.168.1.104` |
-| Windows host admin transport | Key-only OpenSSH through the managed `adler-white-w1.lan` host profile |
-| Hyper-V VM | `frigate-ubuntu`, retained but `Off`; former address `192.168.1.138` is offline |
-| Frigate / ASR LAN addresses | Offline with the VM |
-| VM autostart | `AutomaticStartAction=Nothing` |
-| VM CPU/RAM | `8` vCPU, `8 GB` startup RAM |
-| GPU | No Tesla P40 is present in White; one stale DDA assignment remains on the stopped VM and must not be treated as hardware presence |
-| Pi kiosk camera path | Direct camera RTSP substreams -> go2rtc sidecar on Red -> trusted HTTPS kiosk; no Frigate dependency |
-| Azure guest agent | `walinuxagent.service` disabled and masked; this non-Azure VM must not probe WireServer through DHCP |
-| Config backups | Scheduled task `WinHome Config Backup`, daily `03:20`, retained at `F:\Files\Backups\win-home-configs` |
+| Hyper-V VM | `frigate-ubuntu`, `Running`, `192.168.1.138` |
+| VM autostart | `AutomaticStartAction=Start` |
+| VM CPU/RAM | `2` vCPU, fixed `4 GB` RAM |
+| GPU/DDA | Tesla absent; VM assignable-device count `0` |
+| Media | `/media/frigate`, ext4 VHDX-backed mount, virtual size `2 TB` |
+| Host storage guard | Keep at least `150 GB` free on `F:` |
 
-## Frigate
-
-`frigate-ubuntu` is intentionally offline. The values below describe its last
-known retained configuration, not currently reachable production services.
+## Frigate Recorder
 
 | Component | Value |
 | --- | --- |
 | URL | `https://192.168.1.138:8971/` |
-| Auth | nginx basic auth on LAN `8971`; Frigate container listens on `127.0.0.1:18971` |
-| Root | `/opt/frigate` |
-| Image | `ghcr.io/blakeblackshear/frigate:stable-tensorrt` |
-| Media | `/media/frigate`, ext4 VHDX-backed mount |
-| Detector | `onnx`, `device=GPU` |
-| Model | `/config/model_cache/yolov9-t-320.onnx` |
-| Labelmap | `/config/model_cache/coco-yolo-80.txt` |
-| ffmpeg | NVIDIA CUDA hwaccel, `scale_cuda` |
+| Image | `ghcr.io/blakeblackshear/frigate:stable` (`0.18.0`) |
+| Runtime | Docker `runc`, no assigned GPU devices or device requests |
+| Cameras | `cam1_ds_i202`, `cam2_ds_i551`, `cam3_ds_i200` |
+| Recording | Main stream, continuous, `-c copy`, audio copy |
+| CPU snapshot | `47.2%` of the 2-vCPU guest; no object inference, main streams are not transcoded |
+| Initial retention | `3` days; measure actual growth after 24 hours before increasing |
+| Analytics | Detection, motion, review alerts/detections, snapshots, face/LPR and GenAI disabled |
+| Live view | go2rtc substreams remain available through Frigate |
 
-## Ollama
+`cam2_ds_i551` (`192.168.1.65`) was unreachable during the deployment check.
+Frigate continued recording cameras 1 and 3; an unavailable camera does not
+block the available streams.
 
-| Component | Value |
+## Disabled Services
+
+| Service | Production state |
 | --- | --- |
-| Service | systemd `ollama`, enabled |
-| Backend HTTP | Docker bridge gateway port `11435`, plus loopback proxy `127.0.0.1:11435` |
-| LAN URL | nginx TLS/basic-auth proxy on `192.168.1.138:11443` |
-| Frigate GenAI model | `qwen2.5:3b` |
-| Installed larger model | `huihui_ai/gpt-oss-abliterated:20b` |
-| Frigate GenAI | Review/object generation disabled; Frigate can still reach Ollama |
+| Ollama | systemd service disabled and inactive; watchdog timer disabled |
+| ASR | compose container absent; HTTPS listener removed |
+| Legacy nginx sites | `adler-frigate`, `ollama-https`, `asr-https` removed from enabled sites |
 
-## ASR
-
-| Component | Value |
-| --- | --- |
-| URL | `https://192.168.1.138:9443/` |
-| Endpoint | `POST /v1/audio/transcriptions` |
-| Root | `/opt/asr` |
-| Engine | `faster-whisper` |
-| Model | `Systran/faster-whisper-large-v3` |
-| Device | CUDA, `int8` compute type |
-| TLS/Auth | nginx terminates LAN TLS and basic auth on `9443`; the ASR container uses HTTP only on `127.0.0.1:19443` |
-
-## Validation Snapshot
-
-```text
-Live check 2026-09-14:
-White host: 192.168.1.104 reachable
-Tesla P40 present devices: 0
-frigate-ubuntu: Off, autostart=Nothing, stale DDA assignments=1
-Camera 1: 192.168.1.12:554 reachable
-Camera 3: 192.168.1.51:554 unreachable
-Pi kiosk: trusted HTTPS on Red; camera source configuration is direct RTSP
-```
-
-The full validation command is:
+## Validation
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test-recorder.ps1
 ```
 
-The smoke test reaches the Windows host through WinRM HTTPS. SSH is used only
-for the Ubuntu VM checks.
-
-Backup policy and registry:
-
-- [Backup Policy](backup-policy.md)
-- `registries/backup-registry.csv`
+The recorder smoke test treats camera availability separately from the
+configuration count and verifies that at least one camera is actively producing
+copy-mode recording segments.

@@ -1,7 +1,21 @@
 ---
 - name: Resolve service settings
   ansible.builtin.set_fact:
-    frigate_vm_asr_enabled_resolved: "{{ asr_enabled | default(frigate_vm_asr_enabled) }}"
+    frigate_vm_profile_resolved: "{{ frigate_profile | default(frigate_vm_profile) }}"
+    frigate_vm_recorder_image_resolved: >-
+      {{ frigate_recorder_image | default(frigate_vm_recorder_image) }}
+    frigate_vm_ollama_enabled_resolved: >-
+      {{ false if (frigate_profile | default(frigate_vm_profile)) == 'recorder'
+         else (ollama_enabled | default(frigate_vm_ollama_enabled)) }}
+    frigate_vm_asr_enabled_resolved: >-
+      {{ false if (frigate_profile | default(frigate_vm_profile)) == 'recorder'
+         else (asr_enabled | default(frigate_vm_asr_enabled)) }}
+    frigate_vm_record_continuous_days_resolved: >-
+      {{ record_continuous_days | default(frigate_vm_record_continuous_days) | int }}
+    frigate_vm_record_audio_preset_resolved: >-
+      {{ record_audio_preset | default(frigate_vm_record_audio_preset) }}
+    frigate_vm_recorder_detect_fps_resolved: >-
+      {{ recorder_detect_fps | default(frigate_vm_recorder_detect_fps) | int }}
     frigate_vm_asr_root_resolved: "{{ asr_root | default(frigate_vm_asr_root) }}"
     frigate_vm_asr_port_resolved: "{{ asr_port | default(frigate_vm_asr_port) | int }}"
     frigate_vm_asr_model_resolved: "{{ asr_model | default(frigate_vm_asr_model) }}"
@@ -34,6 +48,13 @@
       - frigate_rtsp_user != "rtsp_viewer"
       - frigate_rtsp_password != "demo_camera_password"
       - cameras | length > 0
+      - frigate_vm_profile_resolved in ['gpu_analytics', 'recorder']
+      - frigate_vm_recorder_image_resolved is match('^ghcr\.io/blakeblackshear/frigate:[A-Za-z0-9._-]+$')
+      - frigate_vm_record_continuous_days_resolved | int >= 1
+      - frigate_vm_record_continuous_days_resolved | int <= 30
+      - frigate_vm_record_audio_preset_resolved in ['preset-record-generic', 'preset-record-generic-audio-copy']
+      - frigate_vm_recorder_detect_fps_resolved | int >= 1
+      - frigate_vm_recorder_detect_fps_resolved | int <= 5
       - frigate_vm_ip is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
       - frigate_vm_ip.split('.') | map('int') | select('gt', 255) | list | length == 0
       - frigate_dns_names | length > 0
@@ -153,6 +174,7 @@
   ansible.builtin.command: nvidia-smi --query-gpu=name --format=csv,noheader
   register: frigate_vm_nvidia_smi
   changed_when: false
+  when: frigate_vm_profile_resolved == 'gpu_analytics'
 
 - name: Assert Docker is installed
   ansible.builtin.command: docker --version
@@ -162,17 +184,20 @@
   ansible.builtin.command: docker network inspect bridge
   register: frigate_vm_docker_bridge
   changed_when: false
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Resolve Docker bridge gateway
   ansible.builtin.set_fact:
     frigate_vm_docker_gateway_resolved: >-
-      {{ (frigate_vm_docker_bridge.stdout | from_json)[0].IPAM.Config[0].Gateway }}
+      {{ ((frigate_vm_docker_bridge.stdout | from_json)[0].IPAM.Config[0].Gateway)
+         if (frigate_vm_ollama_enabled_resolved | bool) else '' }}
 
 - name: Validate Docker bridge gateway
   ansible.builtin.assert:
     that:
       - frigate_vm_docker_gateway_resolved is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
     fail_msg: "Docker default bridge has no usable gateway address."
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Create Frigate directories
   ansible.builtin.file:
@@ -360,6 +385,7 @@
     owner: root
     group: root
     mode: "0644"
+  when: frigate_vm_profile_resolved == 'gpu_analytics'
 
 - name: Install model build script
   ansible.builtin.copy:
@@ -368,6 +394,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: frigate_vm_profile_resolved == 'gpu_analytics'
 
 - name: Install model build dependency lock
   ansible.builtin.copy:
@@ -376,11 +403,13 @@
     owner: root
     group: root
     mode: "0644"
+  when: frigate_vm_profile_resolved == 'gpu_analytics'
 
 - name: Build YOLOv9-t ONNX model if missing
   ansible.builtin.command: "{{ frigate_root }}/build-yolov9-onnx.sh"
   register: frigate_vm_yolov9_build
   changed_when: "'MODEL_BUILT=' in frigate_vm_yolov9_build.stdout"
+  when: frigate_vm_profile_resolved == 'gpu_analytics'
 
 - name: Render Docker Compose
   ansible.builtin.template:
@@ -395,6 +424,7 @@
   ansible.builtin.group:
     name: ollama
     system: true
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Create Ollama service user
   ansible.builtin.user:
@@ -404,6 +434,7 @@
     create_home: true
     shell: /usr/sbin/nologin
     system: true
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Inspect optional GPU access groups
   ansible.builtin.command:
@@ -417,14 +448,17 @@
   register: frigate_vm_ollama_gpu_groups
   changed_when: false
   failed_when: false
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Add Ollama user to available GPU access groups
   ansible.builtin.user:
     name: ollama
     groups: "{{ item.item }}"
     append: true
-  loop: "{{ frigate_vm_ollama_gpu_groups.results }}"
-  when: item.rc == 0
+  loop: "{{ frigate_vm_ollama_gpu_groups.results | default([]) }}"
+  when:
+    - frigate_vm_ollama_enabled_resolved | bool
+    - item.rc == 0
 
 - name: Install Ollama systemd unit
   ansible.builtin.copy:
@@ -451,6 +485,7 @@
   notify:
     - Reload systemd
     - Restart Ollama
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Create Ollama download cache
   ansible.builtin.file:
@@ -459,6 +494,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Inspect installed Ollama version
   ansible.builtin.command:
@@ -468,6 +504,7 @@
   register: frigate_vm_ollama_installed_version
   changed_when: false
   failed_when: false
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Verify installed Ollama binary checksum
   ansible.builtin.command:
@@ -479,6 +516,7 @@
   register: frigate_vm_ollama_installed_checksum
   changed_when: false
   failed_when: false
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Resolve whether Ollama installation is required
   ansible.builtin.set_fact:
@@ -487,6 +525,7 @@
          or not (frigate_vm_ollama_installed_version.stdout is search(
            (frigate_vm_ollama_version_resolved | regex_escape) ~ '$'))
          or frigate_vm_ollama_installed_checksum.rc != 0 }}
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Download checksum-pinned Ollama archive
   ansible.builtin.get_url:
@@ -501,20 +540,26 @@
     mode: "0644"
     checksum: "sha256:{{ frigate_vm_ollama_archive_sha256_resolved }}"
     timeout: 900
-  when: frigate_vm_ollama_installation_required | bool
+  when:
+    - frigate_vm_ollama_enabled_resolved | bool
+    - frigate_vm_ollama_installation_required | bool
 
 - name: Stop Ollama before a binary update
   ansible.builtin.systemd:
     name: ollama
     state: stopped
     daemon_reload: true
-  when: frigate_vm_ollama_installation_required | bool
+  when:
+    - frigate_vm_ollama_enabled_resolved | bool
+    - frigate_vm_ollama_installation_required | bool
 
 - name: Remove old Ollama runtime libraries before an update
   ansible.builtin.file:
     path: /usr/local/lib/ollama
     state: absent
-  when: frigate_vm_ollama_installation_required | bool
+  when:
+    - frigate_vm_ollama_enabled_resolved | bool
+    - frigate_vm_ollama_installation_required | bool
 
 - name: Install checksum-pinned Ollama archive
   ansible.builtin.unarchive:
@@ -524,7 +569,9 @@
     remote_src: true
     owner: root
     group: root
-  when: frigate_vm_ollama_installation_required | bool
+  when:
+    - frigate_vm_ollama_enabled_resolved | bool
+    - frigate_vm_ollama_installation_required | bool
   notify: Restart Ollama
 
 - name: Verify installed Ollama version
@@ -538,6 +585,7 @@
     frigate_vm_ollama_verified_version.rc != 0
     or not (frigate_vm_ollama_verified_version.stdout is search(
       (frigate_vm_ollama_version_resolved | regex_escape) ~ '$'))
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Calculate installed Ollama binary checksum
   ansible.builtin.command:
@@ -546,6 +594,7 @@
       - /usr/local/bin/ollama
   register: frigate_vm_ollama_binary_checksum
   changed_when: false
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Record installed Ollama binary checksum
   ansible.builtin.copy:
@@ -554,6 +603,7 @@
     group: root
     mode: "0644"
     content: "{{ frigate_vm_ollama_binary_checksum.stdout }}\n"
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Create Ollama systemd override directory
   ansible.builtin.file:
@@ -562,6 +612,7 @@
     owner: root
     group: root
     mode: "0755"
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Configure Ollama service environment
   ansible.builtin.copy:
@@ -576,6 +627,7 @@
   notify:
     - Reload systemd
     - Restart Ollama
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Enable and start Ollama
   ansible.builtin.systemd:
@@ -583,9 +635,11 @@
     enabled: true
     state: started
     daemon_reload: true
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Apply Ollama backend configuration before model operations
   ansible.builtin.meta: flush_handlers
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Pull Ollama model
   ansible.builtin.command:
@@ -600,6 +654,25 @@
   changed_when: >
     'success' in (frigate_vm_ollama_pull.stdout | lower)
     or 'pulling' in (frigate_vm_ollama_pull.stdout | lower)
+  when: frigate_vm_ollama_enabled_resolved | bool
+
+- name: Disable Ollama in recorder profile
+  ansible.builtin.systemd:
+    name: ollama
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when:
+    - not (frigate_vm_ollama_enabled_resolved | bool)
+    - "'ollama.service' in ansible_facts.services"
+
+- name: Stop legacy ASR container in recorder profile
+  ansible.builtin.command: >-
+    docker compose -f "{{ frigate_vm_asr_root_resolved }}/docker-compose.yml" down
+  register: frigate_vm_asr_down
+  changed_when: "'Removed' in frigate_vm_asr_down.stdout or 'Stopped' in frigate_vm_asr_down.stdout"
+  failed_when: false
+  when: not (frigate_vm_asr_enabled_resolved | bool)
 
 - name: Verify nginx basic-auth database
   ansible.builtin.command:
@@ -667,10 +740,14 @@
     state: link
   notify: Restart nginx
 
-- name: Remove legacy Ollama-only nginx site
+- name: Remove legacy standalone nginx sites
   ansible.builtin.file:
-    path: /etc/nginx/sites-enabled/ollama-https
+    path: "/etc/nginx/sites-enabled/{{ item }}"
     state: absent
+  loop:
+    - ollama-https
+    - asr-https
+    - adler-frigate
   notify: Restart nginx
 
 - name: Disable default nginx site
@@ -743,31 +820,40 @@
   loop:
     - src: container-watchdog.sh
       dest: /usr/local/sbin/krt-container-watchdog.sh
+      enabled: true
     - src: ollama-watchdog.sh
       dest: /usr/local/sbin/ollama-watchdog.sh
+      enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+  when: item.enabled | bool
 
 - name: Install watchdog systemd timers
   ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: "/etc/systemd/system/{{ item }}"
+    src: "{{ item.name }}"
+    dest: "/etc/systemd/system/{{ item.name }}"
     owner: root
     group: root
     mode: "0644"
   loop:
-    - krt-container-watchdog.timer
-    - ollama-watchdog.timer
+    - name: krt-container-watchdog.timer
+      enabled: true
+    - name: ollama-watchdog.timer
+      enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+  when: item.enabled | bool
   notify: Reload systemd
 
 - name: Render watchdog systemd services
   ansible.builtin.template:
-    src: "{{ item }}.j2"
-    dest: "/etc/systemd/system/{{ item }}"
+    src: "{{ item.name }}.j2"
+    dest: "/etc/systemd/system/{{ item.name }}"
     owner: root
     group: root
     mode: "0644"
   loop:
-    - krt-container-watchdog.service
-    - ollama-watchdog.service
+    - name: krt-container-watchdog.service
+      enabled: true
+    - name: ollama-watchdog.service
+      enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+  when: item.enabled | bool
   notify: Reload systemd
 
 - name: Remove legacy untracked Ollama watchdog script
@@ -777,13 +863,26 @@
 
 - name: Enable watchdog timers
   ansible.builtin.systemd:
-    name: "{{ item }}"
+    name: "{{ item.name }}"
     enabled: true
     state: started
     daemon_reload: true
   loop:
-    - krt-container-watchdog.timer
-    - ollama-watchdog.timer
+    - name: krt-container-watchdog.timer
+      enabled: true
+    - name: ollama-watchdog.timer
+      enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+  when: item.enabled | bool
+
+- name: Disable Ollama watchdog in recorder profile
+  ansible.builtin.systemd:
+    name: ollama-watchdog.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when:
+    - not (frigate_vm_ollama_enabled_resolved | bool)
+    - "'ollama-watchdog.timer' in ansible_facts.services"
 
 - name: Validate nginx configuration
   ansible.builtin.command: nginx -t
@@ -810,6 +909,7 @@
     url: "http://127.0.0.1:{{ frigate_vm_ollama_backend_port_resolved }}/api/version"
     return_content: true
   register: frigate_vm_ollama_version
+  when: frigate_vm_ollama_enabled_resolved | bool
 
 - name: Verify ASR API
   ansible.builtin.uri:
@@ -821,7 +921,17 @@
 - name: Print deployment summary
   ansible.builtin.debug:
     msg:
-      - "GPU: {{ frigate_vm_nvidia_smi.stdout }}"
+      - "Profile: {{ frigate_vm_profile_resolved }}"
+      - "GPU: {{ frigate_vm_nvidia_smi.stdout | default('disabled') }}"
       - "Frigate: {{ frigate_vm_frigate_version.content }}"
-      - "Ollama: {{ frigate_vm_ollama_version.json.version | default(frigate_vm_ollama_version.content) }}"
-      - "ASR: {{ frigate_vm_asr_health.json.model | default('disabled') }}"
+      - >-
+        Ollama: {{
+          (frigate_vm_ollama_version.json.version
+           | default(frigate_vm_ollama_version.content))
+          if (frigate_vm_ollama_enabled_resolved | bool) else 'disabled'
+        }}
+      - >-
+        ASR: {{
+          (frigate_vm_asr_health.json.model | default('disabled'))
+          if (frigate_vm_asr_enabled_resolved | bool) else 'disabled'
+        }}

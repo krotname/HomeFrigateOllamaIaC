@@ -107,7 +107,21 @@ Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShel
 
 ## Smoke Test
 
-Run after deploy and after host reboots:
+For the current recorder-only production profile, run after deploy and after
+host reboots:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test-recorder.ps1
+```
+
+It checks the 2-vCPU/4-GB VM, autostart, zero DDA devices, at least 150 GB free
+on host drive `F:`, Frigate health, copy-mode recording, three configured
+cameras, VM CPU headroom, three-day retention, disabled analytics/Ollama/ASR
+and no GPU runtime.
+An offline camera is reported in `camera_fps` but does not fail the other camera
+recordings.
+
+For the retained `gpu_analytics` profile, run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
@@ -184,10 +198,11 @@ P40 takes about 5 minutes, so use a `600` second timeout for the first request.
 
 ## Rollback
 
-On the VM, Frigate config backups are kept manually when changing production
-config. To roll back a failed Frigate config:
+The recorder transition script preserves camera definitions and existing
+credentials while removing GPU/analytics services:
 
 ```bash
-sudo cp /opt/frigate/config/config.yml.bak-before-change /opt/frigate/config/config.yml
-sudo docker compose -f /opt/frigate/docker-compose.yml up -d
+sudo python3 /tmp/apply-recorder-profile.py --check
+sudo python3 /tmp/apply-recorder-profile.py
+sudo docker compose -f /opt/frigate/docker-compose.yml up -d --force-recreate
 ```

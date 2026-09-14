@@ -1,7 +1,7 @@
 services:
   frigate:
     container_name: frigate
-    image: {{ frigate_image }}
+    image: {{ frigate_vm_recorder_image_resolved if frigate_vm_profile_resolved == 'recorder' else frigate_image }}
     restart: unless-stopped
     stop_grace_period: 30s
     shm_size: "512mb"
@@ -9,10 +9,13 @@ services:
       - .env
     environment:
       TZ: {{ frigate_timezone }}
+{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+{% endif %}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
     runtime: nvidia
     deploy:
       resources:
@@ -21,6 +24,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+{% endif %}
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./config:/config
@@ -39,8 +43,8 @@ services:
       test:
         - CMD-SHELL
         - >-
-          curl -fsSk --max-time 5 https://127.0.0.1:8971/api/version >/dev/null
-          && nvidia-smi -L >/dev/null
+          curl -fsSk --max-time 5 https://127.0.0.1:8971/api/version >/dev/null{% if frigate_vm_profile_resolved == 'gpu_analytics' %}
+          && nvidia-smi -L >/dev/null{% endif %}
       interval: 15s
       timeout: 10s
       retries: 3
