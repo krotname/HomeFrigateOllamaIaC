@@ -14,7 +14,7 @@ Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShel
 }
 ```
 
-Expected host identity is `ADLER-WHITE-1W\codex-winrm`, PowerShell `7.6.2`
+Expected host identity is `ADLER-WHITE-W1\KRT`, PowerShell `7.6.5`
 Core, `FullLanguage`, and an administrator token. SSH is retained only for
 bootstrap/recovery of WinRM itself.
 
