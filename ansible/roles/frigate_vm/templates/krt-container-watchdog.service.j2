@@ -7,7 +7,10 @@ Wants=docker.service
 Type=oneshot
 ExecStart=/usr/local/sbin/krt-container-watchdog.sh
 Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate{% if frigate_vm_asr_enabled_resolved | bool %} asr{% endif %}
-TimeoutStartSec=240
+# Скрипт ждёт здоровья каждого контейнера последовательно, до RECOVERY_TIMEOUT_SECONDS=180 с
+# на контейнер. Таймаут юнита должен покрывать весь список плюс запас, иначе systemd убивает
+# восстановление на середине и последние контейнеры остаются непроверенными.
+TimeoutStartSec={{ 180 * (2 if frigate_vm_asr_enabled_resolved | bool else 1) + 60 }}
 RuntimeDirectory=krt-container-watchdog
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
