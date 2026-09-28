@@ -1,6 +1,6 @@
 # Current Production State
 
-Last live host and VM check: `2026-09-15`.
+Last live host and VM check: `2026-09-28`.
 
 ## Host and VM
 
@@ -9,8 +9,8 @@ Last live host and VM check: `2026-09-15`.
 | Windows host | `ADLER-WHITE-W1`, `192.168.1.104` |
 | Hyper-V VM | `frigate-ubuntu`, `Running`, `192.168.1.138` |
 | VM autostart | `AutomaticStartAction=Start` |
-| VM CPU/RAM | `2` vCPU, fixed `4 GB` RAM |
-| GPU/DDA | Tesla absent; VM assignable-device count `0` |
+| VM CPU/RAM | `6` vCPU, fixed `12 GB` RAM (raised on `2026-09-27`) |
+| GPU/DDA | Tesla absent and not planned to return; VM assignable-device count `0` |
 | Media | `/media/frigate`, ext4 VHDX-backed mount, virtual size `2 TB` |
 | Host storage guard | Keep at least `150 GB` free on `F:` |
 
@@ -37,8 +37,18 @@ block the available streams.
 | Service | Production state |
 | --- | --- |
 | Ollama | systemd service disabled and inactive; watchdog timer disabled |
-| ASR | compose container absent; HTTPS listener removed |
+| ASR | compose container absent; HTTPS listener removed; image and model cache deleted `2026-09-28` |
 | Legacy nginx sites | `adler-frigate`, `ollama-https`, `asr-https` removed from enabled sites |
+
+## ASR for the Phone pipeline
+
+Since `2026-09-28` speech recognition for `krotname/Phone` runs on Black
+(`adler-black-u2`, `192.168.1.242`), not on this VM: the same `asr/` image is
+built there as `home-asr:local` and started from `/opt/asr` with
+[`asr/docker-compose.black.yml`](../asr/docker-compose.black.yml). It uses
+Tesla P40 GPU0 next to `black-qwen`, Whisper `large-v3` in `int8`, and listens
+only on `127.0.0.1:19443`. The read-only container needs `TMPDIR=/tmp/asr`,
+otherwise multipart uploads fail with `There was an error parsing the body`.
 
 ## Validation
 
