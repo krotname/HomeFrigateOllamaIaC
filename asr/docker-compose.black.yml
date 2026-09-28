@@ -1,0 +1,46 @@
+services:
+  asr:
+    container_name: asr
+    image: home-asr:local
+    build: .
+    init: true
+    restart: unless-stopped
+    gpus: all
+    environment:
+      # GPU0 держит меньшую часть black-qwen и имеет запас VRAM под Whisper int8.
+      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      ASR_MODEL: Systran/faster-whisper-large-v3
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: int8
+      ASR_CPU_THREADS: "2"
+      ASR_PORT: "9443"
+      ASR_TMP_DIR: /tmp/asr
+      TMPDIR: /tmp/asr
+      ASR_CERT_FILE: /certs/fullchain.pem
+      ASR_KEY_FILE: /certs/privkey.pem
+      ASR_MAX_UPLOAD_BYTES: "104857600"
+      ASR_MAX_CONCURRENT_TRANSCRIPTIONS: "1"
+    volumes:
+      - ./models:/models
+      - ./tmp:/tmp/asr
+      - ./certs:/certs:ro
+    ports:
+      - "127.0.0.1:19443:9443"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    mem_limit: 8g
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "import os, ssl, urllib.request;
+          urllib.request.urlopen('https://127.0.0.1:' + os.environ['ASR_PORT'] + '/health',
+          timeout=5, context=ssl._create_unverified_context()).read()"
+      interval: 30s
+      timeout: 6s
+      retries: 3
