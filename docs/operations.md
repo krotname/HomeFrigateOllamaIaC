@@ -105,6 +105,30 @@ $cred = Import-Clixml -LiteralPath 'C:\Users\KRT\.codex\secrets\adler-winrm.cred
 Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShell.7 -Credential $cred -Authentication Negotiate -FilePath .\scripts\invoke-config-backup.ps1
 ```
 
+## Take a Camera Off the Line
+
+A camera that is physically gone keeps Frigate in a restart loop: `ffmpeg`
+retries every few seconds and fills the log with `Error opening input file` and
+`method DESCRIBE failed: 404 (Not Found)`. Set `enabled: false` on that camera
+in `ansible/group_vars/all.yml`:
+
+```yaml
+cameras:
+  - name: shed_hikvision
+    host: 192.168.50.33
+    detect_width: 640
+    detect_height: 360
+    detect_fps: 5
+    enabled: false
+```
+
+The camera then disappears from both `go2rtc.streams` and `cameras` in the
+generated config, while its definition stays in the inventory. Re-render and
+deploy, and lower `-ExpectedCameraCount` in the smoke test by one. At least one
+camera must stay enabled - the role refuses to render an empty camera list.
+
+Removing the flag puts the camera back with no other edit.
+
 ## Smoke Test
 
 For the current recorder-only production profile, run after deploy and after
@@ -115,11 +139,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke-test-recorde
 ```
 
 It checks the 2-vCPU/4-GB VM, autostart, zero DDA devices, at least 150 GB free
-on host drive `F:`, Frigate health, copy-mode recording, three configured
-cameras, VM CPU headroom, three-day retention, disabled analytics/Ollama/ASR
-and no GPU runtime.
+on host drive `F:`, Frigate health, copy-mode recording, the expected number of
+configured cameras, VM CPU headroom, three-day retention, disabled
+analytics/Ollama/ASR and no GPU runtime.
 An offline camera is reported in `camera_fps` but does not fail the other camera
-recordings.
+recordings. `-ExpectedCameraCount` defaults to the number of cameras currently
+enabled in `ansible/group_vars/all.yml`; raise it again when a disabled camera
+comes back.
 
 For the retained `gpu_analytics` profile, run:
 

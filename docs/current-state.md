@@ -21,16 +21,33 @@ Last live host and VM check: `2026-09-28`.
 | URL | `https://192.168.1.138:8971/` |
 | Image | `ghcr.io/blakeblackshear/frigate:stable` (`0.18.0`) |
 | Runtime | Docker `runc`, no assigned GPU devices or device requests |
-| Cameras | `cam1_ds_i202`, `cam2_ds_i551`, `cam3_ds_i200` |
+| Cameras | `cam1_ds_i202`, `cam3_ds_i200`; `cam2_ds_i551` defined but `enabled: false` |
 | Recording | Main stream, continuous, `-c copy`, audio copy |
 | CPU snapshot | `47.2%` of the 2-vCPU guest; no object inference, main streams are not transcoded |
 | Initial retention | `3` days; measure actual growth after 24 hours before increasing |
 | Analytics | Detection, motion, review alerts/detections, snapshots, face/LPR and GenAI disabled |
 | Live view | go2rtc substreams remain available through Frigate |
 
-`cam2_ds_i551` (`192.168.1.65`) was unreachable during the deployment check.
-Frigate continued recording cameras 1 and 3; an unavailable camera does not
-block the available streams.
+### Camera 2 is off the line since `2026-09-11`
+
+`cam2_ds_i551` (`192.168.1.65`, MAC `04:EE:CD:5B:0C:4D`) stopped recording at
+`2026-09-11 11:35` and is absent from the LAN at layer 2: no ARP entry on the
+router or on a client, no DHCP lease, no Wi-Fi association, no frames at all in
+a 60-second `tcpdump` filtered on its MAC, and an ARP sweep of the whole
+`192.168.1.0/24` does not find it on any other address. The cause is physical
+(power, cable or switch port), not configuration.
+
+While it was still listed, Frigate restarted `ffmpeg` for it every few seconds
+and wrote about `99 744` log lines per day (`Error opening input file
+rtsp://127.0.0.1:8554/cam2_main`, `DESCRIBE failed: 404`,
+`Ffmpeg process crashed unexpectedly`). The camera now carries `enabled: false`
+in `ansible/group_vars/all.yml`, which leaves it out of both `go2rtc.streams`
+and `cameras` in the generated config, so the error loop is gone. Its
+definition stays in place: when the hardware is back, drop the flag and
+re-render the config.
+
+An unavailable camera never blocked the other streams - cameras 1 and 3 kept
+recording throughout.
 
 ## Disabled Services
 

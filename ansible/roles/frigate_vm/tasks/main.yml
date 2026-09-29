@@ -135,6 +135,7 @@
       - item.detect_fps | default(0) | int >= 1
       - item.detect_fps | default(0) | int <= 60
       - item.apple_compatibility | default(false) is boolean
+      - item.enabled | default(true) is boolean
     fail_msg: "Invalid camera definition: {{ item }}"
   loop: "{{ cameras }}"
 
@@ -143,6 +144,14 @@
     that:
       - cameras | map(attribute='name') | unique | list | length == cameras | length
     fail_msg: "Camera names must be unique."
+
+- name: Validate at least one camera is enabled
+  ansible.builtin.assert:
+    that:
+      - cameras | map(attribute='enabled', default=true) | select | list | length > 0
+    fail_msg: >-
+      At least one camera must stay enabled; a camera with enabled: false is
+      left out of the generated Frigate and go2rtc configuration.
 
 - name: Gather service facts
   ansible.builtin.service_facts:

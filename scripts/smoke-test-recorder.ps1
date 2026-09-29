@@ -6,7 +6,7 @@ param(
     [string]$VmAddress = "192.168.1.138",
     [string]$VmUser = "krt",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\win-home-codex_ed25519",
-    [int]$ExpectedCameraCount = 3,
+    [int]$ExpectedCameraCount = 2,
     [int]$ExpectedRetentionDays = 3
 )
 
