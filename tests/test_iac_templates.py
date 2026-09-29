@@ -44,6 +44,27 @@ def template_context():
     return context
 
 
+def camera_watchdog_context():
+    context = template_context()
+    context["cameras"] = context["cameras"] + [
+        {
+            "name": "offline_hikvision",
+            "host": "192.168.50.33",
+            "detect_width": 640,
+            "detect_height": 360,
+            "detect_fps": 5,
+            "enabled": False,
+        }
+    ]
+    context.update(
+        {
+            "frigate_vm_camera_watchdog_offline_threshold_resolved": 10,
+            "frigate_vm_camera_watchdog_online_threshold_resolved": 2,
+        }
+    )
+    return context
+
+
 def recorder_context():
     context = template_context()
     context.update(
@@ -97,31 +118,19 @@ class IacTemplateTests(unittest.TestCase):
         self.assertNotIn("deploy", service)
         self.assertNotIn("NVIDIA_VISIBLE_DEVICES", service["environment"])
 
-    def test_disabled_camera_is_left_out_of_frigate_and_go2rtc(self):
-        context = template_context()
-        context["cameras"] = context["cameras"] + [
-            {
-                "name": "offline_hikvision",
-                "host": "192.168.50.33",
-                "detect_width": 640,
-                "detect_height": 360,
-                "detect_fps": 5,
-                "enabled": False,
-            }
-        ]
+    def test_disabled_camera_stays_configured_but_off(self):
+        context = camera_watchdog_context()
         config = yaml.safe_load(
             render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", context)
         )
 
-        self.assertNotIn("offline_hikvision", config["cameras"])
-        self.assertNotIn("offline_hikvision_main", config["go2rtc"]["streams"])
-        self.assertNotIn("offline_hikvision_sub", config["go2rtc"]["streams"])
-        self.assertNotIn("192.168.50.33", yaml.safe_dump(config))
+        self.assertFalse(config["cameras"]["offline_hikvision"]["enabled"])
+        self.assertIn("offline_hikvision_main", config["go2rtc"]["streams"])
+        self.assertIn("offline_hikvision_sub", config["go2rtc"]["streams"])
         for camera in ("driveway_hikvision", "garage_hikvision"):
-            self.assertIn(camera, config["cameras"])
-            self.assertIn(f"{camera}_main", config["go2rtc"]["streams"])
+            self.assertTrue(config["cameras"][camera]["enabled"])
 
-    def test_camera_without_enabled_key_stays_configured(self):
+    def test_camera_without_enabled_key_is_on(self):
         config = yaml.safe_load(
             render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", template_context())
         )
@@ -129,6 +138,65 @@ class IacTemplateTests(unittest.TestCase):
         self.assertEqual(
             {"driveway_hikvision", "garage_hikvision"}, set(config["cameras"])
         )
+        for camera in config["cameras"].values():
+            self.assertTrue(camera["enabled"])
+
+    def test_camera_watchdog_service_lists_every_watched_camera(self):
+        service = render(
+            "ansible/roles/frigate_vm/templates/krt-camera-watchdog.service.j2",
+            camera_watchdog_context(),
+        )
+        # systemd splits an unquoted Environment= value on spaces, so the whole
+        # assignment has to stay inside one pair of quotes.
+        target_line = next(
+            line
+            for line in service.splitlines()
+            if line.startswith('Environment="CAMERA_WATCHDOG_TARGETS=')
+        )
+        self.assertTrue(target_line.endswith('"'), target_line)
+        targets = target_line.removeprefix(
+            'Environment="CAMERA_WATCHDOG_TARGETS='
+        ).removesuffix('"')
+
+        self.assertEqual(
+            [
+                "driveway_hikvision=192.168.50.31",
+                "garage_hikvision=192.168.50.32",
+                "offline_hikvision=192.168.50.33",
+            ],
+            targets.split(),
+        )
+        self.assertIn("Environment=CAMERA_WATCHDOG_OFFLINE_THRESHOLD=10", service)
+        self.assertIn("Environment=CAMERA_WATCHDOG_ONLINE_THRESHOLD=2", service)
+        self.assertIn("RestrictAddressFamilies=AF_UNIX AF_INET", service)
+        self.assertIn("RuntimeDirectoryPreserve=yes", service)
+
+    def test_camera_watchdog_service_honours_the_per_camera_opt_out(self):
+        context = camera_watchdog_context()
+        context["cameras"][-1] = {**context["cameras"][-1], "watchdog": False}
+        service = render(
+            "ansible/roles/frigate_vm/templates/krt-camera-watchdog.service.j2", context
+        )
+
+        self.assertNotIn("offline_hikvision=", service)
+        self.assertIn(
+            'Environment="CAMERA_WATCHDOG_TARGETS='
+            'driveway_hikvision=192.168.50.31 garage_hikvision=192.168.50.32"',
+            service,
+        )
+
+    def test_camera_watchdog_script_toggles_only_after_repeated_probes(self):
+        script = (
+            ROOT / "ansible/roles/frigate_vm/files/camera-watchdog.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("CAMERA_WATCHDOG_OFFLINE_THRESHOLD:-10", script)
+        self.assertIn("CAMERA_WATCHDOG_ONLINE_THRESHOLD:-2", script)
+        self.assertIn(r'\"requires_restart\":0', script)
+        self.assertIn("(( online >= ONLINE_THRESHOLD ))", script)
+        self.assertIn("(( offline < OFFLINE_THRESHOLD ))", script)
+        self.assertIn("it is the last enabled camera", script)
+        self.assertIn("leaving the camera list alone", script)
 
     def test_ollama_watchdog_recovery_is_conservative(self):
         role_files = ROOT / "ansible/roles/frigate_vm/files"
