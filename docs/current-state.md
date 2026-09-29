@@ -40,11 +40,16 @@ a 60-second `tcpdump` filtered on its MAC, and an ARP sweep of the whole
 While it was still listed, Frigate restarted `ffmpeg` for it every few seconds
 and wrote about `99 744` log lines per day (`Error opening input file
 rtsp://127.0.0.1:8554/cam2_main`, `DESCRIBE failed: 404`,
-`Ffmpeg process crashed unexpectedly`). The camera now carries `enabled: false`
-in `ansible/group_vars/all.yml`, which leaves it out of both `go2rtc.streams`
-and `cameras` in the generated config, so the error loop is gone. Its
-definition stays in place: when the hardware is back, drop the flag and
-re-render the config.
+`Ffmpeg process crashed unexpectedly`). On `2026-09-30` camera 2 was edited out
+of the live `/opt/frigate/config/config.yml` - both its `go2rtc` streams and its
+`cameras` entry - and Frigate was restarted. The error loop stopped: the
+container logged `3` lines in the next three minutes instead of roughly `69` per
+minute, and cameras 1 and 3 kept recording without a gap.
+
+Set `enabled: false` on that camera in the operator's
+`ansible/group_vars/all.yml` (kept out of git) so the next deploy renders the
+same config instead of putting the camera back. Dropping the flag is all it
+takes to return it once the hardware is fixed.
 
 An unavailable camera never blocked the other streams - cameras 1 and 3 kept
 recording throughout.
