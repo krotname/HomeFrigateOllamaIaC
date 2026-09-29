@@ -97,6 +97,39 @@ class IacTemplateTests(unittest.TestCase):
         self.assertNotIn("deploy", service)
         self.assertNotIn("NVIDIA_VISIBLE_DEVICES", service["environment"])
 
+    def test_disabled_camera_is_left_out_of_frigate_and_go2rtc(self):
+        context = template_context()
+        context["cameras"] = context["cameras"] + [
+            {
+                "name": "offline_hikvision",
+                "host": "192.168.50.33",
+                "detect_width": 640,
+                "detect_height": 360,
+                "detect_fps": 5,
+                "enabled": False,
+            }
+        ]
+        config = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", context)
+        )
+
+        self.assertNotIn("offline_hikvision", config["cameras"])
+        self.assertNotIn("offline_hikvision_main", config["go2rtc"]["streams"])
+        self.assertNotIn("offline_hikvision_sub", config["go2rtc"]["streams"])
+        self.assertNotIn("192.168.50.33", yaml.safe_dump(config))
+        for camera in ("driveway_hikvision", "garage_hikvision"):
+            self.assertIn(camera, config["cameras"])
+            self.assertIn(f"{camera}_main", config["go2rtc"]["streams"])
+
+    def test_camera_without_enabled_key_stays_configured(self):
+        config = yaml.safe_load(
+            render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", template_context())
+        )
+
+        self.assertEqual(
+            {"driveway_hikvision", "garage_hikvision"}, set(config["cameras"])
+        )
+
     def test_ollama_watchdog_recovery_is_conservative(self):
         role_files = ROOT / "ansible/roles/frigate_vm/files"
         script = (role_files / "ollama-watchdog.sh").read_text(encoding="utf-8")

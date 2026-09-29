@@ -59,8 +59,15 @@ asr_max_concurrent_transcriptions: 1
 frigate_rtsp_user: rtsp_viewer
 frigate_rtsp_password: demo_camera_password
 
-# Пример двух камер Hikvision/совместимых RTSP-потоков:
+# Пример камер Hikvision/совместимых RTSP-потоков:
 # main stream на /101 пишется в архив, sub stream на /102 идет в detector.
+#
+# enabled: false выводит камеру из сгенерированного конфига целиком - ни потока
+# go2rtc, ни записи в блоке cameras. Так снимается с линии камера, которая
+# физически отключена: Frigate перестает каждые несколько секунд запускать
+# ffmpeg и писать в лог `Error opening input file` и `DESCRIBE failed: 404`.
+# Описание камеры остается на месте, и возврат стоит одной строки.
+# Хотя бы одна камера должна остаться включенной.
 cameras:
   - name: driveway_hikvision
     host: 192.168.50.31
