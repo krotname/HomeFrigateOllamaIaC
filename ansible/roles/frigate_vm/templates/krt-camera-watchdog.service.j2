@@ -1,0 +1,27 @@
+[Unit]
+Description=KRT Frigate camera presence watchdog
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/krt-camera-watchdog.sh
+Environment=CAMERA_WATCHDOG_CONTAINER=frigate
+# The quotes matter: systemd splits an unquoted Environment= value on spaces and
+# would turn every camera after the first into a separate variable.
+Environment="CAMERA_WATCHDOG_TARGETS={% for camera in cameras if camera.watchdog | default(true) %}{{ camera.name }}={{ camera.host }}{{ ' ' if not loop.last }}{% endfor %}"
+Environment=CAMERA_WATCHDOG_OFFLINE_THRESHOLD={{ frigate_vm_camera_watchdog_offline_threshold_resolved }}
+Environment=CAMERA_WATCHDOG_ONLINE_THRESHOLD={{ frigate_vm_camera_watchdog_online_threshold_resolved }}
+TimeoutStartSec=120
+RuntimeDirectory=krt-camera-watchdog
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/krt-camera-watchdog
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET

@@ -16,6 +16,18 @@
       {{ record_audio_preset | default(frigate_vm_record_audio_preset) }}
     frigate_vm_recorder_detect_fps_resolved: >-
       {{ recorder_detect_fps | default(frigate_vm_recorder_detect_fps) | int }}
+    frigate_vm_camera_watchdog_enabled_resolved: >-
+      {{ camera_watchdog_enabled | default(frigate_vm_camera_watchdog_enabled) | bool }}
+    frigate_vm_camera_watchdog_offline_threshold_resolved: >-
+      {{
+        camera_watchdog_offline_threshold
+        | default(frigate_vm_camera_watchdog_offline_threshold) | int
+      }}
+    frigate_vm_camera_watchdog_online_threshold_resolved: >-
+      {{
+        camera_watchdog_online_threshold
+        | default(frigate_vm_camera_watchdog_online_threshold) | int
+      }}
     frigate_vm_asr_root_resolved: "{{ asr_root | default(frigate_vm_asr_root) }}"
     frigate_vm_asr_port_resolved: "{{ asr_port | default(frigate_vm_asr_port) | int }}"
     frigate_vm_asr_model_resolved: "{{ asr_model | default(frigate_vm_asr_model) }}"
@@ -52,6 +64,10 @@
       - frigate_vm_recorder_image_resolved is match('^ghcr\.io/blakeblackshear/frigate:[A-Za-z0-9._-]+$')
       - frigate_vm_record_continuous_days_resolved | int >= 1
       - frigate_vm_record_continuous_days_resolved | int <= 30
+      - frigate_vm_camera_watchdog_offline_threshold_resolved | int >= 2
+      - frigate_vm_camera_watchdog_offline_threshold_resolved | int <= 1440
+      - frigate_vm_camera_watchdog_online_threshold_resolved | int >= 1
+      - frigate_vm_camera_watchdog_online_threshold_resolved | int <= 60
       - frigate_vm_record_audio_preset_resolved in ['preset-record-generic', 'preset-record-generic-audio-copy']
       - frigate_vm_recorder_detect_fps_resolved | int >= 1
       - frigate_vm_recorder_detect_fps_resolved | int <= 5
@@ -136,6 +152,7 @@
       - item.detect_fps | default(0) | int <= 60
       - item.apple_compatibility | default(false) is boolean
       - item.enabled | default(true) is boolean
+      - item.watchdog | default(true) is boolean
     fail_msg: "Invalid camera definition: {{ item }}"
   loop: "{{ cameras }}"
 
@@ -144,14 +161,6 @@
     that:
       - cameras | map(attribute='name') | unique | list | length == cameras | length
     fail_msg: "Camera names must be unique."
-
-- name: Validate at least one camera is enabled
-  ansible.builtin.assert:
-    that:
-      - cameras | map(attribute='enabled', default=true) | select | list | length > 0
-    fail_msg: >-
-      At least one camera must stay enabled; a camera with enabled: false is
-      left out of the generated Frigate and go2rtc configuration.
 
 - name: Gather service facts
   ansible.builtin.service_facts:
@@ -833,6 +842,9 @@
     - src: ollama-watchdog.sh
       dest: /usr/local/sbin/ollama-watchdog.sh
       enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+    - src: camera-watchdog.sh
+      dest: /usr/local/sbin/krt-camera-watchdog.sh
+      enabled: "{{ frigate_vm_camera_watchdog_enabled_resolved | bool }}"
   when: item.enabled | bool
 
 - name: Install watchdog systemd timers
@@ -847,6 +859,8 @@
       enabled: true
     - name: ollama-watchdog.timer
       enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+    - name: krt-camera-watchdog.timer
+      enabled: "{{ frigate_vm_camera_watchdog_enabled_resolved | bool }}"
   when: item.enabled | bool
   notify: Reload systemd
 
@@ -862,6 +876,8 @@
       enabled: true
     - name: ollama-watchdog.service
       enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+    - name: krt-camera-watchdog.service
+      enabled: "{{ frigate_vm_camera_watchdog_enabled_resolved | bool }}"
   when: item.enabled | bool
   notify: Reload systemd
 
@@ -881,7 +897,19 @@
       enabled: true
     - name: ollama-watchdog.timer
       enabled: "{{ frigate_vm_ollama_enabled_resolved | bool }}"
+    - name: krt-camera-watchdog.timer
+      enabled: "{{ frigate_vm_camera_watchdog_enabled_resolved | bool }}"
   when: item.enabled | bool
+
+- name: Disable the camera watchdog when it is turned off
+  ansible.builtin.systemd:
+    name: krt-camera-watchdog.timer
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  when:
+    - not (frigate_vm_camera_watchdog_enabled_resolved | bool)
+    - "'krt-camera-watchdog.timer' in ansible_facts.services"
 
 - name: Disable Ollama watchdog in recorder profile
   ansible.builtin.systemd:

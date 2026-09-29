@@ -105,12 +105,34 @@ $cred = Import-Clixml -LiteralPath 'C:\Users\KRT\.codex\secrets\adler-winrm.cred
 Invoke-Command -ComputerName ADLER-WHITE-1W -UseSSL -ConfigurationName PowerShell.7 -Credential $cred -Authentication Negotiate -FilePath .\scripts\invoke-config-backup.ps1
 ```
 
-## Take a Camera Off the Line
+## Camera Presence Watchdog
 
-A camera that is physically gone keeps Frigate in a restart loop: `ffmpeg`
-retries every few seconds and fills the log with `Error opening input file` and
-`method DESCRIBE failed: 404 (Not Found)`. Set `enabled: false` on that camera
-in `ansible/group_vars/all.yml`:
+A camera that is powered off or unplugged keeps Frigate in a restart loop:
+`ffmpeg` retries every few seconds and fills the log with `Error opening input
+file` and `method DESCRIBE failed: 404 (Not Found)`. `krt-camera-watchdog.timer`
+runs `/usr/local/sbin/krt-camera-watchdog.sh` once a minute and keeps the camera
+list in step with reality, so switching a camera off and on needs no manual
+step:
+
+- it opens TCP `554` on each camera, with a `3`-second timeout;
+- after `frigate_vm_camera_watchdog_offline_threshold` consecutive failures
+  (default `10`, so ten minutes) it disables the camera;
+- after `frigate_vm_camera_watchdog_online_threshold` consecutive successes
+  (default `2`) it enables it again;
+- it toggles `cameras.<name>.enabled` through `PUT /api/config/set` with
+  `requires_restart: 0`, so the change applies live and is written to
+  `config.yml`; recording on the other cameras is never interrupted;
+- it does nothing at all unless the `frigate` container is `running|healthy` and
+  the API answers, and it never disables the last enabled camera.
+
+State lives in `/run/krt-camera-watchdog`, so the counters restart from zero
+after a reboot. Follow its decisions with
+`journalctl -u krt-camera-watchdog.service`.
+
+`enabled:` in `ansible/group_vars/all.yml` is therefore only the state a deploy
+starts from - the watchdog corrects it within minutes either way. Set
+`watchdog: false` on a camera to keep it out of the watchdog's hands, and
+`camera_watchdog_enabled: false` to turn the watchdog off entirely.
 
 ```yaml
 cameras:
@@ -120,14 +142,8 @@ cameras:
     detect_height: 360
     detect_fps: 5
     enabled: false
+    watchdog: true
 ```
-
-The camera then disappears from both `go2rtc.streams` and `cameras` in the
-generated config, while its definition stays in the inventory. Re-render and
-deploy, and lower `-ExpectedCameraCount` in the smoke test by one. At least one
-camera must stay enabled - the role refuses to render an empty camera list.
-
-Removing the flag puts the camera back with no other edit.
 
 ## Smoke Test
 
@@ -143,9 +159,8 @@ on host drive `F:`, Frigate health, copy-mode recording, the expected number of
 configured cameras, VM CPU headroom, three-day retention, disabled
 analytics/Ollama/ASR and no GPU runtime.
 An offline camera is reported in `camera_fps` but does not fail the other camera
-recordings. `-ExpectedCameraCount` defaults to the number of cameras currently
-enabled in `ansible/group_vars/all.yml`; raise it again when a disabled camera
-comes back.
+recordings. `-ExpectedCameraCount` counts the cameras in the config, including
+the ones the watchdog has disabled, so it does not move when a camera goes away.
 
 For the retained `gpu_analytics` profile, run:
 

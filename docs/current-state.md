@@ -21,35 +21,37 @@ Last live host and VM check: `2026-09-28`.
 | URL | `https://192.168.1.138:8971/` |
 | Image | `ghcr.io/blakeblackshear/frigate:stable` (`0.18.0`) |
 | Runtime | Docker `runc`, no assigned GPU devices or device requests |
-| Cameras | `cam1_ds_i202`, `cam3_ds_i200`; `cam2_ds_i551` defined but `enabled: false` |
+| Cameras | `cam1_ds_i202`, `cam3_ds_i200` recording; `cam2_ds_i551` configured with `enabled: false` while its hardware is switched off |
 | Recording | Main stream, continuous, `-c copy`, audio copy |
 | CPU snapshot | `47.2%` of the 2-vCPU guest; no object inference, main streams are not transcoded |
 | Initial retention | `3` days; measure actual growth after 24 hours before increasing |
 | Analytics | Detection, motion, review alerts/detections, snapshots, face/LPR and GenAI disabled |
 | Live view | go2rtc substreams remain available through Frigate |
 
-### Camera 2 is off the line since `2026-09-11`
+### Camera 2 is switched off at the wall since `2026-09-11`
 
 `cam2_ds_i551` (`192.168.1.65`, MAC `04:EE:CD:5B:0C:4D`) stopped recording at
-`2026-09-11 11:35` and is absent from the LAN at layer 2: no ARP entry on the
+`2026-09-11 11:35`. It is absent from the LAN at layer 2 - no ARP entry on the
 router or on a client, no DHCP lease, no Wi-Fi association, no frames at all in
 a 60-second `tcpdump` filtered on its MAC, and an ARP sweep of the whole
-`192.168.1.0/24` does not find it on any other address. The cause is physical
-(power, cable or switch port), not configuration.
+`192.168.1.0/24` does not find it on any other address. The owner powered it
+down on purpose; nothing is broken.
 
-While it was still listed, Frigate restarted `ffmpeg` for it every few seconds
-and wrote about `99 744` log lines per day (`Error opening input file
+While it was listed as enabled, Frigate restarted `ffmpeg` for it every few
+seconds and wrote about `99 744` log lines per day (`Error opening input file
 rtsp://127.0.0.1:8554/cam2_main`, `DESCRIBE failed: 404`,
-`Ffmpeg process crashed unexpectedly`). On `2026-09-30` camera 2 was edited out
-of the live `/opt/frigate/config/config.yml` - both its `go2rtc` streams and its
-`cameras` entry - and Frigate was restarted. The error loop stopped: the
-container logged `3` lines in the next three minutes instead of roughly `69` per
-minute, and cameras 1 and 3 kept recording without a gap.
+`Ffmpeg process crashed unexpectedly`). Since `2026-09-30` the camera carries
+`enabled: false` in the live config: it keeps its `go2rtc` streams and its
+`cameras` entry, Frigate starts no process for it, and the log is silent about it
+- `0` lines in the two minutes after the change, against roughly `69` per minute
+before. Cameras 1 and 3 kept recording throughout.
 
-Set `enabled: false` on that camera in the operator's
-`ansible/group_vars/all.yml` (kept out of git) so the next deploy renders the
-same config instead of putting the camera back. Dropping the flag is all it
-takes to return it once the hardware is fixed.
+Nothing has to be done when the camera is switched back on:
+`krt-camera-watchdog.timer` probes TCP `554` on every camera once a minute and
+enables the camera again after two consecutive answers, live and without a
+container restart (see [operations](operations.md#camera-presence-watchdog)).
+The same watchdog disables a camera that stops answering for ten minutes, so the
+error loop cannot come back.
 
 An unavailable camera never blocked the other streams - cameras 1 and 3 kept
 recording throughout.

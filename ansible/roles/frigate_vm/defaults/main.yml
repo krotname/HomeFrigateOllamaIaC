@@ -5,6 +5,12 @@ frigate_vm_ollama_enabled: true
 frigate_vm_record_continuous_days: 3
 frigate_vm_record_audio_preset: preset-record-generic-audio-copy
 frigate_vm_recorder_detect_fps: 1
+# The camera watchdog disables a camera that stops answering on its RTSP port
+# and enables it again when it comes back, so powering a camera off and on needs
+# no manual step. Thresholds are counted in watchdog runs, one per minute.
+frigate_vm_camera_watchdog_enabled: true
+frigate_vm_camera_watchdog_offline_threshold: 10
+frigate_vm_camera_watchdog_online_threshold: 2
 frigate_vm_asr_enabled: true
 frigate_vm_asr_root: /opt/asr
 frigate_vm_asr_port: 9443
