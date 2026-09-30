@@ -241,7 +241,8 @@ Config-only backups are documented in `docs\backup-policy.md` and tracked in
 С этой машины Frigate проверяется так:
 
 ```powershell
-curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://frigate.adler-white-w1.lan/api/version
+curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" `
+  https://frigate.adler-white-w1.lan/api/version
 ```
 
 Ollama API:
