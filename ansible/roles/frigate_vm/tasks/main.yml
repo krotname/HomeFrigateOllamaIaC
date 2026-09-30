@@ -786,6 +786,7 @@
       - -D
       - /etc/nginx/.htpasswd-home-ai
       - "{{ frigate_vm_previous_managed_auth_user }}"
+  changed_when: true
   when:
     - not (frigate_vm_previous_auth_user_exists.skipped | default(false))
     - frigate_vm_previous_auth_user_exists.rc == 0
