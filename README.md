@@ -19,7 +19,8 @@
 > Камеры Pi kiosk поступают напрямую с камер через go2rtc на Red и от Frigate не
 > зависят. Подробный live-state: [docs/current-state.md](docs/current-state.md).
 > С 28.09.2026 ASR из `asr/` работает на Чёрном сервере `adler-black-u2`
-> (Tesla P40 GPU0, только `127.0.0.1:19443`, доступ по ssh) по
+> (Tesla P40 GPU0, `https://adler-black-u2.lan:19443` только из домашней LAN, без
+> аутентификации) по
 > [`asr/docker-compose.black.yml`](asr/docker-compose.black.yml). Ollama выведена;
 > локальная LLM — `black-qwen` из `krotname/VpnOps`. Адреса `192.168.1.138:9443`
 > и `:11443` ниже относятся только к профилю `gpu_analytics`.

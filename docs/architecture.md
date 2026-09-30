@@ -74,7 +74,7 @@ certificates, model generation and GPU runtime checks are host-level concerns.
   host-only compatibility proxy at `http://127.0.0.1:11435`
 - ASR root: `/opt/asr`
 - ASR model cache: `/opt/asr/models`
-- ASR container API: `http://127.0.0.1:19443`
+- ASR container API: `http://127.0.0.1:19443` (on Black: `https://adler-black-u2.lan:19443`, LAN only)
 - Frigate container API: `https://127.0.0.1:18971`
 - LAN Frigate URL: `https://192.168.1.138:8971`
 - LAN Ollama URL: `https://192.168.1.138:11443` (`gpu_analytics` only; Ollama is retired)

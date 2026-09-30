@@ -15,7 +15,8 @@ ASR stack.
 > configuration. The Pi kiosk now reads cameras directly through go2rtc on Red
 > and no longer depends on Frigate. See [docs/current-state.md](docs/current-state.md).
 > Since 2026-09-28 the `asr/` service runs on the Black server `adler-black-u2`
-> (Tesla P40 GPU0, loopback `127.0.0.1:19443` only, reached over ssh) from
+> (Tesla P40 GPU0, `https://adler-black-u2.lan:19443` from the home LAN only,
+> no authentication) from
 > [`asr/docker-compose.black.yml`](asr/docker-compose.black.yml). Ollama is retired;
 > the local LLM is `black-qwen` in `krotname/VpnOps`. The `192.168.1.138:9443`
 > and `:11443` addresses below apply only to the `gpu_analytics` profile.

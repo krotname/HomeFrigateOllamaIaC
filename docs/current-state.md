@@ -70,9 +70,28 @@ Since `2026-09-28` speech recognition for `krotname/Phone` runs on Black
 (`adler-black-u2`, `192.168.1.242`), not on this VM: the same `asr/` image is
 built there as `home-asr:local` and started from `/opt/asr` with
 [`asr/docker-compose.black.yml`](../asr/docker-compose.black.yml). It uses
-Tesla P40 GPU0 next to `black-qwen`, Whisper `large-v3` in `int8`, and listens
-only on `127.0.0.1:19443`. The read-only container needs `TMPDIR=/tmp/asr`,
+Tesla P40 GPU0 next to `black-qwen`, Whisper `large-v3` in `int8`, and serves
+`https://adler-black-u2.lan:19443` to the home LAN. The container uses host
+networking, so the host ufw (default deny) governs the port; its single rule is
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 19443 proto tcp comment 'Black ASR LAN API'
+```
+
+The earlier `Red containment` deny for `192.168.1.185` stays ahead of it, and
+the home-access VPN subnets routed to Black (`10.9x.35.0/24`) are not allowed.
+Clients whose traffic the router itself proxies leave from `192.168.1.1` and are
+allowed like any LAN host. The API has no authentication: the owner accepted
+LAN-only exposure on 2026-09-30, so never publish the port beyond the LAN.
+The TLS certificate is a `krt-local-lan-root-ca-2026-r3` leaf for
+`adler-black-u2.lan`, `192.168.1.242` and `127.0.0.1` in `/opt/asr/certs`
+(owner `10001`, mode `0600`). The read-only container needs `TMPDIR=/tmp/asr`,
 otherwise multipart uploads fail with `There was an error parsing the body`.
+
+One transcription runs at a time, so a long batch job from the Phone pipeline
+delays VideoAgent's 15-second segments. A queued request whose client has
+disconnected, for example after VideoAgent's 45-second timeout, is dropped
+instead of being transcribed later.
 
 GPU0 is shared with `black-qwen`. Whisper fits beside it only because
 `black-qwen` runs with `--n-cpu-moe 24` (`krotname/VpnOps#864`, 2026-09-30),
@@ -82,8 +101,9 @@ Measured after the change: a 42-minute recording took 954 s.
 
 The `language` form field defaults to `ru`. An empty value counts as a missing
 field and also yields `ru`, so clients request detection with `language=auto`.
-The laptop's `speech-whisper` and the `adler-media-transcribe` skill reach the
-service over `ssh adler-black-u2.lan` plus a `curl` to the loopback port.
+`krotname/VideoAgent` on White calls the LAN URL directly. The laptop's
+`speech-whisper` and the `adler-media-transcribe` skill still reach the service
+over `ssh adler-black-u2.lan` plus a `curl` to the loopback port.
 
 ## Validation
 

@@ -6,6 +6,9 @@ services:
     init: true
     restart: unless-stopped
     gpus: all
+    # Host networking keeps the port under the host ufw (default deny); a Docker
+    # port mapping would bypass it. Only 192.168.1.0/24 is allowed to 19443.
+    network_mode: host
     environment:
       # GPU0 держит меньшую часть black-qwen и имеет запас VRAM под Whisper int8.
       CUDA_VISIBLE_DEVICES: "0"
@@ -14,7 +17,7 @@ services:
       ASR_DEVICE: cuda
       ASR_COMPUTE_TYPE: int8
       ASR_CPU_THREADS: "2"
-      ASR_PORT: "9443"
+      ASR_PORT: "19443"
       ASR_TMP_DIR: /tmp/asr
       TMPDIR: /tmp/asr
       ASR_CERT_FILE: /certs/fullchain.pem
@@ -25,8 +28,6 @@ services:
       - ./models:/models
       - ./tmp:/tmp/asr
       - ./certs:/certs:ro
-    ports:
-      - "127.0.0.1:19443:9443"
     read_only: true
     security_opt:
       - no-new-privileges:true
