@@ -17,6 +17,6 @@ RUN python3 -m pip install --disable-pip-version-check -r /app/requirements.txt
 
 COPY app.py /app/app.py
 
-EXPOSE 19444
+EXPOSE 443
 USER 10001:10001
 CMD ["python3", "/app/app.py"]
