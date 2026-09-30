@@ -93,6 +93,7 @@ class AsrAppTests(unittest.TestCase):
         self.assertEqual(".audio", APP.safe_upload_suffix("bad." + "x" * 500))
         self.assertEqual("ru", APP.validate_request(" RU ", "transcribe", "json", None))
         self.assertIsNone(APP.validate_request("", "translate", "text", ""))
+        self.assertIsNone(APP.validate_request(" Auto ", "transcribe", "json", None))
         with self.assertRaises(HttpError) as invalid_language:
             APP.validate_request("../../etc", "transcribe", "json", None)
         self.assertEqual(400, invalid_language.exception.status_code)

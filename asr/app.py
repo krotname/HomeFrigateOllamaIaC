@@ -96,6 +96,10 @@ def validate_request(
         raise HTTPException(status_code=400, detail="Invalid language code")
     if prompt is not None and len(prompt) > 4000:
         raise HTTPException(status_code=400, detail="prompt must not exceed 4000 characters")
+    # An empty form field is indistinguishable from a missing one, which takes the "ru"
+    # default, so clients request language detection explicitly with "auto".
+    if normalized_language == "auto":
+        return None
     return normalized_language or None
 
 

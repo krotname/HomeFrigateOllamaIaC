@@ -1,5 +1,10 @@
 # OpenCode client for Ollama
 
+> **Retired.** Ollama no longer runs anywhere: the Tesla P40 cards moved to
+> `adler-black-u2`, and the VM keeps only the GPU-less `recorder` profile.
+> OpenCode's local model is `black-qwen` (`krotname/VpnOps`, `ops/black-qwen/`).
+> This page documents the `gpu_analytics` profile only.
+
 The files in `opencode/` configure OpenCode to use the authenticated
 OpenAI-compatible Ollama endpoint without committing the URL, credentials, or
 local CA certificate.
