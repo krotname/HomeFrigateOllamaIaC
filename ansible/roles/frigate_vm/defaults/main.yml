@@ -21,6 +21,7 @@ frigate_vm_asr_cpu_threads: 4
 frigate_vm_asr_max_upload_bytes: 104857600
 frigate_vm_asr_max_concurrent_transcriptions: 1
 frigate_vm_frigate_backend_port: 18971
+frigate_vm_friendly_dns_name: frigate.adler-white-w1.lan
 frigate_vm_ollama_backend_port: 11435
 frigate_vm_asr_backend_port: 19443
 frigate_vm_ollama_version: 0.30.8
