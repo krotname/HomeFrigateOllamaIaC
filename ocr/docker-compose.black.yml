@@ -1,0 +1,113 @@
+services:
+  ocr-llm:
+    container_name: ocr-llm
+    image: home-ocr-llm:local
+    build:
+      context: .
+      dockerfile: Dockerfile.llama
+    init: true
+    restart: unless-stopped
+    gpus: all
+    # Loopback only: the model server is reached solely by the ocr service below.
+    network_mode: host
+    environment:
+      # GPU1 by UUID (indices follow PCIe order). Whisper owns the spare room on GPU0;
+      # black-qwen keeps its last three expert layers on the CPU to leave ~6 GiB here.
+      CUDA_VISIBLE_DEVICES: GPU-9b076900-4700-5e08-9abd-c67fb39c6026
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    command:
+      - --model
+      - /models/Qwen3-VL-2B-Instruct-Q8_0.gguf
+      - --mmproj
+      - /models/mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf
+      - --alias
+      - qwen3-vl-2b-ocr
+      - --host
+      - 127.0.0.1
+      - --port
+      - "18090"
+      - --n-gpu-layers
+      - "99"
+      - --ctx-size
+      - "12288"
+      - --parallel
+      - "1"
+      - --image-max-tokens
+      - "4096"
+      - --threads
+      - "2"
+      - --temp
+      - "0"
+    volumes:
+      - ./models:/models:ro
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 6g
+    cpus: "2"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://127.0.0.1:18090/health"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ocr:
+    container_name: ocr
+    image: home-ocr:local
+    build: .
+    init: true
+    restart: unless-stopped
+    depends_on:
+      - ocr-llm
+    # Host networking keeps the port under the host ufw (default deny); a Docker
+    # port mapping would bypass it. Only 192.168.1.0/24 is allowed to 19444.
+    network_mode: host
+    environment:
+      OCR_PORT: "19444"
+      OCR_LLM_URL: http://127.0.0.1:18090
+      OCR_MODEL_NAME: Qwen3-VL-2B-Instruct-Q8_0
+      OCR_CERT_FILE: /certs/fullchain.pem
+      OCR_KEY_FILE: /certs/privkey.pem
+      OCR_TMP_DIR: /tmp/ocr
+      TMPDIR: /tmp/ocr
+      OCR_MAX_UPLOAD_BYTES: "104857600"
+      OCR_MAX_PAGES: "200"
+      OCR_MAX_CONCURRENT_JOBS: "1"
+    volumes:
+      - ./tmp:/tmp/ocr
+      - ./certs:/certs:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: "2"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "import os, ssl, urllib.request;
+          urllib.request.urlopen('https://127.0.0.1:' + os.environ['OCR_PORT'] + '/health',
+          timeout=5, context=ssl._create_unverified_context()).read()"
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

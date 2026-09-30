@@ -76,7 +76,7 @@ try {
         }
     }
 
-    Invoke-Checked python @("-m", "compileall", "-q", "asr", "ollama-audio-transcription", "tests")
+    Invoke-Checked python @("-m", "compileall", "-q", "asr", "ocr", "ollama-audio-transcription", "tests")
     $checks++
     Invoke-Checked python @("-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py")
     $checks++
@@ -92,6 +92,7 @@ for path in Path('ansible').rglob('*.yml'):
     if 'templates' not in path.parts:
         yaml.safe_load(path.read_text(encoding='utf-8'))
 yaml.safe_load(Path('asr/docker-compose.yml').read_text(encoding='utf-8'))
+yaml.safe_load(Path('ocr/docker-compose.black.yml').read_text(encoding='utf-8'))
 
 def pinned_requirements(path):
     result = {}
@@ -117,6 +118,8 @@ if not declared or any(locked.get(name) != version for name, version in declared
     $nginx = Get-Content -Raw ansible/roles/frigate_vm/templates/home-ai-proxies.nginx.j2
     $compose = Get-Content -Raw ansible/roles/frigate_vm/templates/docker-compose.yml.j2
     $asr = Get-Content -Raw asr/app.py
+    $ocr = Get-Content -Raw ocr/app.py
+    $ocrCompose = Get-Content -Raw ocr/docker-compose.black.yml
     $transcriber = Get-Content -Raw ollama-audio-transcription/transcribe_via_ollama.py
     $backupScript = Get-Content -Raw scripts/invoke-config-backup.ps1
     $caInstaller = Get-Content -Raw scripts/install-frigate-local-ca.ps1
@@ -133,6 +136,10 @@ if not declared or any(locked.get(name) != version for name, version in declared
     Assert-True ($compose -match '127\.0\.0\.1:') "Frigate backend is not loopback-only"
     Assert-True ($asr -match 'ASR_MAX_UPLOAD_BYTES') "ASR upload limit is missing"
     Assert-True ($asr -match 'run_in_threadpool') "Blocking ASR inference returned to the event loop"
+    Assert-True ($ocr -match 'OCR_MAX_UPLOAD_BYTES') "OCR upload limit is missing"
+    Assert-True ($ocr -match 'ProxyHandler\(\{\}\)') "OCR model calls may leave through an inherited proxy"
+    Assert-True ($ocrCompose -match '(?m)^\s+- 127\.0\.0\.1$') "OCR model server is not loopback-only"
+    Assert-True ($ocrCompose -notmatch '(?m)^\s+ports:') "OCR compose publishes a Docker port that bypasses ufw"
     Assert-True ($transcriber -match 'StrictHostKeyChecking=yes') "SSH host-key verification is not strict"
     Assert-True ($transcriber -notmatch 'UserKnownHostsFile=NUL') "SSH known_hosts bypass returned"
     Assert-True ($backupScript -match 'StrictHostKeyChecking=yes') "Backup SSH host-key verification is not strict by default"
@@ -202,6 +209,8 @@ if not declared or any(locked.get(name) != version for name, version in declared
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose validation failed with exit code $LASTEXITCODE"
         }
+        $checks++
+        Invoke-Checked docker @("compose", "-f", "ocr/docker-compose.black.yml", "config", "--quiet")
         $checks++
     }
     if (Get-Command ansible-playbook -ErrorAction SilentlyContinue) {
