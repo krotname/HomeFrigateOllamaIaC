@@ -77,5 +77,6 @@ certificates, model generation and GPU runtime checks are host-level concerns.
 - ASR container API: `http://127.0.0.1:19443`
 - Frigate container API: `https://127.0.0.1:18971`
 - LAN Frigate URL: `https://192.168.1.138:8971`
-- LAN Ollama URL: `https://192.168.1.138:11443`
-- LAN ASR URL: `https://192.168.1.138:9443`
+- LAN Ollama URL: `https://192.168.1.138:11443` (`gpu_analytics` only; Ollama is retired)
+- LAN ASR URL: `https://192.168.1.138:9443` (`gpu_analytics` only; production ASR runs on
+  `adler-black-u2`, see [current-state.md](current-state.md#asr-for-the-phone-pipeline))

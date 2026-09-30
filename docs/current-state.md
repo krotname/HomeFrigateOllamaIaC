@@ -74,6 +74,17 @@ Tesla P40 GPU0 next to `black-qwen`, Whisper `large-v3` in `int8`, and listens
 only on `127.0.0.1:19443`. The read-only container needs `TMPDIR=/tmp/asr`,
 otherwise multipart uploads fail with `There was an error parsing the body`.
 
+GPU0 is shared with `black-qwen`. Whisper fits beside it only because
+`black-qwen` runs with `--n-cpu-moe 24` (`krotname/VpnOps#864`, 2026-09-30),
+which leaves about 5 GiB free on GPU0. With `--n-cpu-moe 22` there was 2.7 GiB,
+and anything longer than a short clip failed with `CUDA failed with error out of memory`.
+Measured after the change: a 42-minute recording took 954 s.
+
+The `language` form field defaults to `ru`. An empty value counts as a missing
+field and also yields `ru`, so clients request detection with `language=auto`.
+The laptop's `speech-whisper` and the `adler-media-transcribe` skill reach the
+service over `ssh adler-black-u2.lan` plus a `curl` to the loopback port.
+
 ## Validation
 
 ```powershell
