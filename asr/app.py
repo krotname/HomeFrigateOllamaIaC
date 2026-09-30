@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import tempfile
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from faster_whisper import WhisperModel
 from starlette.concurrency import run_in_threadpool
@@ -111,43 +112,54 @@ def run_transcription(
     vad_filter: bool,
     word_timestamps: bool,
 ) -> tuple[list[dict], object]:
-    # A large Whisper model can exhaust GPU memory when several requests run at once.
-    # The semaphore is intentionally held while the lazy segments iterator is consumed.
-    with _transcription_slots:
-        model = get_model()
-        segments_iter, info = model.transcribe(
-            str(temp_path),
-            language=language,
-            task=task,
-            initial_prompt=prompt,
-            beam_size=5,
-            vad_filter=vad_filter,
-            word_timestamps=word_timestamps,
-        )
-        segments = []
-        for index, segment in enumerate(segments_iter):
-            item = {
-                "id": index,
-                "start": round(segment.start, 3),
-                "end": round(segment.end, 3),
-                "text": segment.text.strip(),
-            }
-            if word_timestamps:
-                item["words"] = [
-                    {
-                        "start": round(word.start, 3),
-                        "end": round(word.end, 3),
-                        "word": word.word.strip(),
-                        "probability": round(word.probability, 6),
-                    }
-                    for word in (segment.words or [])
-                ]
-            segments.append(item)
-        return segments, info
+    # The caller holds a transcription slot for the whole call, including the lazy
+    # segments iterator: several concurrent runs can exhaust GPU memory.
+    model = get_model()
+    segments_iter, info = model.transcribe(
+        str(temp_path),
+        language=language,
+        task=task,
+        initial_prompt=prompt,
+        beam_size=5,
+        vad_filter=vad_filter,
+        word_timestamps=word_timestamps,
+    )
+    segments = []
+    for index, segment in enumerate(segments_iter):
+        item = {
+            "id": index,
+            "start": round(segment.start, 3),
+            "end": round(segment.end, 3),
+            "text": segment.text.strip(),
+        }
+        if word_timestamps:
+            item["words"] = [
+                {
+                    "start": round(word.start, 3),
+                    "end": round(word.end, 3),
+                    "word": word.word.strip(),
+                    "probability": round(word.probability, 6),
+                }
+                for word in (segment.words or [])
+            ]
+        segments.append(item)
+    return segments, info
+
+
+async def acquire_transcription_slot(request: Request) -> bool:
+    # Wait on the event loop rather than in a worker thread, and give up once the
+    # client has gone. A realtime caller times out while a long batch job holds the
+    # GPU; transcribing its abandoned segment afterwards only delays the next one.
+    while not _transcription_slots.acquire(blocking=False):
+        if await request.is_disconnected():
+            return False
+        await asyncio.sleep(0.5)
+    return True
 
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
+    request: Request,
     file: UploadFile = File(...),
     language: str = Form("ru"),
     task: str = Form("transcribe"),
@@ -178,15 +190,20 @@ async def transcribe(
         if total_bytes == 0:
             raise HTTPException(status_code=400, detail="Audio upload is empty")
 
-        segments, info = await run_in_threadpool(
-            run_transcription,
-            temp_path,
-            safe_language,
-            task,
-            prompt,
-            vad_filter,
-            word_timestamps,
-        )
+        if not await acquire_transcription_slot(request):
+            raise HTTPException(status_code=503, detail="Client disconnected while queued")
+        try:
+            segments, info = await run_in_threadpool(
+                run_transcription,
+                temp_path,
+                safe_language,
+                task,
+                prompt,
+                vad_filter,
+                word_timestamps,
+            )
+        finally:
+            _transcription_slots.release()
         text = " ".join(segment["text"] for segment in segments if segment["text"]).strip()
         if response_format == "text":
             return PlainTextResponse(text)

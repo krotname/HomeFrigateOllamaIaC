@@ -37,6 +37,7 @@ def load_app_module():
     fastapi.File = lambda default, **_kwargs: default
     fastapi.Form = lambda default=None, **_kwargs: default
     fastapi.HTTPException = HttpError
+    fastapi.Request = object
     fastapi.UploadFile = object
 
     responses = types.ModuleType("fastapi.responses")
@@ -87,6 +88,14 @@ class FakeUpload:
         self.closed = True
 
 
+class FakeRequest:
+    def __init__(self, disconnected=False):
+        self.disconnected = disconnected
+
+    async def is_disconnected(self):
+        return self.disconnected
+
+
 class AsrAppTests(unittest.TestCase):
     def test_suffix_and_request_validation(self):
         self.assertEqual(".wav", APP.safe_upload_suffix("VOICE.WAV"))
@@ -130,12 +139,32 @@ class AsrAppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
             APP, "TMP_DIR", Path(temp_dir)
         ), mock.patch.object(APP, "run_in_threadpool", side_effect=direct_call):
-            response = asyncio.run(APP.transcribe(upload, response_format="json"))
+            response = asyncio.run(APP.transcribe(FakeRequest(), upload, response_format="json"))
             remaining = list(Path(temp_dir).iterdir())
 
         self.assertEqual("first second", response.content["text"])
         self.assertTrue(upload.closed)
         self.assertEqual([], remaining)
+        self.assertTrue(APP._transcription_slots.acquire(blocking=False))
+        APP._transcription_slots.release()
+
+    def test_drops_queued_request_after_client_disconnects(self):
+        upload = FakeUpload([b"audio"])
+        run = mock.AsyncMock()
+        self.assertTrue(APP._transcription_slots.acquire(blocking=False))
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+                APP, "TMP_DIR", Path(temp_dir)
+            ), mock.patch.object(APP, "run_in_threadpool", run):
+                with self.assertRaises(HttpError) as error:
+                    asyncio.run(APP.transcribe(FakeRequest(disconnected=True), upload))
+                self.assertEqual([], list(Path(temp_dir).iterdir()))
+        finally:
+            APP._transcription_slots.release()
+
+        self.assertEqual(503, error.exception.status_code)
+        run.assert_not_called()
+        self.assertTrue(upload.closed)
 
     def test_rejects_oversized_and_empty_uploads_without_leaks(self):
         for chunks, expected_status in (([b"12345"], 413), ([], 400)):
@@ -144,7 +173,7 @@ class AsrAppTests(unittest.TestCase):
                 APP, "TMP_DIR", Path(temp_dir)
             ), mock.patch.object(APP, "MAX_UPLOAD_BYTES", 4):
                 with self.assertRaises(HttpError) as error:
-                    asyncio.run(APP.transcribe(upload))
+                    asyncio.run(APP.transcribe(FakeRequest(), upload))
                 self.assertEqual(expected_status, error.exception.status_code)
                 self.assertEqual([], list(Path(temp_dir).iterdir()))
                 self.assertTrue(upload.closed)

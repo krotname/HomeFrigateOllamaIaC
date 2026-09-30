@@ -79,12 +79,19 @@ sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 19443 proto tcp comment
 ```
 
 The earlier `Red containment` deny for `192.168.1.185` stays ahead of it, and
-VPN subnets are not allowed. The API has no authentication: the owner accepted
+the home-access VPN subnets routed to Black (`10.9x.35.0/24`) are not allowed.
+Clients whose traffic the router itself proxies leave from `192.168.1.1` and are
+allowed like any LAN host. The API has no authentication: the owner accepted
 LAN-only exposure on 2026-09-30, so never publish the port beyond the LAN.
 The TLS certificate is a `krt-local-lan-root-ca-2026-r3` leaf for
 `adler-black-u2.lan`, `192.168.1.242` and `127.0.0.1` in `/opt/asr/certs`
 (owner `10001`, mode `0600`). The read-only container needs `TMPDIR=/tmp/asr`,
 otherwise multipart uploads fail with `There was an error parsing the body`.
+
+One transcription runs at a time, so a long batch job from the Phone pipeline
+delays VideoAgent's 15-second segments. A queued request whose client has
+disconnected, for example after VideoAgent's 45-second timeout, is dropped
+instead of being transcribed later.
 
 GPU0 is shared with `black-qwen`. Whisper fits beside it only because
 `black-qwen` runs with `--n-cpu-moe 24` (`krotname/VpnOps#864`, 2026-09-30),
