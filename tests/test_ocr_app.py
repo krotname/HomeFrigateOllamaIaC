@@ -280,5 +280,58 @@ class OcrEndpointTests(unittest.TestCase):
         self.assert_slot_free()
 
 
+class PrivilegeDropTest(unittest.TestCase):
+    def patch_ids(self, uid):
+        ids = {"uid": uid, "gid": uid}
+        calls = []
+
+        def setuid(value):
+            calls.append(("setuid", value))
+            ids["uid"] = value
+
+        def setgid(value):
+            calls.append(("setgid", value))
+            ids["gid"] = value
+
+        patches = [
+            mock.patch.object(APP.os, "getuid", lambda: ids["uid"], create=True),
+            mock.patch.object(APP.os, "geteuid", lambda: ids["uid"], create=True),
+            mock.patch.object(APP.os, "getgid", lambda: ids["gid"], create=True),
+            mock.patch.object(APP.os, "getegid", lambda: ids["gid"], create=True),
+            mock.patch.object(APP.os, "setuid", setuid, create=True),
+            mock.patch.object(APP.os, "setgid", setgid, create=True),
+            mock.patch.object(
+                APP.os, "setgroups", lambda groups: calls.append(("setgroups", groups)), create=True
+            ),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return calls
+
+    def test_root_switches_to_the_service_uid_group_first(self):
+        calls = self.patch_ids(0)
+        APP.drop_privileges("10001:10001")
+        self.assertEqual(
+            [("setgroups", []), ("setgid", 10001), ("setuid", 10001)], calls
+        )
+
+    def test_root_without_run_as_refuses_to_serve(self):
+        self.patch_ids(0)
+        with self.assertRaises(RuntimeError):
+            APP.drop_privileges("")
+
+    def test_unprivileged_start_keeps_its_uid(self):
+        calls = self.patch_ids(10001)
+        APP.drop_privileges("10001:10001")
+        self.assertEqual([], calls)
+
+    def test_run_as_rejects_root_and_garbage(self):
+        for spec in ("0:0", "10001:0", "ocr", "10001:x"):
+            with self.subTest(spec=spec), self.assertRaises(RuntimeError):
+                APP.parse_run_as(spec)
+        self.assertEqual((10001, 10001), APP.parse_run_as("10001"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import socket
 import tempfile
 import threading
 import time
@@ -24,6 +25,9 @@ from starlette.concurrency import run_in_threadpool
 
 
 HOST = os.getenv("OCR_HOST", "0.0.0.0")
+# "uid:gid" to switch to once the listening socket is open. Set when the container
+# starts as root only to bind a privileged port (443); the service never runs as root.
+RUN_AS = os.getenv("OCR_RUN_AS", "").strip()
 CERT_FILE = os.getenv("OCR_CERT_FILE") or None
 KEY_FILE = os.getenv("OCR_KEY_FILE") or None
 TMP_DIR = Path(os.getenv("OCR_TMP_DIR", "/tmp/ocr"))
@@ -466,13 +470,51 @@ async def ocr(
             await file.close()
 
 
+def parse_run_as(spec: str) -> tuple[int, int]:
+    uid_text, _, gid_text = spec.partition(":")
+    try:
+        uid = int(uid_text)
+        gid = int(gid_text or uid_text)
+    except ValueError as exc:
+        raise RuntimeError("OCR_RUN_AS must be uid:gid") from exc
+    if uid <= 0 or gid <= 0:
+        raise RuntimeError("OCR_RUN_AS must name a non-root uid:gid")
+    return uid, gid
+
+
+def open_listener(host: str, port: int) -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    return sock
+
+
+def drop_privileges(spec: str) -> None:
+    if os.getuid() != 0:
+        if spec:
+            log.info("already running as uid %s, OCR_RUN_AS ignored", os.getuid())
+        return
+    if not spec:
+        raise RuntimeError("refusing to serve as root: set OCR_RUN_AS")
+    uid, gid = parse_run_as(spec)
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+    # setuid() from root to another uid clears every capability; prove it stuck.
+    if 0 in (os.getuid(), os.geteuid(), os.getgid(), os.getegid()):
+        raise RuntimeError("failed to drop root privileges")
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    uvicorn.run(
+    listener = open_listener(HOST, PORT)
+    drop_privileges(RUN_AS)
+    # TLS material is loaded by Server.run, after the switch: the key stays readable
+    # only to the service uid.
+    server = uvicorn.Server(uvicorn.Config(
         "app:app",
-        host=HOST,
-        port=PORT,
         ssl_certfile=CERT_FILE,
         ssl_keyfile=KEY_FILE,
         log_level=os.getenv("OCR_LOG_LEVEL", "info"),
-    )
+    ))
+    server.run(sockets=[listener])

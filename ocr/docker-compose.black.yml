@@ -71,10 +71,14 @@ services:
     depends_on:
       - ocr-llm
     # Host networking keeps the port under the host ufw (default deny); a Docker
-    # port mapping would bypass it. Only 192.168.1.0/24 is allowed to 19444.
+    # port mapping would bypass it. Only 192.168.1.0/24 is allowed to 443.
     network_mode: host
+    # Starts as root with three capabilities only to bind 443, then app.py switches
+    # to OCR_RUN_AS; switching uid clears the capabilities for the rest of the run.
+    user: "0:0"
     environment:
-      OCR_PORT: "19444"
+      OCR_PORT: "443"
+      OCR_RUN_AS: "10001:10001"
       OCR_LLM_URL: http://127.0.0.1:18090
       OCR_MODEL_NAME: Qwen3-VL-2B-Instruct-Q8_0
       OCR_CERT_FILE: /certs/fullchain.pem
@@ -92,6 +96,10 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
     pids_limit: 256
     mem_limit: 4g
     cpus: "2"
