@@ -78,12 +78,22 @@ for name in "${CONTAINERS[@]}"; do
 
   printf '%s\n' "$now" >"$recovery_file"
   printf '0\n' >"$failure_file"
+  # set -e оборвал бы весь цикл на первом же неуспешном restart, и следующие
+  # контейнеры из списка в этом прогоне не осматривались бы вовсе.
   if [[ "$state" == running\|* ]]; then
     log "restarting unhealthy container '$name'"
-    docker restart "$name" >/dev/null
+    if ! docker restart "$name" >/dev/null; then
+      log "ERROR: docker restart failed for container '$name'"
+      result=1
+      continue
+    fi
   else
     log "starting stopped container '$name'"
-    docker start "$name" >/dev/null
+    if ! docker start "$name" >/dev/null; then
+      log "ERROR: docker start failed for container '$name'"
+      result=1
+      continue
+    fi
   fi
 
   if wait_healthy "$name"; then
