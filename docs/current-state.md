@@ -18,7 +18,7 @@ Last live host and VM check: `2026-09-28`.
 
 | Component | Value |
 | --- | --- |
-| URL | `https://192.168.1.138:8971/` |
+| URL | `https://frigate.adler-white-w1.lan/` (since 2026-09-30; legacy `https://adler-frigate.lan:8971/`) |
 | Image | `ghcr.io/blakeblackshear/frigate:stable` (`0.18.0`) |
 | Runtime | Docker `runc`, no assigned GPU devices or device requests |
 | Cameras | `cam1_ds_i202`, `cam3_ds_i200` recording; `cam2_ds_i551` configured with `enabled: false` while its hardware is switched off |

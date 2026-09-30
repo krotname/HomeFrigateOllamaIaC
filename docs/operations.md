@@ -65,7 +65,7 @@ client:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 `
-  -FrigateUrl https://192.168.1.138:8971 `
+  -FrigateUrl https://frigate.adler-white-w1.lan `
   -CaCertPath C:\secure-transfer\fullchain.pem
 ```
 
@@ -191,10 +191,11 @@ Install and verify the local certificate with `install-frigate-local-ca.ps1`
 before using these endpoints. The examples intentionally do not disable TLS
 verification.
 
-Frigate is published on the VM LAN address:
+Frigate is published on the VM through its LAN name:
 
 ```powershell
-curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://192.168.1.138:8971/api/version
+curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" `
+  https://frigate.adler-white-w1.lan/api/version
 ```
 
 Ollama is published on the VM LAN address:
