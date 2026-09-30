@@ -42,9 +42,14 @@ record_continuous_days: 3
 - Frigate: CUDA ffmpeg + ONNX GPU detector YOLOv9-t 320.
 - Ollama: `huihui_ai/gpt-oss-abliterated:20b`.
 - ASR: `Systran/faster-whisper-large-v3`, CUDA `int8`.
-- Frigate HTTPS LAN: `https://192.168.1.138:8971/`.
+- Frigate HTTPS LAN: `https://frigate.adler-white-w1.lan/` (VM on White, `192.168.1.138`).
 - Ollama HTTPS LAN: `https://192.168.1.138:11443/`.
 - ASR HTTPS LAN: `https://192.168.1.138:9443/`.
+
+The Frigate name resolves on the LAN router to the VM, where nginx serves port 443
+with a dedicated certificate from `krt-local-lan-root-ca-2026-r3`. The certificate
+and private key are provisioned from White's CA before running Ansible. The old
+`https://adler-frigate.lan:8971/` endpoint remains available for existing clients.
 
 ## Что Показывает Репозиторий
 
@@ -210,7 +215,7 @@ ansible-playbook -i .\ansible\inventory.yml .\ansible\playbooks\site.yml --ask-b
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 `
-  -FrigateUrl https://192.168.1.138:8971 `
+  -FrigateUrl https://frigate.adler-white-w1.lan `
   -CaCertPath C:\secure-transfer\fullchain.pem
 ```
 
@@ -237,7 +242,8 @@ Config-only backups are documented in `docs\backup-policy.md` and tracked in
 С этой машины Frigate проверяется так:
 
 ```powershell
-curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" https://192.168.1.138:8971/api/version
+curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" `
+  https://frigate.adler-white-w1.lan/api/version
 ```
 
 Ollama API:

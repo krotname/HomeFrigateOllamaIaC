@@ -7,7 +7,7 @@ param(
     [string]$HostCredentialPath = "$env:USERPROFILE\.codex\secrets\adler-winrm.credential.xml",
     [string]$HostConfigurationName = "PowerShell.7",
     [string]$VmName = "frigate-ubuntu",
-    [string]$FrigateUrl = "https://192.168.1.138:8971",
+    [string]$FrigateUrl = "https://frigate.adler-white-w1.lan",
     [string]$FrigateInternalUrl = "https://127.0.0.1:18971",
     [string]$FrigateAuthUser = $env:FRIGATE_BASIC_USER,
     [string]$FrigateAuthPassword = $env:FRIGATE_BASIC_PASSWORD,

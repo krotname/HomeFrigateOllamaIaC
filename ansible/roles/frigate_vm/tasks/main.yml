@@ -123,7 +123,7 @@
           ~ '(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
         )
     fail_msg: "Invalid frigate_dns_names entry: {{ item }}"
-  loop: "{{ frigate_dns_names }}"
+  loop: "{{ frigate_dns_names + [frigate_vm_friendly_dns_name] }}"
 
 - name: Validate DNS names are unique
   ansible.builtin.assert:
@@ -705,18 +705,10 @@
   changed_when: false
   failed_when: false
 
-- name: Read nginx basic-auth database
-  ansible.builtin.slurp:
-    src: /etc/nginx/.htpasswd-home-ai
+- name: Inspect nginx basic-auth database
+  ansible.builtin.stat:
+    path: /etc/nginx/.htpasswd-home-ai
   register: frigate_vm_basic_auth_database
-  failed_when: false
-  no_log: true
-
-- name: Resolve nginx basic-auth users
-  ansible.builtin.set_fact:
-    frigate_vm_basic_auth_users_resolved: >-
-      {{ (frigate_vm_basic_auth_database.content | default('') | b64decode)
-         | regex_findall('(?m)^([^:]+):') }}
 
 - name: Create nginx basic-auth database
   ansible.builtin.command:
@@ -729,10 +721,84 @@
     stdin: "{{ home_ai_basic_password }}"
   no_log: true
   changed_when: true
-  when: >-
-    frigate_vm_basic_auth_verify.rc != 0
-    or frigate_vm_basic_auth_users_resolved != [home_ai_basic_user]
+  when: not frigate_vm_basic_auth_database.stat.exists
   notify: Restart nginx
+
+- name: Update configured nginx basic-auth user without removing other users
+  ansible.builtin.command:
+    argv:
+      - htpasswd
+      - -iBC
+      - "12"
+      - /etc/nginx/.htpasswd-home-ai
+      - "{{ home_ai_basic_user }}"
+    stdin: "{{ home_ai_basic_password }}"
+  no_log: true
+  changed_when: true
+  when:
+    - frigate_vm_basic_auth_database.stat.exists
+    - frigate_vm_basic_auth_verify.rc != 0
+  notify: Restart nginx
+
+- name: Inspect previously managed nginx basic-auth user
+  ansible.builtin.stat:
+    path: /etc/nginx/.htpasswd-home-ai.managed-user
+  register: frigate_vm_managed_auth_user_file
+
+- name: Read previously managed nginx basic-auth user
+  ansible.builtin.slurp:
+    src: /etc/nginx/.htpasswd-home-ai.managed-user
+  register: frigate_vm_managed_auth_user_content
+  when: frigate_vm_managed_auth_user_file.stat.exists
+
+- name: Resolve previously managed nginx basic-auth user
+  ansible.builtin.set_fact:
+    frigate_vm_previous_managed_auth_user: >-
+      {{ (frigate_vm_managed_auth_user_content.content | default('') | b64decode) | trim }}
+
+- name: Validate previously managed nginx basic-auth user
+  ansible.builtin.assert:
+    that:
+      - >-
+        frigate_vm_previous_managed_auth_user == ''
+        or frigate_vm_previous_managed_auth_user is match('^[A-Za-z0-9_.-]{1,64}$')
+
+- name: Check if previous managed nginx user still exists
+  ansible.builtin.command:
+    argv:
+      - awk
+      - '-F:'
+      - -v
+      - "user={{ frigate_vm_previous_managed_auth_user }}"
+      - '$1 == user { found=1 } END { exit !found }'
+      - /etc/nginx/.htpasswd-home-ai
+  register: frigate_vm_previous_auth_user_exists
+  changed_when: false
+  failed_when: frigate_vm_previous_auth_user_exists.rc not in [0, 1]
+  when:
+    - frigate_vm_previous_managed_auth_user | length > 0
+    - frigate_vm_previous_managed_auth_user != home_ai_basic_user
+
+- name: Revoke previous managed nginx user after rename
+  ansible.builtin.command:
+    argv:
+      - htpasswd
+      - -D
+      - /etc/nginx/.htpasswd-home-ai
+      - "{{ frigate_vm_previous_managed_auth_user }}"
+  changed_when: true
+  when:
+    - not (frigate_vm_previous_auth_user_exists.skipped | default(false))
+    - frigate_vm_previous_auth_user_exists.rc == 0
+  notify: Restart nginx
+
+- name: Record managed nginx basic-auth user for future renames
+  ansible.builtin.copy:
+    content: "{{ home_ai_basic_user }}\n"
+    dest: /etc/nginx/.htpasswd-home-ai.managed-user
+    owner: root
+    group: root
+    mode: "0600"
 
 - name: Restrict nginx basic-auth database
   ansible.builtin.file:
@@ -755,6 +821,52 @@
   ansible.builtin.file:
     src: /etc/nginx/sites-available/home-ai-proxies
     dest: /etc/nginx/sites-enabled/home-ai-proxies
+    state: link
+  notify: Restart nginx
+
+- name: Inspect friendly Frigate certificate and key
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ frigate_root }}/certs/white-domain-fullchain.pem"
+    - "{{ frigate_root }}/certs/white-domain-privkey.pem"
+  register: frigate_vm_friendly_cert_files
+
+- name: Require friendly Frigate certificate and key
+  ansible.builtin.assert:
+    that:
+      - frigate_vm_friendly_cert_files.results | map(attribute='stat.exists') | min
+    fail_msg: The r3 certificate for frigate.adler-white-w1.lan must be installed first.
+
+- name: Check friendly Frigate certificate hostname
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ frigate_root }}/certs/white-domain-fullchain.pem"
+      - -noout
+      - -checkhost
+      - "{{ frigate_vm_friendly_dns_name }}"
+  register: frigate_vm_friendly_cert_host_check
+  changed_when: false
+  failed_when: >-
+    frigate_vm_friendly_cert_host_check.rc != 0
+    or 'does match certificate' not in frigate_vm_friendly_cert_host_check.stdout
+
+- name: Render friendly Frigate HTTPS site
+  ansible.builtin.template:
+    src: frigate-white-domain.nginx.j2
+    dest: /etc/nginx/sites-available/frigate-white-domain
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Enable friendly Frigate HTTPS site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/frigate-white-domain
+    dest: /etc/nginx/sites-enabled/frigate-white-domain
     state: link
   notify: Restart nginx
 

@@ -1,5 +1,5 @@
 param(
-    [string]$FrigateUrl = "https://192.168.1.138:8971",
+    [string]$FrigateUrl = "https://frigate.adler-white-w1.lan",
     [string]$OutFile = "$env:TEMP\frigate-local-ca.cer",
     [string]$CaCertPath = "",
     [string]$ExpectedSha256Thumbprint = "",
