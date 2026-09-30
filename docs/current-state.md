@@ -129,6 +129,14 @@ Two containers share the host network:
   Qwen3-VL-2B-Instruct Q8_0 and its projector on `127.0.0.1:18090` only, on
   Tesla P40 **GPU1** selected by UUID. `ocr/fetch-models.sh` downloads the two
   GGUF files at a pinned Hugging Face revision and checks their SHA256.
+- Host RAM for `ocr-llm` is capped at 12 GiB, with another 6 GiB of swap as
+  an emergency fallback (`memswap_limit: 18g`). On 2026-10-01 the former
+  6 GiB RAM ceiling forced about 3 GiB into swap during sustained OCR while
+  the host still had 83 GiB available, triggering `HostSwapThrashing`.
+  Raising the live limit with `docker update --memory 12g --memory-swap 18g
+  ocr-llm` preserves the running request; the compose file retains it after
+  recreation. Roll back both the compose values and the live Docker limits
+  to 6 GiB RAM / 12 GiB total if necessary.
 - `ocr` is the FastAPI front end on `https://ocr.adler-black-u2.lan/` (port
   443). It starts as root with `NET_BIND_SERVICE`, `SETUID` and `SETGID` only to
   bind 443, then switches to uid `10001`, which clears those capabilities. It
