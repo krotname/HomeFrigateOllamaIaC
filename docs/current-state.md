@@ -105,6 +105,68 @@ field and also yields `ru`, so clients request detection with `language=auto`.
 `speech-whisper` and the `adler-media-transcribe` skill still reach the service
 over `ssh adler-black-u2.lan` plus a `curl` to the loopback port.
 
+## OCR on Black
+
+Since `2026-09-30` text recognition from images, scans and PDFs runs on Black
+next to ASR, from `/opt/ocr` with
+[`ocr/docker-compose.black.yml`](../ocr/docker-compose.black.yml). The owner
+chose the most accurate engine measured on the P40 rather than the fastest one:
+
+| Engine on the P40 (5 synthetic Russian A4 pages, 200 dpi) | CER | s/page | VRAM |
+| --- | ---: | ---: | ---: |
+| PaddleOCR PP-OCRv5 mobile, Cyrillic recognizer | 1.35 % | 0.27 | 0.8 GiB |
+| PaddleOCR-VL-1.5 on `llama.cpp` | 3.7 % | 3.4 | 2.2 GiB |
+| **Qwen3-VL-2B Q8_0 on `llama.cpp`, plain text** | **0.07 %** | **10.5** | **4.1 GiB** |
+| **Qwen3-VL-2B Q8_0, line boxes** | **0.09 %** | **16.6** | **4.5 GiB** |
+
+PP-OCRv5 turned Latin inside Russian lines into Cyrillic look-alikes
+(`info@example.ru` became `іпfо@ехатрӀе.ги`); PaddleOCR-VL invented words.
+
+Two containers share the host network:
+
+- `ocr-llm` is `llama-server` built by `ocr/Dockerfile.llama` for `sm_61` with
+  CUDA 12.9 from the same `llama.cpp` commit as `black-qwen`. It serves
+  Qwen3-VL-2B-Instruct Q8_0 and its projector on `127.0.0.1:18090` only, on
+  Tesla P40 **GPU1** selected by UUID. `ocr/fetch-models.sh` downloads the two
+  GGUF files at a pinned Hugging Face revision and checks their SHA256.
+- `ocr` is the FastAPI front end on `https://adler-black-u2.lan:19444`. It
+  renders PDF pages at 200 dpi, applies EXIF rotation to photos, caps every page
+  at 4096 image tokens (about 4.2 megapixels, an A4 page at 200 dpi fits), and
+  asks the model one page at a time.
+
+GPU0 cannot host the model: Whisper peaks about 3.5 GiB above its idle 2 GiB
+while transcribing and leaves 1.8 GiB. GPU1 had 2.1 GiB free, so `black-qwen`
+moves the experts of its last three layers to the CPU
+(`krotname/VpnOps#870`), which frees 3.9 GiB there at a 3 % generation cost.
+Rolling that back requires stopping `ocr-llm` first.
+
+Access mirrors ASR, by the owner's decision of `2026-09-30`: LAN only, no
+authentication, one ufw rule, and the same `krt-local-lan-root-ca-2026-r3` leaf
+copied into `/opt/ocr/certs` (owner `10001`, mode `0600`):
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 19444 proto tcp comment 'Black OCR LAN API'
+```
+
+API: `POST /v1/ocr`, multipart field `file` (PDF, PNG, JPEG, TIFF including
+multi-page, WebP, BMP; up to 100 MiB and 200 pages), optional `format`,
+`pages` (`1-3,5`) and `dpi` (72–400, PDFs only).
+
+| `format` | Result |
+| --- | --- |
+| `text` (default) | `text/plain`, pages separated by a form feed |
+| `json` | text plus line boxes per page: `bbox` is `[x0, y0, x1, y1]` in PDF points (`unit: pt`) or source pixels (`unit: px`), `truncated` flags a page that hit the token limit |
+| `pdf` | a searchable PDF: the original pages with an invisible text layer; PDF pages that already carry text are left as they are |
+
+```bash
+curl --cacert krt-local-lan-root-ca-2026-r3.pem -F file=@scan.pdf -F format=pdf \
+  -o scan.searchable.pdf https://adler-black-u2.lan:19444/v1/ocr
+```
+
+One job runs at a time and a queued job whose client has disconnected is
+dropped, as in ASR; a running multi-page job stops at the next page when its
+client leaves. `GET /health` answers 503 until the model server is ready.
+
 ## Validation
 
 ```powershell

@@ -24,3 +24,8 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 2
+  - package-ecosystem: "docker"
+    directory: "/ocr"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
