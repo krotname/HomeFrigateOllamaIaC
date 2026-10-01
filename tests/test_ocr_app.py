@@ -121,7 +121,7 @@ class FakeSource:
         FakeSource.closed = True
 
 
-def fake_recognize(page, response_format):
+def fake_recognize(page, response_format, max_tokens=None):
     page.text = f"page {page.number} {response_format}"
     page.lines = [{"text": page.text, "bbox": [0, 0, 10, 10]}]
     page.truncated = response_format == "text-json"
@@ -206,6 +206,7 @@ class OcrHelpersTests(unittest.TestCase):
         first_body = json.loads(opener.open.call_args_list[0].args[0].data)
         self.assertEqual(APP.TEXT_PROMPT, first_body["messages"][0]["content"][1]["text"])
         self.assertEqual(0, first_body["temperature"])
+        self.assertEqual(APP.MAX_TOKENS, first_body["max_tokens"])
 
     def test_health_reports_model_state(self):
         with mock.patch.object(APP, "llm_status", return_value="ok"):
@@ -239,6 +240,18 @@ class OcrHelpersTests(unittest.TestCase):
         self.assertEqual("complete", page.text)
         ask.assert_called_once_with(b"x", APP.TEXT_PROMPT)
 
+    def test_fragment_budget_bounds_both_attempts_and_preserves_length_stop(self):
+        reply = {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+        opener = mock.Mock()
+        opener.open.side_effect = [FakeHttpResponse(json.dumps(reply).encode()) for _ in range(2)]
+        with mock.patch.object(APP, "_llm_opener", opener):
+            page = APP.recognize(APP.PageImage(1, b"x", 904, 480, "px", 1.0),
+                                 "text-json", max_tokens=512)
+        self.assertTrue(page.truncated)
+        self.assertEqual("partial", page.text)
+        for call in opener.open.call_args_list:
+            self.assertEqual(512, json.loads(call.args[0].data)["max_tokens"])
+
     def test_text_json_uses_plain_prompt_and_preserves_truncation(self):
         self.assertEqual("text-json", APP.validate_request("text-json", None, None))
         with mock.patch.object(APP, "ask_model", return_value=("Plain text", True)) as ask:
@@ -258,7 +271,8 @@ class OcrEndpointTests(unittest.TestCase):
             APP, "TMP_DIR", Path(temp_dir)
         ), mock.patch.object(APP, "Source", FakeSource), mock.patch.object(
             APP, "recognize", side_effect=fake_recognize
-        ):
+        ) as recognition:
+            self.last_recognition = recognition
             try:
                 return asyncio.run(APP.ocr(request or FakeRequest(), upload, **kwargs))
             finally:
@@ -291,6 +305,23 @@ class OcrEndpointTests(unittest.TestCase):
         self.assertEqual("page 1 text-json\fpage 2 text-json", response.content["text"])
         self.assertEqual([1, 2], [page["page"] for page in response.content["pages"]])
         self.assertTrue(all(page["truncated"] for page in response.content["pages"]))
+        self.assert_slot_free()
+
+    def test_fragment_budget_reaches_every_selected_page(self):
+        self.run_ocr(FakeUpload([b"image"]), response_format="text-json", max_tokens=512)
+        self.assertEqual(2, self.last_recognition.call_count)
+        for call in self.last_recognition.call_args_list:
+            self.assertEqual(512, call.args[2])
+        self.assert_slot_free()
+
+    def test_invalid_fragment_budgets_rejected_before_rendering(self):
+        for budget in (0, 255, APP.MAX_TOKENS + 1, True, 512.0):
+            upload = FakeUpload([b"image"])
+            with mock.patch.object(APP, "Source") as source, self.assertRaises(HttpError) as error:
+                asyncio.run(APP.ocr(FakeRequest(), upload, max_tokens=budget))
+            self.assertEqual(400, error.exception.status_code)
+            source.assert_not_called()
+            self.assertTrue(upload.closed)
         self.assert_slot_free()
 
     def test_rejects_bad_uploads_without_leaks(self):

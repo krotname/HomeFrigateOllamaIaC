@@ -193,7 +193,8 @@ def clean_text(content: str) -> str:
     return FENCE.sub("", content.strip()).strip()
 
 
-def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None) -> tuple[str, bool]:
+def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None,
+              max_tokens: Optional[int] = None) -> tuple[str, bool]:
     body = {
         "messages": [
             {
@@ -208,7 +209,7 @@ def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None
             }
         ],
         "temperature": 0,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": MAX_TOKENS if max_tokens is None else max_tokens,
         "cache_prompt": False,
     }
     if repeat_penalty is not None:
@@ -223,16 +224,17 @@ def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None
     return choice["message"].get("content") or "", choice.get("finish_reason") == "length"
 
 
-def recognize(page: PageImage, response_format: str) -> PageImage:
+def recognize(page: PageImage, response_format: str, max_tokens: Optional[int] = None) -> PageImage:
+    options = {} if max_tokens is None else {"max_tokens": max_tokens}
     if response_format in {"text", "text-json"}:
-        content, page.truncated = ask_model(page.png, TEXT_PROMPT)
+        content, page.truncated = ask_model(page.png, TEXT_PROMPT, **options)
         if response_format == "text-json" and page.truncated:
             # Greedy decoding can loop even on a small screenshot fragment.
             # Retry only incomplete text; keep the calibrated first pass intact.
-            content, page.truncated = ask_model(page.png, TEXT_PROMPT, repeat_penalty=1.1)
+            content, page.truncated = ask_model(page.png, TEXT_PROMPT, repeat_penalty=1.1, **options)
         page.text = clean_text(content)
         return page
-    content, page.truncated = ask_model(page.png, SPOT_PROMPT)
+    content, page.truncated = ask_model(page.png, SPOT_PROMPT, **options)
     page.lines = scale_lines(parse_spotting(content), page.width, page.height, page.unit_scale)
     page.text = "\n".join(line["text"] for line in page.lines)
     return page
@@ -386,11 +388,14 @@ async def ocr(
     response_format: str = Form("text", alias="format"),
     pages: Optional[str] = Form(None),
     dpi: Optional[int] = Form(None),
+    max_tokens: Optional[int] = Form(None),
 ):
     normalized_format = validate_request(response_format, pages, dpi)
     temp_path: Optional[Path] = None
     source: Optional[Source] = None
     try:
+        if max_tokens is not None and (type(max_tokens) is not int or not 256 <= max_tokens <= MAX_TOKENS):
+            raise HTTPException(status_code=400, detail=f"max_tokens must be between 256 and {MAX_TOKENS}")
         TMP_DIR.mkdir(parents=True, exist_ok=True)
         total_bytes = 0
         with tempfile.NamedTemporaryFile(
@@ -429,7 +434,10 @@ async def ocr(
                         status_code=400, detail=f"Page {index + 1} cannot be rendered"
                     ) from exc
                 try:
-                    results[index] = await run_in_threadpool(recognize, page, normalized_format)
+                    if max_tokens is None:
+                        results[index] = await run_in_threadpool(recognize, page, normalized_format)
+                    else:
+                        results[index] = await run_in_threadpool(recognize, page, normalized_format, max_tokens)
                 except (OSError, ValueError, KeyError, IndexError) as exc:
                     # URLError and timeouts are OSError; a malformed reply is ValueError/KeyError.
                     raise HTTPException(status_code=503, detail="OCR model is unavailable") from exc
