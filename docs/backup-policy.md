@@ -45,7 +45,7 @@ OpenSSH config, and selected application config directories.
 VM backup contents include `/opt/frigate/config/config.yml`,
 `/opt/frigate/docker-compose.yml`, `/opt/frigate/.env`, public Frigate TLS
 certificate files, nginx config, Docker daemon config, netplan, SSH daemon
-config, `fstab`, `hosts`, and Ollama systemd overrides when present.
+config, `fstab`, and `hosts`.
 
 ## Exclusions
 

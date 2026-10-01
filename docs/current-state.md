@@ -129,7 +129,17 @@ Two containers share the host network:
   Qwen3-VL-2B-Instruct Q8_0 and its projector on `127.0.0.1:18090` only, on
   Tesla P40 **GPU1** selected by UUID. `ocr/fetch-models.sh` downloads the two
   GGUF files at a pinned Hugging Face revision and checks their SHA256.
-- `ocr` is the FastAPI front end on `https://adler-black-u2.lan:19444`. It
+- Host RAM for `ocr-llm` is capped at 12 GiB, with another 6 GiB of swap as
+  an emergency fallback (`memswap_limit: 18g`). On 2026-10-01 the former
+  6 GiB RAM ceiling forced about 3 GiB into swap during sustained OCR while
+  the host still had 83 GiB available, triggering `HostSwapThrashing`.
+  Raising the live limit with `docker update --memory 12g --memory-swap 18g
+  ocr-llm` preserves the running request; the compose file retains it after
+  recreation. Roll back both the compose values and the live Docker limits
+  to 6 GiB RAM / 12 GiB total if necessary.
+- `ocr` is the FastAPI front end on `https://ocr.adler-black-u2.lan/` (port
+  443). It starts as root with `NET_BIND_SERVICE`, `SETUID` and `SETGID` only to
+  bind 443, then switches to uid `10001`, which clears those capabilities. It
   renders PDF pages at 200 dpi, applies EXIF rotation to photos, caps every page
   at 4096 image tokens (about 4.2 megapixels, an A4 page at 200 dpi fits), and
   asks the model one page at a time.
@@ -141,11 +151,15 @@ moves the experts of its last three layers to the CPU
 Rolling that back requires stopping `ocr-llm` first.
 
 Access mirrors ASR, by the owner's decision of `2026-09-30`: LAN only, no
-authentication, one ufw rule, and the same `krt-local-lan-root-ca-2026-r3` leaf
-copied into `/opt/ocr/certs` (owner `10001`, mode `0600`):
+authentication, one ufw rule. The name `ocr.adler-black-u2.lan` is a router
+dnsmasq record managed by `krotname/VpnOps` (`ops/black-ocr`). The service has
+its own `krt-local-lan-root-ca-2026-r3` leaf for `ocr.adler-black-u2.lan`,
+`adler-black-u2.lan`, `192.168.1.242` and `127.0.0.1` in `/opt/ocr/certs`
+(owner `10001`, mode `0600`). The first address, port 19444, was closed after
+the clients moved:
 
 ```bash
-sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 19444 proto tcp comment 'Black OCR LAN API'
+sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 443 proto tcp comment 'Black OCR LAN API'
 ```
 
 API: `POST /v1/ocr`, multipart field `file` (PDF, PNG, JPEG, TIFF including
@@ -160,7 +174,7 @@ multi-page, WebP, BMP; up to 100 MiB and 200 pages), optional `format`,
 
 ```bash
 curl --cacert krt-local-lan-root-ca-2026-r3.pem -F file=@scan.pdf -F format=pdf \
-  -o scan.searchable.pdf https://adler-black-u2.lan:19444/v1/ocr
+  -o scan.searchable.pdf https://ocr.adler-black-u2.lan/v1/ocr
 ```
 
 One job runs at a time and a queued job whose client has disconnected is
