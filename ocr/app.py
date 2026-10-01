@@ -46,7 +46,7 @@ SPOT_PROMPT = (
 )
 # Qwen3-VL returns boxes on a 0..1000 grid relative to the image it was given.
 BOX_GRID = 1000.0
-FORMATS = {"text", "json", "pdf"}
+FORMATS = {"text", "text-json", "json", "pdf"}
 PAGE_SPEC = re.compile(r"\d+(-\d+)?(,\d+(-\d+)?)*")
 SPOT_ITEM = re.compile(
     r'"bbox_2d"\s*:\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,'
@@ -121,7 +121,7 @@ def health():
 def validate_request(response_format: str, pages: Optional[str], dpi: Optional[int]) -> str:
     normalized = (response_format or "").strip().lower()
     if normalized not in FORMATS:
-        raise HTTPException(status_code=400, detail="format must be text, json, or pdf")
+        raise HTTPException(status_code=400, detail="format must be text, text-json, json, or pdf")
     if pages is not None and pages.strip() and not PAGE_SPEC.fullmatch(pages.strip()):
         raise HTTPException(status_code=400, detail="pages must look like 1-3,5")
     if dpi is not None and not 72 <= dpi <= 400:
@@ -222,7 +222,7 @@ def ask_model(png: bytes, prompt: str) -> tuple[str, bool]:
 
 
 def recognize(page: PageImage, response_format: str) -> PageImage:
-    if response_format == "text":
+    if response_format in {"text", "text-json"}:
         content, page.truncated = ask_model(page.png, TEXT_PROMPT)
         page.text = clean_text(content)
         return page
