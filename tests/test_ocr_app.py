@@ -215,11 +215,38 @@ class OcrHelpersTests(unittest.TestCase):
         self.assertEqual(503, response.status_code)
         self.assertEqual("loading", response.content["llm"])
 
+    def test_text_json_retries_length_stop_with_repetition_penalty(self):
+        replies = [
+            {"choices": [{"message": {"content": "loop"}, "finish_reason": "length"}]},
+            {"choices": [{"message": {"content": "Repeated line\nRepeated line"}, "finish_reason": "stop"}]},
+        ]
+        opener = mock.Mock()
+        opener.open.side_effect = [FakeHttpResponse(json.dumps(reply).encode()) for reply in replies]
+        with mock.patch.object(APP, "_llm_opener", opener):
+            page = APP.recognize(APP.PageImage(1, b"x", 200, 100, "px", 1.0), "text-json")
+        self.assertFalse(page.truncated)
+        self.assertEqual("Repeated line\nRepeated line", page.text)
+        initial = json.loads(opener.open.call_args_list[0].args[0].data)
+        retry = json.loads(opener.open.call_args_list[1].args[0].data)
+        self.assertNotIn("repeat_penalty", initial)
+        self.assertEqual(1.1, retry["repeat_penalty"])
+        self.assertEqual(256, retry["repeat_last_n"])
+        self.assertEqual(initial["messages"], retry["messages"])
+
+    def test_complete_text_json_does_not_retry(self):
+        with mock.patch.object(APP, "ask_model", return_value=("complete", False)) as ask:
+            page = APP.recognize(APP.PageImage(1, b"x", 200, 100, "px", 1.0), "text-json")
+        self.assertEqual("complete", page.text)
+        ask.assert_called_once_with(b"x", APP.TEXT_PROMPT)
+
     def test_text_json_uses_plain_prompt_and_preserves_truncation(self):
         self.assertEqual("text-json", APP.validate_request("text-json", None, None))
         with mock.patch.object(APP, "ask_model", return_value=("Plain text", True)) as ask:
             page = APP.recognize(APP.PageImage(1, b"png", 200, 100, "px", 1.0), "text-json")
-        ask.assert_called_once_with(b"png", APP.TEXT_PROMPT)
+        self.assertEqual([
+            mock.call(b"png", APP.TEXT_PROMPT),
+            mock.call(b"png", APP.TEXT_PROMPT, repeat_penalty=1.1),
+        ], ask.call_args_list)
         self.assertEqual("Plain text", page.text)
         self.assertTrue(page.truncated)
         self.assertEqual([], page.lines)
