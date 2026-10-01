@@ -164,7 +164,10 @@ sudo ufw allow from 192.168.1.0/24 to 192.168.1.242 port 443 proto tcp comment '
 
 API: `POST /v1/ocr`, multipart field `file` (PDF, PNG, JPEG, TIFF including
 multi-page, WebP, BMP; up to 100 MiB and 200 pages), optional `format`,
-`pages` (`1-3,5`) and `dpi` (72–400, PDFs only).
+`pages` (`1-3,5`), `dpi` (72–400, PDFs only) and `max_tokens` (256 through
+the configured `OCR_MAX_TOKENS`, default ceiling 6144). A smaller per-request
+token budget bounds generation for short image fragments; incomplete replies
+still carry `truncated: true` so clients can split them further.
 
 | `format` | Result |
 | --- | --- |
