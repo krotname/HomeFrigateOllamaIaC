@@ -169,6 +169,7 @@ multi-page, WebP, BMP; up to 100 MiB and 200 pages), optional `format`,
 | `format` | Result |
 | --- | --- |
 | `text` (default) | `text/plain`, pages separated by a form feed |
+| `text-json` | the plain text prompt in a JSON envelope with per-page `truncated` flags; `lines` is empty, so batch text extraction can avoid the line-box prompt while checking completeness |
 | `json` | text plus line boxes per page: `bbox` is `[x0, y0, x1, y1]` in PDF points (`unit: pt`) or source pixels (`unit: px`), `truncated` flags a page that hit the token limit |
 | `pdf` | a searchable PDF: the original pages with an invisible text layer; PDF pages that already carry text are left as they are |
 

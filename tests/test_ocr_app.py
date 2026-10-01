@@ -124,6 +124,7 @@ class FakeSource:
 def fake_recognize(page, response_format):
     page.text = f"page {page.number} {response_format}"
     page.lines = [{"text": page.text, "bbox": [0, 0, 10, 10]}]
+    page.truncated = response_format == "text-json"
     return page
 
 
@@ -214,6 +215,15 @@ class OcrHelpersTests(unittest.TestCase):
         self.assertEqual(503, response.status_code)
         self.assertEqual("loading", response.content["llm"])
 
+    def test_text_json_uses_plain_prompt_and_preserves_truncation(self):
+        self.assertEqual("text-json", APP.validate_request("text-json", None, None))
+        with mock.patch.object(APP, "ask_model", return_value=("Plain text", True)) as ask:
+            page = APP.recognize(APP.PageImage(1, b"png", 200, 100, "px", 1.0), "text-json")
+        ask.assert_called_once_with(b"png", APP.TEXT_PROMPT)
+        self.assertEqual("Plain text", page.text)
+        self.assertTrue(page.truncated)
+        self.assertEqual([], page.lines)
+
 
 class OcrEndpointTests(unittest.TestCase):
     def run_ocr(self, upload, request=None, **kwargs):
@@ -248,6 +258,13 @@ class OcrEndpointTests(unittest.TestCase):
         self.assertEqual((2, "px", 200.0, 400.0), (page["page"], page["unit"], page["width"],
                                                    page["height"]))
         self.assertEqual("page 2 json", page["lines"][0]["text"])
+
+    def test_text_json_returns_metadata_instead_of_plain_response(self):
+        response = self.run_ocr(FakeUpload([b"image"]), response_format="text-json")
+        self.assertEqual("page 1 text-json\fpage 2 text-json", response.content["text"])
+        self.assertEqual([1, 2], [page["page"] for page in response.content["pages"]])
+        self.assertTrue(all(page["truncated"] for page in response.content["pages"]))
+        self.assert_slot_free()
 
     def test_rejects_bad_uploads_without_leaks(self):
         for chunks, expected_status in (([b"12345"], 413), ([], 400)):
