@@ -193,7 +193,7 @@ def clean_text(content: str) -> str:
     return FENCE.sub("", content.strip()).strip()
 
 
-def ask_model(png: bytes, prompt: str) -> tuple[str, bool]:
+def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None) -> tuple[str, bool]:
     body = {
         "messages": [
             {
@@ -211,6 +211,8 @@ def ask_model(png: bytes, prompt: str) -> tuple[str, bool]:
         "max_tokens": MAX_TOKENS,
         "cache_prompt": False,
     }
+    if repeat_penalty is not None:
+        body.update({"repeat_penalty": repeat_penalty, "repeat_last_n": 256})
     request = urllib.request.Request(
         LLM_URL + "/v1/chat/completions",
         json.dumps(body).encode(),
@@ -224,6 +226,10 @@ def ask_model(png: bytes, prompt: str) -> tuple[str, bool]:
 def recognize(page: PageImage, response_format: str) -> PageImage:
     if response_format in {"text", "text-json"}:
         content, page.truncated = ask_model(page.png, TEXT_PROMPT)
+        if response_format == "text-json" and page.truncated:
+            # Greedy decoding can loop even on a small screenshot fragment.
+            # Retry only incomplete text; keep the calibrated first pass intact.
+            content, page.truncated = ask_model(page.png, TEXT_PROMPT, repeat_penalty=1.1)
         page.text = clean_text(content)
         return page
     content, page.truncated = ask_model(page.png, SPOT_PROMPT)
