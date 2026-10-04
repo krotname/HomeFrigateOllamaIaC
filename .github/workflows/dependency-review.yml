@@ -2,7 +2,6 @@ name: Dependency Review
 
 on:
   pull_request:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,7 +10,13 @@ permissions:
 jobs:
   dependency-review:
     name: Dependency review
-    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'krotname/HomeFrigateOllamaIaC'
+      && github.actor == github.repository_owner
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.user.login == github.repository_owner
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: arc-prod-adler-home-frigate
     timeout-minutes: 5
     steps:
       - name: Checkout
