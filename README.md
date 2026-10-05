@@ -348,3 +348,15 @@ ansible-vault encrypt .\ansible\group_vars\all.yml
 - [Smoke-Test Proof](docs/smoke-test-proof.md) фиксирует последний production-прогон `failed_count=0`.
 - [Supply Chain Verification](docs/SUPPLY_CHAIN.md) описывает SHA-pinned Actions, pinned dev tools и release attestations.
 - [Dependency Policy](docs/DEPENDENCY_POLICY.md) фиксирует текущий baseline Ansible/PowerShell/Frigate/Ollama.
+
+### Black без исправных GPU
+
+VpnOps автоматически выбирает `asr/docker-compose.black.cpu.yml` и
+`ocr/docker-compose.black.cpu.yml`, когда нет исправных Tesla. ASR сохраняет
+Whisper large-v3 int8, OCR — Qwen3-VL-2B и прежние text/JSON/searchable PDF API;
+инференс идёт на CPU с ограничением четырьмя ядрами на модель и работает медленнее.
+Общий Qwen на TCP 8000 выключен. OCR-модель остаётся только на loopback 18090.
+CPU-образ `home-ocr-llm-cpu:local` нужно заранее собрать из `Dockerfile.llama`
+с `LLAMA_CUDA=OFF`; контроллер не скачивает и не собирает образы при аварии.
+С одной исправной GPU возвращается CUDA ASR/OCR, с двумя — также общий Qwen
+по автоматической политике VpnOps. После reboot выбор повторяется по живому PCI/GPU.
