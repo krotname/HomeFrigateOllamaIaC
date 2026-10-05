@@ -262,6 +262,79 @@ class IacTemplateTests(unittest.TestCase):
         self.assertTrue(declared)
         self.assertEqual(declared, {name: locked.get(name) for name in declared})
 
+    def test_black_gpu_selectors_use_runtime_uuids_with_legacy_defaults(self):
+        selectors = (
+            ("asr", "asr", "BLACK_ASR_GPU_UUID", "0"),
+            (
+                "ocr", "ocr-llm", "BLACK_OCR_GPU_UUID",
+                "GPU-9b076900-4700-5e08-9abd-c67fb39c6026",
+            ),
+        )
+        for directory, service_name, variable, default in selectors:
+            with self.subTest(service=service_name):
+                compose = yaml.safe_load(
+                    (ROOT / directory / "docker-compose.black.yml").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                service = compose["services"][service_name]
+                # Compose's :- keeps the legacy default for unset AND empty values;
+                # a UUID supplied by VpnOps through --env-file selects either P40.
+                self.assertEqual(
+                    f"${{{variable}:-{default}}}",
+                    service["environment"]["CUDA_VISIBLE_DEVICES"],
+                )
+                self.assertEqual("all", service["gpus"])
+
+    def test_black_asr_keeps_cuda_model_and_lan_tls_config(self):
+        compose = yaml.safe_load(
+            (ROOT / "asr/docker-compose.black.yml").read_text(encoding="utf-8")
+        )
+        service = compose["services"]["asr"]
+        self.assertEqual("host", service["network_mode"])
+        self.assertNotIn("ports", service)
+        for name, value in {
+            "ASR_MODEL": "Systran/faster-whisper-large-v3",
+            "ASR_DEVICE": "cuda",
+            "ASR_COMPUTE_TYPE": "int8",
+            "ASR_PORT": "19443",
+            "ASR_CERT_FILE": "/certs/fullchain.pem",
+            "ASR_KEY_FILE": "/certs/privkey.pem",
+            "ASR_MAX_CONCURRENT_TRANSCRIPTIONS": "1",
+        }.items():
+            with self.subTest(setting=name):
+                self.assertEqual(value, service["environment"][name])
+
+    def test_black_ocr_keeps_model_on_loopback_and_lan_tls_config(self):
+        compose = yaml.safe_load(
+            (ROOT / "ocr/docker-compose.black.yml").read_text(encoding="utf-8")
+        )
+        for service in compose["services"].values():
+            self.assertEqual("host", service["network_mode"])
+            self.assertNotIn("ports", service)
+        command = compose["services"]["ocr-llm"]["command"]
+        for flag, value in {
+            "--host": "127.0.0.1",
+            "--port": "18090",
+            "--model": "/models/Qwen3-VL-2B-Instruct-Q8_0.gguf",
+            "--mmproj": "/models/mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
+            "--n-gpu-layers": "99",
+            "--parallel": "1",
+        }.items():
+            with self.subTest(flag=flag):
+                self.assertEqual(value, command[command.index(flag) + 1])
+        environment = compose["services"]["ocr"]["environment"]
+        for name, value in {
+            "OCR_LLM_URL": "http://127.0.0.1:18090",
+            "OCR_MODEL_NAME": "Qwen3-VL-2B-Instruct-Q8_0",
+            "OCR_PORT": "443",
+            "OCR_CERT_FILE": "/certs/fullchain.pem",
+            "OCR_KEY_FILE": "/certs/privkey.pem",
+            "OCR_MAX_CONCURRENT_JOBS": "1",
+        }.items():
+            with self.subTest(setting=name):
+                self.assertEqual(value, environment[name])
+
     def test_compose_and_frigate_config_render_as_yaml(self):
         context = template_context()
         compose = render(
