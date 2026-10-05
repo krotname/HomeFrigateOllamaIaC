@@ -32,6 +32,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Check ARC cache contract
+        if: ${{ startsWith(runner.name, 'arc-prod-adler-') }}
+        shell: bash
+        run: /opt/arc-cache/arc-cache check-workflow --file .github/workflows/release.yml --job "$GITHUB_JOB"
       - name: Build source archive and checksums
         run: |
           set -euo pipefail
