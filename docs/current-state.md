@@ -93,7 +93,8 @@ delays VideoAgent's 15-second segments. A queued request whose client has
 disconnected, for example after VideoAgent's 45-second timeout, is dropped
 instead of being transcribed later.
 
-GPU0 is shared with `black-qwen`. Whisper fits beside it only because
+In the normal two-GPU layout, GPU0 is shared with `black-qwen`. Whisper fits
+beside it only because
 `black-qwen` runs with `--n-cpu-moe 24` (`krotname/VpnOps#864`, 2026-09-30),
 which leaves about 5 GiB free on GPU0. With `--n-cpu-moe 22` there was 2.7 GiB,
 and anything longer than a short clip failed with `CUDA failed with error out of memory`.
@@ -144,9 +145,11 @@ Two containers share the host network:
   at 4096 image tokens (about 4.2 megapixels, an A4 page at 200 dpi fits), and
   asks the model one page at a time.
 
-GPU0 cannot host the model: Whisper peaks about 3.5 GiB above its idle 2 GiB
-while transcribing and leaves 1.8 GiB. GPU1 had 2.1 GiB free, so `black-qwen`
-moves the experts of its last three layers to the CPU
+With `black-qwen` running in the normal two-GPU layout, GPU0 has insufficient
+space for the OCR model: Whisper peaks about 3.5 GiB above its idle 2 GiB
+while transcribing and leaves 1.8 GiB. This limit does not apply when
+`black-qwen` is stopped: Whisper and OCR can share one healthy P40. GPU1 had
+2.1 GiB free, so `black-qwen` moves the experts of its last three layers to the CPU
 (`krotname/VpnOps#870`), which frees 3.9 GiB there at a 3 % generation cost.
 Rolling that back requires stopping `ocr-llm` first.
 
@@ -184,6 +187,45 @@ curl --cacert krt-local-lan-root-ca-2026-r3.pem -F file=@scan.pdf -F format=pdf 
 One job runs at a time and a queued job whose client has disconnected is
 dropped, as in ASR; a running multi-page job stops at the next page when its
 client leaves. `GET /health` answers 503 until the model server is ready.
+
+## Single GPU fallback on Black
+
+The owner-approved fallback keeps ASR and OCR fully functional on the sole
+healthy Tesla P40. The general-purpose Qwen service `black-qwen`, managed by
+`krotname/VpnOps`, must be stopped before ASR and OCR share that card; running
+it with only one healthy GPU is forbidden. The dedicated OCR Qwen3-VL-2B
+`ocr-llm` remains running, bound only to `127.0.0.1:18090` and reached by the
+OCR front end at `http://127.0.0.1:18090`.
+
+The Black Compose files consume these GPU selectors:
+
+| Compose service | Variable | Default when unset or empty |
+| --- | --- | --- |
+| ASR `asr` | `BLACK_ASR_GPU_UUID` | `0` (normal GPU0) |
+| OCR `ocr-llm` | `BLACK_OCR_GPU_UUID` | `GPU-9b076900-4700-5e08-9abd-c67fb39c6026` (normal GPU1) |
+
+The VpnOps controller selects the healthy card and writes
+`/etc/black-gpu/runtime.env`. In fallback, **both variables contain the same
+sole healthy GPU UUID**; the placeholder below must be replaced by that UUID:
+
+```dotenv
+BLACK_ASR_GPU_UUID=GPU-<sole-healthy-P40-uuid>
+BLACK_OCR_GPU_UUID=GPU-<sole-healthy-P40-uuid>
+```
+
+The controller passes `--env-file /etc/black-gpu/runtime.env` to each Compose
+invocation. GPU health detection, stopping the general-purpose Qwen service
+and switching modes belong to VpnOps; these manifests only parameterize GPU
+selection. The fallback preserves the ASR/OCR APIs, TLS certificates, ports,
+LAN-only access without authentication, models and processing functionality.
+
+Config-only validation on a checkout, without starting containers or contacting
+a Docker daemon:
+
+```bash
+docker compose --env-file /etc/black-gpu/runtime.env -f asr/docker-compose.black.yml config --quiet
+docker compose --env-file /etc/black-gpu/runtime.env -f ocr/docker-compose.black.yml config --quiet
+```
 
 ## Validation
 

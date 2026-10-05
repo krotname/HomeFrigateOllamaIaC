@@ -11,9 +11,9 @@ services:
     # Loopback only: the model server is reached solely by the ocr service below.
     network_mode: host
     environment:
-      # GPU1 by UUID (indices follow PCIe order). Whisper owns the spare room on GPU0;
-      # black-qwen keeps its last three expert layers on the CPU to leave ~6 GiB here.
-      CUDA_VISIBLE_DEVICES: GPU-9b076900-4700-5e08-9abd-c67fb39c6026
+      # Default: GPU1 by UUID beside black-qwen. In fallback, VpnOps selects the
+      # same healthy UUID as ASR, with the general-purpose black-qwen stopped.
+      CUDA_VISIBLE_DEVICES: "${BLACK_OCR_GPU_UUID:-GPU-9b076900-4700-5e08-9abd-c67fb39c6026}"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     command:
       - --model

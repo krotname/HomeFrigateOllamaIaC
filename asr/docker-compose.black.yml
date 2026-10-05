@@ -10,8 +10,8 @@ services:
     # port mapping would bypass it. Only 192.168.1.0/24 is allowed to 19443.
     network_mode: host
     environment:
-      # GPU0 держит меньшую часть black-qwen и имеет запас VRAM под Whisper int8.
-      CUDA_VISIBLE_DEVICES: "0"
+      # Default: GPU0 beside black-qwen. VpnOps selects the healthy UUID in fallback.
+      CUDA_VISIBLE_DEVICES: "${BLACK_ASR_GPU_UUID:-0}"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       ASR_MODEL: Systran/faster-whisper-large-v3
       ASR_DEVICE: cuda
