@@ -1,4 +1,4 @@
-# llama.cpp server for the OCR model on a Tesla P40 (Pascal, sm_61).
+# llama.cpp server for OCR; LLAMA_CUDA=OFF builds the CPU fallback.
 # CUDA 13 no longer compiles sm_61, so both stages stay on CUDA 12.x.
 ARG CUDA_DEVEL_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c
 ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:12.9.1-runtime-ubuntu24.04@sha256:1287141d283b8f06f45681b56a48a85791398c615888b1f96bfb9fc981392d98
@@ -20,7 +20,8 @@ RUN test "${#LLAMA_CPP_SHA}" -eq 40 \
 
 # Resolve the driver's SONAME while linking without a GPU in the build stage.
 # The stub stays in this stage; the runtime receives the real host driver.
-RUN ln -s libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+ARG LLAMA_CUDA=ON
+RUN if [ "$LLAMA_CUDA" = ON ]; then ln -s libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1; fi \
     && cmake -S /src -B /build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS=-march=haswell \
@@ -28,7 +29,7 @@ RUN ln -s libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
         -DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,/usr/local/cuda/lib64/stubs \
         -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON \
         -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_AVX512=OFF \
-        -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61 \
+        -DGGML_CUDA="${LLAMA_CUDA}" -DCMAKE_CUDA_ARCHITECTURES=61 \
         -DGGML_CUDA_FORCE_MMQ=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
@@ -43,9 +44,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG LLAMA_CPP_SHA=41abbfd599fbdd3470fcae0a1fb6530ad8403cd7
+ARG LLAMA_CUDA=ON
 LABEL org.opencontainers.image.source="https://github.com/krotname/HomeFrigateOllamaIaC" \
       name.krot.llama-cpp.revision="${LLAMA_CPP_SHA}" \
-      name.krot.cuda.architecture="61"
+      name.krot.cuda.architecture="61" \
+      name.krot.cuda.enabled="${LLAMA_CUDA}"
 COPY --from=build /out /opt/llama
 ENV LD_LIBRARY_PATH=/opt/llama/lib
 USER 10001:10001

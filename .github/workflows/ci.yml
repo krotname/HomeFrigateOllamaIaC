@@ -111,8 +111,12 @@ jobs:
       - name: Validate ASR Compose model
         # config only parses the model; it does not need a Docker daemon.
         run: docker compose -f asr/docker-compose.yml config --quiet
-      - name: Validate OCR Compose model
-        run: docker compose -f ocr/docker-compose.black.yml config --quiet
+      - name: Validate Black media Compose models
+        run: |
+          docker compose -f asr/docker-compose.black.yml config --quiet
+          docker compose -f asr/docker-compose.black.cpu.yml config --quiet
+          docker compose -f ocr/docker-compose.black.yml config --quiet
+          docker compose -f ocr/docker-compose.black.cpu.yml config --quiet
 
   powershell-validation:
     name: PowerShell validation
