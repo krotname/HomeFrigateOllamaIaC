@@ -85,11 +85,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ARC cache contract
+        if: ${{ startsWith(runner.name, 'arc-prod-adler-') }}
+        shell: bash
+        run: /opt/arc-cache/arc-cache check-workflow --file .github/workflows/ci.yml --job "$GITHUB_JOB"
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-          cache: pip
+          cache: ${{ !startsWith(runner.name, 'arc-prod-adler-') && 'pip' || '' }}
           cache-dependency-path: requirements-dev.lock
       - name: Install IaC tools
         run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-dev.lock
@@ -133,6 +137,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ARC cache contract
+        if: ${{ startsWith(runner.name, 'arc-prod-adler-') }}
+        shell: bash
+        run: /opt/arc-cache/arc-cache check-workflow --file .github/workflows/ci.yml --job "$GITHUB_JOB"
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -186,6 +194,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ARC cache contract
+        if: ${{ startsWith(runner.name, 'arc-prod-adler-') }}
+        shell: bash
+        run: /opt/arc-cache/arc-cache check-workflow --file .github/workflows/ci.yml --job "$GITHUB_JOB"
       - name: Install Pester
         shell: pwsh
         run: |
@@ -210,6 +222,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ARC cache contract
+        if: ${{ startsWith(runner.name, 'arc-prod-adler-') }}
+        shell: bash
+        run: /opt/arc-cache/arc-cache check-workflow --file .github/workflows/ci.yml --job "$GITHUB_JOB"
       - name: Check for obvious committed secrets
         run: |
           credential_terms='api[_-]?key|token|secret|password|private[_-]?key'
