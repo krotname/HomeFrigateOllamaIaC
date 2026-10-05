@@ -16,7 +16,14 @@ permissions:
 jobs:
   analyze:
     name: Analyze (CodeQL)
-    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'krotname/HomeFrigateOllamaIaC'
+      && github.actor == github.repository_owner
+      && ((github.event_name == 'pull_request'
+           && github.event.pull_request.user.login == github.repository_owner
+           && github.event.pull_request.head.repo.full_name == github.repository)
+          || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: arc-prod-adler-home-frigate
     timeout-minutes: 15
     permissions:
       actions: read
