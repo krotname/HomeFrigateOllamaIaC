@@ -1033,6 +1033,25 @@
     - not (frigate_vm_ollama_enabled_resolved | bool)
     - "'ollama-watchdog.timer' in ansible_facts.services"
 
+- name: Create nginx systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/nginx.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Manage nginx network startup without a fixed guest address
+  ansible.builtin.template:
+    src: nginx-network-startup.conf.j2
+    dest: /etc/systemd/system/nginx.service.d/20-wait-lan.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart nginx
+
 - name: Validate nginx configuration
   ansible.builtin.command: nginx -t
   changed_when: false

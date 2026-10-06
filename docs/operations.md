@@ -20,6 +20,19 @@ bootstrap/recovery of WinRM itself.
 
 ## Deploy
 
+### Запуск HTTPS после изменения сети VM
+
+nginx слушает все адреса гостя и не должен ждать конкретный IPv4 на `eth0`.
+Роль управляет `/etc/systemd/system/nginx.service.d/20-wait-lan.conf`:
+порядок запуска через `network-online.target` и Docker, повтор при ошибке,
+без цикла ожидания старого адреса. Такой цикл блокировал HTTPS после переноса
+VM в отдельную подсеть, хотя контейнер Frigate уже работал.
+
+После применения проверьте `nginx -t`, `systemctl is-active nginx`, отсутствие
+адресного `ExecStartPre` в `systemctl cat nginx` и HTTPS `/review` через имя
+сервиса. Ответ `401` без реквизитов подтверждает доступность TLS и защиты;
+проверка входа и камер выполняется штатным smoke-тестом.
+
 1. Copy `ansible/inventory.example.yml` to `ansible/inventory.yml`.
 2. Copy `ansible/group_vars/all.example.yml` to `ansible/group_vars/all.yml`.
 3. Put real camera credentials in `ansible/group_vars/all.yml`, or encrypt them:
