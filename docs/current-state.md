@@ -2,6 +2,11 @@
 
 Last live host and VM check: `2026-09-28`.
 
+VM memory and Frigate health rechecked on `2026-10-07`: fixed RAM was reduced
+from `12 GB` to `6 GB`. Hyper-V confirmed `6 GB` assigned; the guest reported
+`5919 MiB` total RAM and zero swap use. Frigate returned version `0.18.0-77a66e7`
+and Docker health `healthy` after the restart. VM autostart remains enabled.
+
 ## Host and VM
 
 | Component | Value |
@@ -9,7 +14,7 @@ Last live host and VM check: `2026-09-28`.
 | Windows host | `ADLER-WHITE-W1`, `192.168.1.104` |
 | Hyper-V VM | `frigate-ubuntu`, `Running`, `192.168.1.138` |
 | VM autostart | `AutomaticStartAction=Start` |
-| VM CPU/RAM | `6` vCPU, fixed `12 GB` RAM (raised on `2026-09-27`) |
+| VM CPU/RAM | `6` vCPU, fixed `6 GB` RAM (reduced on `2026-10-07`) |
 | GPU/DDA | Tesla absent and not planned to return; VM assignable-device count `0` |
 | Media | `/media/frigate`, ext4 VHDX-backed mount, virtual size `2 TB` |
 | Host storage guard | Keep at least `150 GB` free on `F:` |
