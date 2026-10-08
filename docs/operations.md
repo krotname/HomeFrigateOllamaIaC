@@ -267,3 +267,13 @@ sudo python3 /tmp/apply-recorder-profile.py --check
 sudo python3 /tmp/apply-recorder-profile.py
 sudo docker compose -f /opt/frigate/docker-compose.yml up -d --force-recreate
 ```
+
+## Full-resolution live playback
+
+Each camera exposes both its existing substream and its main stream in the live
+player settings. Select the `_main` stream for native recording resolution; for
+example, the DS-I551 fisheye provides H.265 at 2560x1920. The existing `_sub`
+entry stays first so the All Cameras dashboard keeps its lower bandwidth use.
+The single-camera selection is stored per browser. H.265 playback requires a
+compatible browser; retain `_sub` as the H.264 option. This adds a stream choice
+without transcoding, changing archive quality or restarting Frigate.
