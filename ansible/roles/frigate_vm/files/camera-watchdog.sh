@@ -9,7 +9,7 @@
 # manual step.
 set -Eeuo pipefail
 
-readonly STATE_DIR=/run/krt-camera-watchdog
+readonly STATE_DIR="${CAMERA_WATCHDOG_STATE_DIR:-/run/krt-camera-watchdog}"
 readonly CONTAINER="${CAMERA_WATCHDOG_CONTAINER:-frigate}"
 readonly API_BASE="${CAMERA_WATCHDOG_API_BASE:-http://127.0.0.1:5000}"
 readonly RTSP_PORT="${CAMERA_WATCHDOG_RTSP_PORT:-554}"
@@ -80,11 +80,16 @@ print(sum(1 for camera in cameras.values() if camera.get("enabled", True)))
 }
 
 set_enabled() {
-  local name="$1" desired="$2"
+  local name="$1" desired="$2" value=OFF
+  if [[ "$desired" == 'true' ]]; then
+    value=ON
+  fi
+  # Keep enabled:true in YAML so startup creates the camera's workers. The
+  # runtime command also notifies those workers; config/set alone does not.
   docker exec "$CONTAINER" curl -sf --max-time "$API_TIMEOUT_SECONDS" \
     -X PUT -H 'Content-Type: application/json' \
-    -d "{\"requires_restart\":0,\"config_data\":{\"cameras\":{\"$name\":{\"enabled\":$desired}}}}" \
-    "$API_BASE/api/config/set" >/dev/null 2>&1
+    -d "{\"value\":\"$value\"}" \
+    "$API_BASE/api/camera/$name/set/enabled" >/dev/null 2>&1
 }
 
 probe() {
