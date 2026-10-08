@@ -149,8 +149,9 @@ go2rtc:
 
 cameras:
 {% for camera in cameras %}
+{% set watched = (frigate_vm_camera_watchdog_enabled_resolved | default(frigate_vm_camera_watchdog_enabled) | bool) and (camera.watchdog | default(true)) %}
   {{ camera.name }}:
-    enabled: {{ 'true' if camera.enabled | default(true) else 'false' }}
+    enabled: {{ 'true' if watched or (camera.enabled | default(true)) else 'false' }}
     ffmpeg:
 {% if camera.apple_compatibility | default(false) %}
       apple_compatibility: true
