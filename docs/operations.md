@@ -132,9 +132,10 @@ step:
   (default `10`, so ten minutes) it disables the camera;
 - after `frigate_vm_camera_watchdog_online_threshold` consecutive successes
   (default `2`) it enables it again;
-- it toggles `cameras.<name>.enabled` through `PUT /api/config/set` with
-  `requires_restart: 0`, so the change applies live and is written to
-  `config.yml`; recording on the other cameras is never interrupted;
+- it sends `ON` or `OFF` to `PUT /api/camera/<name>/set/enabled` with
+  `{"value":"ON"}` or `{"value":"OFF"}`. This publishes the runtime update
+  to camera workers and persists the override without rewriting `config.yml`;
+  recording on the other cameras is not interrupted;
 - it does nothing at all unless the `frigate` container is `running|healthy` and
   the API answers, and it never disables the last enabled camera.
 
@@ -142,10 +143,15 @@ State lives in `/run/krt-camera-watchdog`, so the counters restart from zero
 after a reboot. Follow its decisions with
 `journalctl -u krt-camera-watchdog.service`.
 
-`enabled:` in `ansible/group_vars/all.yml` is therefore only the state a deploy
-starts from - the watchdog corrects it within minutes either way. Set
-`watchdog: false` on a camera to keep it out of the watchdog's hands, and
-`camera_watchdog_enabled: false` to turn the watchdog off entirely.
+Watched cameras must have `enabled: true` in Frigate's YAML, even while offline:
+Frigate skips worker creation for cameras disabled at startup. The template
+therefore enables watched cameras regardless of their inventory `enabled` value.
+Set `watchdog: false` together with `enabled: false` for a permanently disabled
+camera, or `camera_watchdog_enabled: false` to turn the watchdog off entirely.
+To migrate an installation whose watchdog wrote `enabled: false` into YAML,
+set those watched entries to `true` and restart Frigate once. Later power cycles
+use runtime commands and need no restart. Updating YAML with `requires_restart: 0`
+alone changes the config but does not start missing camera workers.
 
 ```yaml
 cameras:
@@ -154,7 +160,7 @@ cameras:
     detect_width: 640
     detect_height: 360
     detect_fps: 5
-    enabled: false
+    enabled: true
     watchdog: true
 ```
 
@@ -261,3 +267,13 @@ sudo python3 /tmp/apply-recorder-profile.py --check
 sudo python3 /tmp/apply-recorder-profile.py
 sudo docker compose -f /opt/frigate/docker-compose.yml up -d --force-recreate
 ```
+
+## Full-resolution live playback
+
+Each camera exposes both its existing substream and its main stream in the live
+player settings. Select the `_main` stream for native recording resolution; for
+example, the DS-I551 fisheye provides H.265 at 2560x1920. The existing `_sub`
+entry stays first so the All Cameras dashboard keeps its lower bandwidth use.
+The single-camera selection is stored per browser. H.265 playback requires a
+compatible browser; retain `_sub` as the H.264 option. This adds a stream choice
+without transcoding, changing archive quality or restarting Frigate.

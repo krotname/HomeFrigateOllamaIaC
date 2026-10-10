@@ -118,17 +118,29 @@ class IacTemplateTests(unittest.TestCase):
         self.assertNotIn("deploy", service)
         self.assertNotIn("NVIDIA_VISIBLE_DEVICES", service["environment"])
 
-    def test_disabled_camera_stays_configured_but_off(self):
+    def test_watched_camera_starts_workers_even_if_inventory_says_off(self):
         context = camera_watchdog_context()
         config = yaml.safe_load(
             render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", context)
         )
 
-        self.assertFalse(config["cameras"]["offline_hikvision"]["enabled"])
+        self.assertTrue(config["cameras"]["offline_hikvision"]["enabled"])
         self.assertIn("offline_hikvision_main", config["go2rtc"]["streams"])
         self.assertIn("offline_hikvision_sub", config["go2rtc"]["streams"])
         for camera in ("driveway_hikvision", "garage_hikvision"):
             self.assertTrue(config["cameras"][camera]["enabled"])
+
+    def test_unwatched_disabled_camera_stays_off(self):
+        for global_enabled in (True, False):
+            with self.subTest(global_enabled=global_enabled):
+                context = camera_watchdog_context()
+                context["frigate_vm_camera_watchdog_enabled_resolved"] = global_enabled
+                if global_enabled:
+                    context["cameras"][-1]["watchdog"] = False
+                config = yaml.safe_load(
+                    render("ansible/roles/frigate_vm/templates/frigate-config.yml.j2", context)
+                )
+                self.assertFalse(config["cameras"]["offline_hikvision"]["enabled"])
 
     def test_camera_without_enabled_key_is_on(self):
         config = yaml.safe_load(
@@ -192,7 +204,8 @@ class IacTemplateTests(unittest.TestCase):
 
         self.assertIn("CAMERA_WATCHDOG_OFFLINE_THRESHOLD:-10", script)
         self.assertIn("CAMERA_WATCHDOG_ONLINE_THRESHOLD:-2", script)
-        self.assertIn(r'\"requires_restart\":0', script)
+        self.assertIn("/api/camera/$name/set/enabled", script)
+        self.assertNotIn("/api/config/set", script)
         self.assertIn("(( online >= ONLINE_THRESHOLD ))", script)
         self.assertIn("(( offline < OFFLINE_THRESHOLD ))", script)
         self.assertIn("it is the last enabled camera", script)
