@@ -251,14 +251,14 @@ class IacTemplateTests(unittest.TestCase):
             "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
             context,
         )
-        self.assertIn("Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate asr\n", enabled)
+        self.assertIn('Environment="CONTAINER_WATCHDOG_CONTAINERS=frigate asr"\n', enabled)
 
         context["frigate_vm_asr_enabled_resolved"] = False
         disabled = render(
             "ansible/roles/frigate_vm/templates/krt-container-watchdog.service.j2",
             context,
         )
-        self.assertIn("Environment=CONTAINER_WATCHDOG_CONTAINERS=frigate\n", disabled)
+        self.assertIn('Environment="CONTAINER_WATCHDOG_CONTAINERS=frigate"\n', disabled)
 
     def test_container_watchdog_timeout_covers_sequential_recovery(self):
         script = (
