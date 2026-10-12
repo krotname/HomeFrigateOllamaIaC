@@ -1,0 +1,17 @@
+{
+  "api_base": "https://api.example.invalid",
+  "token_base": "https://token.example.invalid",
+  "account": "ACCOUNT_NAME",
+  "password": "LOCAL_PASSWORD",
+  "device_serial": "DEVICE_SERIAL",
+  "verification_code": "LOCAL_DEVICE_CODE",
+  "vtm_host": "regional-relay.example.invalid",
+  "vtm_port": 8554,
+  "session_ttl_seconds": 600,
+  "cameras": {
+    "common_camera01": 1,
+    "common_camera02": 2,
+    "common_camera03": 3,
+    "common_camera04": 4
+  }
+}

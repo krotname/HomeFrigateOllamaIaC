@@ -1,0 +1,32 @@
+services:
+  hikconnect-relay:
+    image: ${HIK_RELAY_IMAGE:?Set the verified local image tag}
+    container_name: hikconnect-relay
+    restart: unless-stopped
+    user: "1000:1000"
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ${HIK_RUNTIME_CONFIG:-/opt/hikconnect-relay/runtime.local.json}:/run/hikconnect/runtime.local.json:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000,mode=700
+    networks: [frigate]
+    mem_limit: 768m
+    cpus: "2"
+    pids_limit: 128
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; socket.create_connection(('127.0.0.1',8554),3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+networks:
+  frigate:
+    external: true
+    name: frigate_default
