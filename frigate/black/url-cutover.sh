@@ -3,6 +3,8 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 state=/run/frigate-url-change
+exec 9>/run/frigate-url-change.lock
+flock -x 9
 case "${1:-}" in
   arm)
     test ! -e /etc/nginx/sites-available/frigate-black-domain
@@ -35,8 +37,11 @@ case "${1:-}" in
     ! systemctl is-active --quiet frigate-url-rollback.service
     grep -q 'return 307 https://frigate.adler-black-u2.lan$request_uri;' /etc/nginx/sites-available/frigate-white-domain
     nginx -t
-    systemctl stop frigate-url-rollback.timer
+    systemctl stop frigate-url-rollback.timer frigate-url-rollback.service
     ! systemctl is-active --quiet frigate-url-rollback.service
+    test "$(readlink -f /etc/nginx/sites-enabled/frigate-black-domain)" = /etc/nginx/sites-available/frigate-black-domain
+    cmp -s "$here/frigate-black-domain.conf" /etc/nginx/sites-available/frigate-black-domain
+    grep -q 'return 307 https://frigate.adler-black-u2.lan$request_uri;' /etc/nginx/sites-available/frigate-white-domain
     install -m 644 "$here/frigate-white-redirect.conf" /etc/nginx/sites-available/frigate-white-domain
     nginx -t
     systemctl reload nginx
