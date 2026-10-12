@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 readonly STATE=/run/frigate-black-cutover
+systemctl disable --now krt-camera-watchdog.timer
+systemctl stop krt-camera-watchdog.service
 systemctl disable --now frigate-black.service
 running=$(docker inspect frigate --format '{{.State.Running}}' 2>/dev/null || true)
 [[ "$running" != true ]] || { echo 'Black writer still running'; exit 1; }

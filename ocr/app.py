@@ -472,9 +472,19 @@ def wake_model(timeout: float) -> None:
     if LLM_IDLE_ENABLED:
         # llama.cpp #29689: reset the idle timer with a tiny task before the
         # handler tokenizes a large multimodal request during a sleep transition.
-        request_bytes(LLM_URL + "/completion", method="POST",
-                      body=b'{"prompt":"hi","n_predict":1,"cache_prompt":false}',
-                      limit=64 * 1024, timeout=min(timeout, 30))
+        deadline = time.monotonic() + timeout
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Model wake deadline exceeded")
+            try:
+                request_bytes(LLM_URL + "/completion", method="POST",
+                              body=b'{"prompt":"hi","n_predict":1,"cache_prompt":false}',
+                              limit=64 * 1024, timeout=min(remaining, 30))
+                return
+            except (RemoteError, OSError) as exc:
+                if attempt or (isinstance(exc, RemoteError) and exc.status not in (0, 503)):
+                    raise
 
 
 def ask_caption(images: list[bytes], timeout: float) -> str:

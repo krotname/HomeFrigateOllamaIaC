@@ -374,6 +374,14 @@ class CaptionRequest(FakeRequest):
 
 
 class CaptionEndpointTests(unittest.TestCase):
+    def test_sleep_transition_timeout_retries_one_wake_within_deadline(self):
+        with mock.patch.object(APP, "LLM_IDLE_ENABLED", True), mock.patch.object(
+            APP, "request_bytes", side_effect=[APP.RemoteError(0), b"{}"]
+        ) as send:
+            APP.wake_model(90)
+        self.assertEqual(2, send.call_count)
+        self.assertLessEqual(send.call_args.kwargs["timeout"], 30)
+
     def test_sleeping_model_is_woken_with_one_short_completion(self):
         with mock.patch.object(APP, "LLM_IDLE_ENABLED", True), mock.patch.object(APP, "request_bytes") as send:
             APP.wake_model(90)
@@ -622,6 +630,20 @@ class CaptionPriorityTests(unittest.TestCase):
 
 
 class CaptionWorkerTests(unittest.TestCase):
+    def test_long_event_enters_queue_when_it_finishes(self):
+        event = self.transport.events["event-1"]
+        event["start_time"] = self.now - 3600
+        self.worker.poll()
+        self.assertEqual("queued", self.row()["status"])
+
+    def test_finished_discovery_pages_past_recent_short_events(self):
+        older = [{**finished_event(f"old-{i}", self.now - 500 - i)} for i in range(500)]
+        event = {**finished_event(), "start_time": self.now - 3600}
+        self.worker.json = mock.Mock(side_effect=[older, [event]])
+        self.worker.poll()
+        self.assertEqual(2, self.worker.json.call_count)
+        self.assertEqual("queued", self.row()["status"])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -656,7 +678,7 @@ class CaptionWorkerTests(unittest.TestCase):
         poll = next(url for url, _ in self.transport.calls if urlsplit(url).path == "/api/events")
         query = parse_qs(urlsplit(poll).query)
         self.assertEqual(["0"], query["in_progress"])
-        self.assertEqual(self.now - 300, float(query["after"][0]))
+        self.assertEqual(max(0, self.now - self.config.retention_seconds), float(query["after"][0]))
         self.restart()
         self.now += 30
         self.worker.tick()

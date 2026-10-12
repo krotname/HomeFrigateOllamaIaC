@@ -321,20 +321,31 @@ class Worker:
     def poll(self):
         now = self.clock()
         after = max(self.start_floor, now - LOOKBACK_SECONDS)
-        query = urllib.parse.urlencode({"after": after, "before": now, "in_progress": 0,
-                                       "include_thumbnails": 0, "limit": 500})
-        events = self.json(self.config.frigate_url + "/api/events?" + query)
-        if not isinstance(events, list) or len(events) > 500:
-            raise ValueError("Invalid events response")
-        for event in events:
-            if self.stop.is_set():
+        # Frigate's after/before filter start_time, even for finished events.
+        # Scan the retained range, then admit by completion time, including events
+        # that remained active longer than the five-minute discovery window.
+        before = now
+        for _page in range(MAX_STATE_EVENTS // 500):
+            query = urllib.parse.urlencode({"after": max(0, now - self.config.retention_seconds),
+                                           "before": before, "in_progress": 0, "sort": "date_desc",
+                                           "include_thumbnails": 0, "limit": 500})
+            events = self.json(self.config.frigate_url + "/api/events?" + query)
+            if not isinstance(events, list) or len(events) > 500:
+                raise ValueError("Invalid events response")
+            starts = []
+            for event in events:
+                if self.stop.is_set():
+                    return
+                try:
+                    event_identity(event)
+                    starts.append(event["start_time"])
+                    if after <= event["end_time"] <= now:
+                        self.state.enqueue(event, now)
+                except ValueError:
+                    log.warning("Ignoring invalid finished event")
+            if len(events) < 500 or not starts or min(starts) >= before:
                 break
-            try:
-                event_identity(event)
-                if after <= event["start_time"] <= now and event["end_time"] <= now:
-                    self.state.enqueue(event, now)
-            except ValueError:
-                log.warning("Ignoring invalid finished event")
+            before = min(starts)
 
     def event(self, row):
         path = "/api/events/" + urllib.parse.quote(row["id"], safe="")

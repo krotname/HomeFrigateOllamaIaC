@@ -62,6 +62,10 @@ def black(token, sources):
         raise ValueError('Specify one or two verified White proxy source addresses')
     for source in sources:
         ipaddress.IPv4Address(source)
+    Path('/media/frigate').mkdir(parents=True, exist_ok=True)
+    install(HERE / 'media-frigate.mount', '/etc/systemd/system/media-frigate.mount', 0o644)
+    run('systemctl', 'daemon-reload')
+    run('systemctl', 'enable', '--now', 'media-frigate.mount')
     run('mountpoint', '-q', '/media/frigate')
     Path('/opt/frigate').mkdir(mode=0o700, exist_ok=True)
     for name in ['compose.yml', 'compose.cpu.yml', 'caption-compose.yml', 'prepare.py']:
