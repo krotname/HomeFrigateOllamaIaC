@@ -49,7 +49,7 @@ VM продолжает хранить архив и обслуживать ngin
 | Компонент | Состояние |
 | --- | --- |
 | Вычисления | `adler-black-u2`, `192.168.1.242` |
-| Вход | `https://frigate.adler-white-w1.lan/`, прежний `:8971` на White |
+| Вход | `https://frigate.adler-black-u2.lan/` через nginx White; старое имя308, прежний `:8971` на White |
 | Версия | `0.18.0-77a66e7`, TensorRT image с закреплённым digest |
 | Камеры | Все три: непрерывная запись основного потока, аудио copy |
 | Аналитика | YOLOv9-t GPU, motion/review/snapshots; Jina/FaceNet CPU |
