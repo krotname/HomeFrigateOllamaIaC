@@ -15,6 +15,13 @@ def black_config(source: dict, *, staging: bool = False, cpu: bool = False) -> d
     config = copy.deepcopy(source)
     if not config.get("cameras") or not config.get("go2rtc", {}).get("streams"):
         raise ValueError("A live camera configuration is required")
+    # Auto discovery can advertise only the public NAT address from Docker.
+    # Keep the White relay and the Black LAN listener reachable by LAN clients.
+    webrtc = config["go2rtc"].setdefault("webrtc", {})
+    candidates = webrtc.setdefault("candidates", [])
+    for candidate in ("192.168.1.138:8555", "192.168.1.242:8555"):
+        if candidate not in candidates:
+            candidates.append(candidate)
     config["detectors"] = {"objects": {"type": "onnx", "device": "CPU" if cpu else "GPU"}}
     config["model"] = {
         "model_type": "yolo-generic", "width": 320, "height": 320,

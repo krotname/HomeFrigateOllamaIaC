@@ -23,11 +23,21 @@ class MigrationTests(unittest.TestCase):
     def test_credentials_connections_dimensions_and_source_are_preserved(self):
         source = self.source()
         converted = MODULE.black_config(source)
-        self.assertEqual(source["go2rtc"], converted["go2rtc"])
+        self.assertEqual(source["go2rtc"]["streams"], converted["go2rtc"]["streams"])
         self.assertEqual(source["cameras"]["living"]["ffmpeg"], converted["cameras"]["living"]["ffmpeg"])
         self.assertEqual(480, converted["cameras"]["living"]["detect"]["height"])
         self.assertNotIn("record", source)
         self.assertEqual("preset-record-generic-audio-copy", converted["ffmpeg"]["output_args"]["record"])
+
+    def test_lan_ice_candidates_preserve_custom_routes_and_are_idempotent(self):
+        source = self.source()
+        source["go2rtc"]["webrtc"] = {"listen": ":8555", "candidates": ["custom.lan:8555", "192.168.1.138:8555"]}
+        converted = MODULE.black_config(source)
+        self.assertEqual(["custom.lan:8555", "192.168.1.138:8555", "192.168.1.242:8555"],
+                         converted["go2rtc"]["webrtc"]["candidates"])
+        self.assertEqual(":8555", converted["go2rtc"]["webrtc"]["listen"])
+        self.assertEqual(converted, MODULE.black_config(converted))
+        self.assertEqual(2, len(source["go2rtc"]["webrtc"]["candidates"]))
 
     def test_staging_has_no_archive_writer_and_cpu_fallback_has_no_cuda_decoder(self):
         config = MODULE.black_config(self.source(), staging=True, cpu=True)

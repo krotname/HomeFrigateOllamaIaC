@@ -23,6 +23,12 @@
 записи в пустой каталог на системном диске Black. Экспорт White допускает только
 адрес Black. Прежние URL и Basic auth остаются на nginx White; RTSP и WebRTC
 передаются на Black через `white-streams.conf` в главном контексте nginx.
+`prepare.py` сохраняет прежние ICE candidates и добавляет LAN-адреса White и
+Black на 8555. Автоматическое обнаружение из Docker может вернуть только внешний
+NAT-адрес: успешный SDP ответ ещё не доказывает получение WebRTC видео. После
+переключения проверять connected ICE и ненулевые полученные/декодированные кадры
+в браузере из LAN. RTSP проверять по именам go2rtc (`cam1_main`, `cam2_main`,
+`cam3_main`), которые отличаются от имён камер Frigate.
 `protect-backend.sh` перед запуском контейнера ограничивает Docker-порт 18971
 проверенным адресом источника White через DOCKER-USER. Адрес, увиденный в соединении
 на Black (после NAT, если он есть), записывается в `/opt/frigate/proxy-sources`.
@@ -85,9 +91,14 @@ White не заменяет его открытую БД.
 2. Удалить испытательные transient timers командами `systemctl stop frigate-black-rollback.timer`
    и `systemctl stop frigate-white-rollback.timer` на соответствующих узлах. Для реальной
    операции установить новый одинаковый token; прежний marker не подтверждает новый откат.
+   Успешные transient units могут уже выгрузиться: `not found` требует проверки
+   inactive и результата в journal, а не повторного запуска испытания.
 3. Перед переключением запустить `sudo ./arm-rollback.sh black 600` и
    `sudo ./arm-rollback.sh white 650` на соответствующих узлах и проверить active timers.
    После этого включить и запустить новую службу Black в штатном порядке переключения.
+   Перед остановкой White и после enable/reload сверять фактические сроки обоих
+   timers через `systemctl list-timers`: White должен сработать после Black в
+   пределах своего 150-секундного ожидания. Одних значений секунд в команде мало.
 4. После независимой проверки новых сегментов и прежних URL остановить оба timer.
    Проверить `systemctl is-active` (inactive) и отсутствие выполняющегося rollback service.
 
