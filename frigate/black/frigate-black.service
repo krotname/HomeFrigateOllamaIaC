@@ -1,0 +1,20 @@
+[Unit]
+Description=Frigate Black with the White archive
+After=network-online.target docker.service media-frigate.mount
+Wants=network-online.target
+Requires=docker.service media-frigate.mount
+BindsTo=media-frigate.mount
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/frigate
+ExecStartPre=/usr/bin/mountpoint -q /media/frigate
+ExecStart=/usr/bin/docker compose --env-file /opt/frigate/.env -f /opt/frigate/compose.yml up --abort-on-container-exit --exit-code-from frigate
+ExecStop=/usr/bin/docker compose --env-file /opt/frigate/.env -f /opt/frigate/compose.yml stop -t 30
+Restart=always
+RestartSec=10
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
+

@@ -38,6 +38,8 @@ services:
       - "2"
       - --temp
       - "0"
+      - --sleep-idle-seconds
+      - "${OCR_MODEL_IDLE_SECONDS:-300}"
     volumes:
       - ./models:/models:ro
     tmpfs:

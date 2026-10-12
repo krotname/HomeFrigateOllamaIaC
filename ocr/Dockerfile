@@ -15,7 +15,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN python3 -m pip install --disable-pip-version-check -r /app/requirements.txt
 
-COPY app.py /app/app.py
+COPY app.py frigate_caption_worker.py /app/
 
 EXPOSE 443
 USER 10001:10001

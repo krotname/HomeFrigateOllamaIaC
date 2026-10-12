@@ -1,0 +1,16 @@
+[Unit]
+Description=White Frigate archive over NFSv4
+After=network-online.target
+Wants=network-online.target
+Before=frigate-black.service
+
+[Mount]
+What=10.246.10.138:/media/frigate
+Where=/media/frigate
+Type=nfs4
+Options=rw,hard,timeo=100,retrans=2,noatime,nfsvers=4.2
+TimeoutSec=30
+
+[Install]
+WantedBy=remote-fs.target
+
