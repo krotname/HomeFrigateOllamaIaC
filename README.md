@@ -1,4 +1,4 @@
-# Frigate Recorder на Hyper-V VM
+# Frigate на Black, архив и вход на White
 
 [English](README.en.md)
 
@@ -9,13 +9,13 @@
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![IaC](https://img.shields.io/badge/IaC-Ansible%20%2B%20PowerShell-2f6f9f)](ansible/)
 
-Репозиторий поддерживает два профиля: текущий production-профиль `recorder`
-для непрерывной записи камер без GPU-аналитики и сохранённый профиль
-`gpu_analytics` для прежнего Frigate + Ollama + ASR стека.
+Текущий Frigate работает на Black по [профилю `frigate/black`](frigate/black/README.md).
+White сохраняет архив, nginx, прежние URL и Basic auth. Профили Ansible `recorder`
+и `gpu_analytics` ниже сохранены для прежней VM и отката.
 
-> Текущее состояние production на 15.09.2026: Tesla P40 не установлена,
-> VM `frigate-ubuntu` работает с `2` vCPU и `4 GB` RAM, включена в автозапуск и
-> пишет непрерывный архив за `3` дня без детекции, снимков, Ollama и ASR.
+> Проверено 12.10.2026: Frigate `0.18.0` перенесён на Black, три камеры записывают
+> основной поток с прежним аудио на диск White через NFS. Детектор YOLOv9-t и
+> декодирование используют P40; русский семантический поиск и FaceNet работают на CPU.
 > Камеры Pi kiosk поступают напрямую с камер через go2rtc на Red и от Frigate не
 > зависят. Подробный live-state: [docs/current-state.md](docs/current-state.md).
 > С 28.09.2026 ASR из `asr/` работает на Чёрном сервере `adler-black-u2`
@@ -25,7 +25,7 @@
 > локальная LLM — `black-qwen` из `krotname/VpnOps`. Адреса `192.168.1.138:9443`
 > и `:11443` ниже относятся только к профилю `gpu_analytics`.
 
-Для production задайте в inventory:
+Для сохранённого VM-профиля задайте в inventory:
 
 ```yaml
 frigate_profile: recorder

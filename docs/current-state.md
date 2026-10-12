@@ -1,11 +1,36 @@
 # Current Production State
 
-Last live host and VM check: `2026-09-28`.
+Проверено 12.10.2026: Frigate 0.18.0 перенесён на Black. Архив и прежний HTTPS-вход
+остались на White; его старый recorder остановлен, watchdog timers отключены,
+а `/opt/frigate/moved-to-black` предотвращает повторный запуск старой роли.
 
-VM memory and Frigate health rechecked on `2026-10-07`: fixed RAM was reduced
-from `12 GB` to `6 GB`. Hyper-V confirmed `6 GB` assigned; the guest reported
-`5919 MiB` total RAM and zero swap use. Frigate returned version `0.18.0-77a66e7`
-and Docker health `healthy` after the restart. VM autostart remains enabled.
+SQLite и кеш моделей находятся на Black. Архив White подключён hard NFSv4 только
+с Black; служба recorder зависит от mount. Все три камеры записывают новые сегменты,
+история сохранилась и SQLite quick_check вернул `ok`. Старые и новые записи содержат
+HEVC; у cam2 сохранён AAC. Basic auth, домен, IP-вход на 443/8971 и RTSP через White
+проверены с клиента. Backend 18971 доступен White и отклоняет другой узел LAN.
+WebRTC в браузере из LAN получил и декодировал видео всех трёх камер после
+добавления LAN ICE candidates White и Black. Автоматический откат конфигурации
+испытан, а после повторной приёмки отключён.
+
+Детекция и декодирование работают на P40: около 3 кадров/с на камеру без пропусков,
+детектор около 9 мс. Jina v2 small и FaceNet используют CPU. Существующий общий Qwen
+сохранён; OCR/ASR имеют приоритет перед описаниями событий.
+
+ASR на Black обновлён с выгрузкой Whisper после 300 секунд простоя. Запрос загрузил
+модель; после простоя health показал `loaded=false`, VRAM GPU0 снизилась примерно
+на 1.8 GiB; повторный запрос снова загрузил модель. OCR также обновлён: native
+llama.cpp настроен на сон после 300 секунд, API пробуждает модель перед OCR.
+Текущий пакет продолжает получать успешные ответы; фактическую выгрузку OCR
+после пяти минут простоя пока не удалось проверить из-за продолжающихся запросов.
+
+Worker описаний событий установлен с постоянной ограниченной очередью. Реальное
+завершённое событие получило русское описание, запись очереди завершилась с первой
+попытки, а текст совпал с описанием в API Frigate. Подробная процедура —
+[frigate/black](../frigate/black/README.md).
+
+Данные VM ниже — последний подтверждённый снимок её ресурсов от 07.10.2026.
+VM продолжает хранить архив и обслуживать nginx/NFS; GPU в ней нет.
 
 ## Host and VM
 
@@ -19,19 +44,19 @@ and Docker health `healthy` after the restart. VM autostart remains enabled.
 | Media | `/media/frigate`, ext4 VHDX-backed mount, virtual size `2 TB` |
 | Host storage guard | Keep at least `150 GB` free on `F:` |
 
-## Frigate Recorder
+## Frigate на Black
 
-| Component | Value |
+| Компонент | Состояние |
 | --- | --- |
-| URL | `https://frigate.adler-white-w1.lan/` (since 2026-09-30; legacy `https://adler-frigate.lan:8971/`) |
-| Image | `ghcr.io/blakeblackshear/frigate:stable` (`0.18.0`) |
-| Runtime | Docker `runc`, no assigned GPU devices or device requests |
-| Cameras | All three recording; fisheye `cam2_ds_i551` restored and checked on `2026-10-08` |
-| Recording | Main stream, continuous, `-c copy`, audio copy |
-| CPU snapshot | `47.2%` of the 2-vCPU guest; no object inference, main streams are not transcoded |
-| Initial retention | `3` days; measure actual growth after 24 hours before increasing |
-| Analytics | Detection, motion, review alerts/detections, snapshots, face/LPR and GenAI disabled |
-| Live view | go2rtc substreams remain available through Frigate |
+| Вычисления | `adler-black-u2`, `192.168.1.242` |
+| Вход | `https://frigate.adler-white-w1.lan/`, прежний `:8971` на White |
+| Версия | `0.18.0-77a66e7`, TensorRT image с закреплённым digest |
+| Камеры | Все три: непрерывная запись основного потока, аудио copy |
+| Аналитика | YOLOv9-t GPU, motion/review/snapshots; Jina/FaceNet CPU |
+| Retention | Три дня |
+| SQLite/кеш | Локальный `/opt/frigate/config` на Black |
+| Архив | `/media/frigate` на White через hard NFSv4 |
+| Старый recorder | Остановлен; старые конфиги сохранены для отката |
 
 ### Camera 2 fisheye restored on `2026-10-08`
 
@@ -51,8 +76,8 @@ New ten-second archive segments were checked with ffprobe: H.265 video at
 
 Camera NTP already uses `192.168.1.1:123`, with a `60`-minute interval and
 Moscow time (`UTC+03:00`); those working settings were retained. All three
-cameras have healthy capture at the recorder profile's `1` fps, with continuous
-main-stream recording and three-day retention.
+cameras use `3` fps detection on Black, with continuous main-stream recording
+and three-day retention.
 
 ## Disabled Services
 

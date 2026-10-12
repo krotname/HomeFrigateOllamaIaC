@@ -1,18 +1,17 @@
-# Frigate Recorder on a Hyper-V VM
+# Frigate on Black, archive and frontend on White
 
 [Russian](README.md)
 
 
-A reproducible IaC repository with two profiles: the current `recorder`
-production profile continuously records cameras without GPU analytics, while
-the retained `gpu_analytics` profile describes the former Frigate, Ollama and
-ASR stack.
+A reproducible IaC repository. Production Frigate now uses the
+[`frigate/black` profile](frigate/black/README.md); White retains storage, nginx,
+the existing URLs and Basic auth. The Ansible `recorder` and `gpu_analytics`
+profiles below describe the retained VM configuration and rollback.
 
-> Production status as of 2026-09-15: the Tesla P40 is not installed;
-> `frigate-ubuntu` runs with 2 vCPUs and 4 GB RAM, starts automatically and
-> keeps three days of continuous recordings without detection, snapshots,
-> Ollama or ASR. The GPU/DDA sections below document the former validated
-> configuration. The Pi kiosk now reads cameras directly through go2rtc on Red
+> Verified on 2026-10-12: Frigate `0.18.0` runs on Black. All three cameras record
+> the original main stream and audio to White over NFS. A P40 runs YOLOv9-t and
+> decoding; Russian semantic search and FaceNet use CPU. The GPU/DDA sections
+> below document the former configuration. The Pi kiosk reads cameras through go2rtc on Red
 > and no longer depends on Frigate. See [docs/current-state.md](docs/current-state.md).
 > Since 2026-09-28 the `asr/` service runs on the Black server `adler-black-u2`
 > (Tesla P40 GPU0, `https://adler-black-u2.lan:19443` from the home LAN only,
