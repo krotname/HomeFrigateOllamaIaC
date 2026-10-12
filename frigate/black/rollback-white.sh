@@ -8,6 +8,7 @@ readonly STATE=/run/frigate-black-cutover
 # and Docker confirmed it is stopped. The marker travels through the archive,
 # so recovery does not need a private SSH key or the operator connection.
 token=$(cat "$STATE/token")
+[[ "$token" =~ ^[0-9a-f-]{36}$ ]] || exit 1
 for ((attempt=0; attempt<30; attempt++)); do
   if [[ -f /media/frigate/.black-cutover-stopped ]] &&
      [[ $(cat /media/frigate/.black-cutover-stopped) == "$token" ]]; then
@@ -28,7 +29,14 @@ fi
 rm -f /etc/nginx/frigate-black-streams.conf
 nginx -t
 systemctl reload nginx
+if [[ $(docker inspect frigate --format '{{.State.Running}}') == false ]] &&
+   [[ -f /media/frigate/.black-cutover-db-$token.tar ]]; then
+  rm -f /opt/frigate/config/frigate.db-wal /opt/frigate/config/frigate.db-shm
+  tar -C /opt/frigate/config -xf "/media/frigate/.black-cutover-db-$token.tar"
+fi
 docker compose -f /opt/frigate/docker-compose.yml start frigate
+[[ $(docker inspect frigate --format '{{.State.Running}}') == true ]]
+rm -f /opt/frigate/moved-to-black
 systemctl start krt-container-watchdog.timer krt-camera-watchdog.timer
 echo 'White recorder restored; Black stopped'
 

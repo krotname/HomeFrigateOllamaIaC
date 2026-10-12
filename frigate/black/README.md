@@ -64,6 +64,10 @@ checkpoint; не включать туда конфиги с паролями.
 `rollback-black.sh` и `rollback-white.sh` работают из двух transient systemd timers.
 Black останавливает писателя, проверяет Docker и атомарно пишет токен операции в
 архив. White принимает только этот токен и затем возвращает nginx и старый recorder.
+Перед подтверждением Black передаёт закрытую актуальную SQLite и WAL временным tar
+через NFS; остановленный White восстанавливает её до запуска. Поэтому события,
+созданные на Black до отката, сохраняются в индексе. Испытание при уже работающем
+White не заменяет его открытую БД.
 Без подтверждения остановки Black он не создаёт второго писателя. Скрипты и
 временные конфиги отката сохраняются до успешной приёмки переключения.
 
@@ -89,3 +93,43 @@ Black останавливает писателя, проверяет Docker и 
 Откат Black выполняет `disable --now`, поэтому перезагрузка не создаст второго
 писателя после восстановления White. Повторное переключение требует явного
 `systemctl enable --now frigate-black.service`.
+
+Исполняемые шаги установки (из копии проверенного `main` на соответствующем узле):
+
+1. На Black: `sudo python3 frigate/black/deploy.py black --token <UUID> --proxy-source <White-IP>`.
+   Можно повторить `--proxy-source` для адреса White после NAT. Команда устанавливает
+   mount/service, исполняемый pre-start hook, существующий camera watchdog и его timer,
+   каталог очереди и состояние отката. Recorder пока не запускается.
+2. На White: `sudo python3 frigate/black/deploy.py white-prepare --token <тот же UUID>`.
+   Затем испытать timers указанным выше способом, повторить подготовку с новым UUID
+   и вооружить реальные timers на обоих узлах.
+3. На White: `sudo python3 frigate/black/deploy.py white-stop`. Команда создаёт fence
+   `/opt/frigate/moved-to-black` до остановки, останавливает timers и выполняющиеся
+   watchdog services, затем подтверждает остановку recorder.
+4. На рабочей станции: `node frigate/black/transfer.mjs`. Поток tar между SSH-процессами
+   остаётся бинарным, секреты не записываются на рабочей станции; SQLite передаётся
+   только после подтверждения остановленного White. Проверяются оба кода передачи.
+5. На Black остановить staging, сохранить его скачанный Jina-кеш в локальном config,
+   преобразовать перенесённый config через `prepare.py` без `--staging`, закрепить digest
+   образа в `.env`. Проверить Compose; выполнить `systemctl enable --now media-frigate.mount`
+   и `systemctl enable --now frigate-black.service`. После появления всех камер включить
+   `systemctl enable --now krt-camera-watchdog.timer`.
+6. На White: `sudo python3 frigate/black/deploy.py white-switch --commit <main SHA>`.
+   Команда проверяет три камеры Black, заменяет только Frigate upstream в обоих текущих
+   HTTP vhosts, устанавливает stream proxy, проверяет и перечитывает nginx. Basic auth,
+   сертификаты, домены и остальные upstream сохраняются.
+7. После независимой приёмки остановить оба rollback timer и подтвердить их inactive.
+   На White выполнить `sudo python3 frigate/black/deploy.py white-finish`. Прежние timers
+   становятся disabled, fence остаётся; rollback-white удаляет fence после восстановления
+   работающего White recorder.
+8. После обновления OCR API и ASR с idle unloading на Black выполнить
+   `sudo python3 frigate/black/deploy.py captions`. Команда проверяет наличие caption API,
+   создаёт worker через Compose и подтверждает его running. Прочитать его журнал и SQLite,
+   затем точное описание завершённого события через Frigate API.
+
+Для восстановления без доступной NVIDIA-карты преобразовать config с `prepare.py --cpu`
+и записать в `/opt/frigate/runtime.env` строку
+`COMPOSE_FILE=/opt/frigate/compose.yml:/opt/frigate/compose.cpu.yml`. После проверки
+объединённого Compose restart службы использует профиль без GPU reservations и NVIDIA
+environment. Образ содержит CPU ONNX provider; GPU runtime не требуется. Удаление этой
+строки и преобразование config без `--cpu` возвращают штатный GPU-профиль.

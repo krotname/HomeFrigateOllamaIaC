@@ -6,6 +6,9 @@ ROOT = Path(__file__).parents[1]
 SPEC = importlib.util.spec_from_file_location("frigate_black_prepare", ROOT / "frigate/black/prepare.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
+DEPLOY_SPEC = importlib.util.spec_from_file_location("frigate_black_deploy", ROOT / "frigate/black/deploy.py")
+DEPLOY = importlib.util.module_from_spec(DEPLOY_SPEC)
+DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
@@ -35,6 +38,16 @@ class MigrationTests(unittest.TestCase):
     def test_empty_source_rejected(self):
         with self.assertRaises(ValueError):
             MODULE.black_config({})
+
+    def test_proxy_switch_preserves_auth_and_unrelated_backends(self):
+        source = 'auth_basic "home"; proxy_pass https://127.0.0.1:18971; proxy_pass http://127.0.0.1:6800;'
+        converted = DEPLOY.proxy_config(source)
+        self.assertIn('auth_basic "home";', converted)
+        self.assertIn('https://192.168.1.242:18971', converted)
+        self.assertIn('http://127.0.0.1:6800', converted)
+        self.assertEqual(converted, DEPLOY.proxy_config(converted))
+        with self.assertRaises(ValueError):
+            DEPLOY.proxy_config('proxy_pass http://127.0.0.1:6800;')
 
 
 if __name__ == "__main__":
