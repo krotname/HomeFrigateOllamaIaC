@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import signal
 import struct
 import tempfile
 import unittest
@@ -128,6 +129,14 @@ class VideoTests(unittest.TestCase):
         self.assertFalse(decoder.ready)
         self.assertEqual(b"", decoder.feed(self.rtp(4, b"\x02\x01abc")))
 
+    def test_lost_fu_end_resets_before_new_start_or_single_nal(self):
+        for payload in (b"\x02\x01abc", b"\x62\x01\x81abc"):
+            decoder = self.decoder()
+            decoder.ready = True
+            decoder.feed(self.rtp(10, b"\x62\x01\x81abc"))
+            self.assertEqual(b"", decoder.feed(self.rtp(12, payload)))
+            self.assertFalse(decoder.ready)
+
     def test_clock_preserves_wraps_and_reconnect_elapsed_time(self):
         clock = RELAY.RtpClock()
         self.assertEqual(0, clock.advance(0xFFFFFFF0, 1))
@@ -139,12 +148,34 @@ class VideoTests(unittest.TestCase):
         packets = []
         publisher.connection = type("Socket", (), {"sendall": lambda _, packet: packets.append(packet)})()
         publisher.clock, publisher.sequence, publisher.ssrc = RELAY.RtpClock(), 0, 1
-        publisher.write(RELAY.PREFIX + b"\x26\x01" + b"a" * 3000, 100)
-        publisher.write(RELAY.PREFIX + b"\x02\x01x", 6100)
+        publisher.write(RELAY.PREFIX + b"\x26\x01" + b"a" * 3000, 100, False)
+        publisher.write(RELAY.PREFIX + b"\x02\x01x", 6100, True)
         self.assertEqual(4, len(packets))
         self.assertTrue(packets[0][18] & 128)  # HEVC FU start.
         self.assertTrue(packets[2][18] & 64)   # HEVC FU end.
         self.assertEqual(6000, int.from_bytes(packets[-1][8:12], "big"))
+        self.assertEqual([0, 0, 0, 128], [packet[5] & 128 for packet in packets])
+
+    def test_cloud_broken_pipe_reconnects_instead_of_ending_worker(self):
+        handlers, connections = {}, []
+
+        def connect(*args):
+            connection = type("Socket", (), {"close": lambda _: None})()
+            connections.append(connection)
+            if len(connections) == 2:
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+            return connection, {4: b"session"}
+
+        with patch.object(RELAY.signal, "signal", side_effect=lambda sig, handler: handlers.update({sig: handler})), \
+             patch.object(RELAY, "Sessions") as sessions, patch.object(RELAY, "Hevc"), \
+             patch.object(RELAY, "connect", side_effect=connect), \
+             patch.object(RELAY.time, "monotonic", side_effect=[0, 5, 6]), \
+             patch.object(RELAY.time, "sleep"), \
+             patch.object(RELAY, "send", side_effect=BrokenPipeError()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            sessions.return_value.token.return_value = "fixture"
+            RELAY.stream({"cameras": {"camera": 1}, "verification_code": "fixture"}, "camera", "main")
+        self.assertEqual(2, len(connections))
 
     def test_private_redirect_and_dns_rebinding_are_blocked(self):
         with self.assertRaises(RELAY.CloudError):

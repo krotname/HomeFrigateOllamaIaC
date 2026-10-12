@@ -37,10 +37,11 @@ def main() -> None:
             command = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp",
                        "-timeout", "15000000", "-threads", "1", "-i", f"rtsp://{options.host}:8554/{name}",
                        "-t", str(remaining), "-map", "0:v:0", "-threads", "1", "-an", "-progress", "pipe:1"]
-            if quality == "main":
-                command += ["-c:v", "copy"]
-            command += (["-f", "matroska", str(destination)]
-                        if quality == "main" and options.record_main else ["-f", "null", "-"])
+            # Every stream is decoded. Main recordings are a separate copy output.
+            command += ["-f", "null", "-"]
+            if quality == "main" and options.record_main:
+                command += ["-t", str(remaining), "-map", "0:v:0", "-c:v", "copy", "-an",
+                            "-f", "matroska", str(destination)]
             error_path = options.directory / f"{name}-{attempts}-errors.txt"
             with error_path.open("wb") as error_file:
                 child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=error_file, text=True)
@@ -61,9 +62,12 @@ def main() -> None:
                     if child.poll() is None:
                         child.kill()
                     child.wait()
-                frames += int(progress.get("frame", 0))
-                duration += max(0, int(progress.get("out_time_us", 0))) / 1e6
-            errors += sum(1 for line in error_path.read_bytes().splitlines() if line.strip())
+                attempt_frames = int(progress.get("frame", 0))
+                attempt_duration = max(0, int(progress.get("out_time_us", 0))) / 1e6
+                frames += attempt_frames
+                duration += attempt_duration
+            attempt_errors = sum(1 for line in error_path.read_bytes().splitlines() if line.strip())
+            errors += attempt_errors
             if destination.exists() and destination.stat().st_size > 0:
                 size += destination.stat().st_size
                 if exit_code == 0:
@@ -77,6 +81,8 @@ def main() -> None:
             time.sleep(1)
         return {"stream": name, "exit": exit_code, "attempts": attempts, "error_lines": errors,
                 "frames": frames, "media_seconds": round(duration, 2), "bytes": size,
+                "last_attempt_frames": attempt_frames, "last_attempt_media_seconds": round(attempt_duration, 2),
+                "last_attempt_error_lines": attempt_errors,
                 "three_day_gib": round(size / duration * 259200 / 2**30, 2) if size and duration > 0 else None}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -91,7 +97,10 @@ def main() -> None:
     report = {"wall_seconds": round(time.monotonic() - started, 2), "results": results}
     (options.directory / "result.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report), flush=True)
-    if any(row["exit"] or (not options.allow_reconnect and
+    if any(row["exit"] or (options.allow_reconnect and
+           (row["last_attempt_frames"] <= 0 or row["last_attempt_media_seconds"] < min(15, options.seconds / 3)
+            or row["last_attempt_error_lines"] or row["media_seconds"] < options.seconds / 2))
+           or (not options.allow_reconnect and
            (row["attempts"] != 1 or row["error_lines"] or row["media_seconds"] < options.seconds - 5)) for row in results):
         raise SystemExit(1)
 

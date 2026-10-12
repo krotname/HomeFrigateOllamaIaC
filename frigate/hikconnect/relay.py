@@ -27,6 +27,10 @@ CACHE = Path(os.environ.get("HIK_SESSION_CACHE", "/tmp/hik-session.json"))
 PREFIX = b"\0\0\0\1"
 
 
+class LocalOutputClosed(Exception):
+    """The local reader departed; cloud socket errors remain recoverable."""
+
+
 class CloudError(Exception):
     """An intentionally non-sensitive cloud failure."""
 
@@ -267,16 +271,15 @@ class Hevc:
         if len(data) < 2:
             return b""
         kind, seq = (data[0] >> 1) & 63, int.from_bytes(rtp[2:4], "big")
+        if self.seq is not None and seq != ((self.seq + 1) & 65535):
+            self.fragment, self.ready = None, False
+        self.seq = seq
         if kind == 49 and len(data) > 3:
             if data[2] & 128:
                 self.fragment = bytearray([(data[0] & 129) | ((data[2] & 63) << 1), data[1]])
             elif self.fragment is None:
                 return b""
-            elif seq != ((self.seq + 1) & 65535):
-                self.fragment, self.ready = None, False
-                return b""
             self.fragment.extend(data[3:])
-            self.seq = seq
             if len(self.fragment) > 2_097_152:
                 self.fragment, self.ready = None, False
                 raise CloudError("oversized NAL")
@@ -365,7 +368,7 @@ class Publisher:
         self.reader.read(size)
         return response
 
-    def write(self, annexb: bytes, source_timestamp: int) -> None:
+    def write(self, annexb: bytes, source_timestamp: int, source_marker: bool) -> None:
         nals = [nal for nal in annexb.split(PREFIX) if nal]
         timestamp = self.clock.advance(source_timestamp, time.monotonic())
         for index, nal in enumerate(nals):
@@ -377,7 +380,7 @@ class Publisher:
                                        (64 if pos + 1197 >= len(tail) else 0)]) + tail[pos:pos + 1197]
                           for pos in range(0, len(tail), 1197)]
             for fragment, payload in enumerate(chunks):
-                marker = index == len(nals) - 1 and fragment == len(chunks) - 1
+                marker = source_marker and index == len(nals) - 1 and fragment == len(chunks) - 1
                 header = struct.pack(">BBHII", 128, 96 | (128 if marker else 0), self.sequence, timestamp, self.ssrc)
                 self.sequence = (self.sequence + 1) & 65535
                 self.connection.sendall(struct.pack(">BBH", 36, 0, len(header) + len(payload)) + header + payload)
@@ -419,19 +422,22 @@ def stream(config: dict, alias: str, quality: str, output: str | None = None) ->
                 if channel_id == 1 and code == info[2]:
                     out = video.feed(body)
                     if out:
-                        if output:
-                            if publisher is None:
-                                publisher = Publisher(output, video.parameters)
-                            publisher.write(out, int.from_bytes(body[4:8], "big"))
-                        else:
-                            sys.stdout.buffer.write(out)
-                            sys.stdout.buffer.flush()
+                        try:
+                            if output:
+                                if publisher is None:
+                                    publisher = Publisher(output, video.parameters)
+                                publisher.write(out, int.from_bytes(body[4:8], "big"), bool(body[1] & 128))
+                            else:
+                                sys.stdout.buffer.write(out)
+                                sys.stdout.buffer.flush()
+                        except (BrokenPipeError, ConnectionResetError):
+                            raise LocalOutputClosed() from None
                 elif channel_id == 11:
                     raise CloudError("unsupported encrypted transport")
                 elif code == 0x132:
                     send(connection, field(1, info[4]), 0x133, sequence)
                     sequence += 1
-        except BrokenPipeError:
+        except LocalOutputClosed:
             break  # Last RTSP reader left; go2rtc owns worker lifetime.
         except Exception as error:
             if running:
