@@ -37,6 +37,9 @@ administration API binds to the container's loopback address.
 
 Workers share a locked 0600 session cache in container tmpfs, authenticate again
 after local expiry or server rejection, and consume short-lived VTM tokens once.
+An explicit VTM grant rejection invalidates the session that issued the token;
+a delayed rejection cannot discard another worker's fresh login. HTTP API
+redirects are rejected before credentials or session headers can be forwarded.
 Disconnected streams retry with a 1–30 second backoff. `SIGUSR1` reconnects an
 active worker. `relay.py --expire-session` invalidates the local cache for testing.
 Logs contain only aliases, event names and exception classes. Debug and trace

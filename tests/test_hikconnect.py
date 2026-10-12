@@ -7,6 +7,7 @@ import struct
 import tempfile
 import unittest
 import urllib.error
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -60,6 +61,69 @@ class CameraTests(unittest.TestCase):
 
 
 class SessionTests(unittest.TestCase):
+    def test_api_redirects_never_forward_session_headers(self):
+        sessions = RELAY.Sessions({})
+        request = RELAY.urllib.request.Request("https://example.invalid/token", b"count=1",
+                                             {"sessionId": "fixture"})
+        for destination in ("http://example.invalid/token", "https://other.invalid/token",
+                            "https://example.invalid/other"):
+            headers = Message()
+            headers["Location"] = destination
+            with patch.object(sessions.http, "open") as follow:
+                with self.assertRaises(RELAY.CloudError):
+                    sessions.http.error("http", request, io.BytesIO(), 302, "Found",
+                                        headers)
+                follow.assert_not_called()
+
+    def test_vtm_rejection_reauthenticates_before_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "session.json"
+            RELAY.atomic_json(cache, {"sid": "old", "expires": 100, "tokens_expire": 100,
+                                      "tokens": ["stale", "unused"]})
+            config = {"api_base": "https://example.invalid", "token_base": "https://example.invalid",
+                      "account": "example", "password": "fixture", "verification_code": "fixture",
+                      "cameras": {"camera": 1}}
+            sessions = RELAY.Sessions(config, cache, lambda: 10)
+            sessions.request = lambda base, path, *args: (
+                {"meta": {"code": 200}, "loginSession": {"sessionId": "fresh"}} if "login" in path
+                else {"resultCode": 0, "tokenArray": ["fresh-token"]})
+            handlers, tokens = {}, []
+
+            def connect(*args):
+                tokens.append(args[-1])
+                if len(tokens) == 1:
+                    raise RELAY.VtmRejected(5299)
+                handlers[signal.SIGTERM](signal.SIGTERM, None)
+                return type("Socket", (), {"close": lambda _: None})(), {4: b"session"}
+
+            with patch.object(RELAY.signal, "signal", side_effect=lambda sig, h: handlers.update({sig: h})), \
+                 patch.object(RELAY, "Sessions", return_value=sessions), patch.object(RELAY, "Hevc"), \
+                 patch.object(RELAY, "connect", side_effect=connect), patch.object(RELAY.time, "sleep"), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                RELAY.stream(config, "camera", "main")
+            self.assertEqual(["stale", "fresh-token"], tokens)
+            self.assertEqual("fresh", json.loads(cache.read_text())["sid"])
+
+    def test_delayed_vtm_rejection_preserves_newer_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "session.json"
+            sessions = RELAY.Sessions({}, cache)
+            sessions.sid = "old"
+            fresh = {"sid": "fresh", "expires": 100, "tokens": ["new-token"]}
+            RELAY.atomic_json(cache, fresh)
+            sessions.invalidate()
+            self.assertEqual(fresh, json.loads(cache.read_text()))
+
+    def test_vtm_reply_retains_rejection_code_and_closes_socket(self):
+        with patch.object(RELAY, "relay_address", return_value=("8.8.8.8", 8554)), \
+             patch.object(RELAY.socket, "create_connection") as create, \
+             patch.object(RELAY, "send"), \
+             patch.object(RELAY, "packet", return_value=(0, 0x13C, b"\x08" + RELAY.varint(5299))):
+            with self.assertRaises(RELAY.VtmRejected) as failure:
+                RELAY.connect({"device_serial": "fixture", "vtm_host": "example.invalid"}, 1, 0, "fixture")
+            self.assertEqual(5299, failure.exception.code)
+            create.return_value.close.assert_called_once()
+
     def test_expired_session_refreshes_and_tokens_are_consumed_once(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory) / "session.json"

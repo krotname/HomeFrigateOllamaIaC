@@ -35,6 +35,17 @@ class CloudError(Exception):
     """An intentionally non-sensitive cloud failure."""
 
 
+class VtmRejected(CloudError):
+    def __init__(self, code: int):
+        super().__init__("VTM grant rejected")
+        self.code = code
+
+
+class NoApiRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        raise CloudError("API redirect rejected")
+
+
 def log(event: str, **fields) -> None:
     # Callers pass only aliases, counts and exception class names, never messages.
     print(json.dumps({"event": event, **fields}), file=sys.stderr, flush=True)
@@ -55,7 +66,19 @@ def atomic_json(path: Path, value: dict) -> None:
 class Sessions:
     def __init__(self, config: dict, cache: Path = CACHE, clock=time.time):
         self.config, self.cache, self.clock = config, cache, clock
-        self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.sid = None
+        self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoApiRedirect())
+
+    def invalidate(self) -> None:
+        with open(str(self.cache) + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                state = json.loads(self.cache.read_text())
+            except (FileNotFoundError, ValueError):
+                state = {}
+            # A delayed rejection must not discard another worker's fresh login.
+            if self.sid is not None and state.get("sid") == self.sid:
+                atomic_json(self.cache, {})
 
     def request(self, base: str, path: str, data: dict, headers: dict) -> dict:
         url = base.rstrip("/") + path
@@ -111,6 +134,7 @@ class Sessions:
                 state["tokens_expire"] = now + 60  # Consume fresh tokens, never persist long-lived grants.
             token = state["tokens"].pop(0)
             atomic_json(self.cache, state)
+            self.sid = state["sid"]
             if not isinstance(token, str) or not token:
                 raise CloudError("invalid token")
             return token
@@ -222,8 +246,12 @@ def connect(config: dict, channel: int, stream: int, token: str):
                     break
             if info and info.get(1) == 0:
                 return connection, info
-            if info and info.get(7) and info.get(5) and redirect < 3:
+            if info and info.get(7) and info.get(5):
+                if redirect == 3:
+                    raise CloudError("too many redirects")
                 url, stream_key = info[7].decode(), info[5]
+            elif info and isinstance(info.get(1), int) and info[1] != 0:
+                raise VtmRejected(info[1])
             else:
                 raise CloudError("VTM rejected")
         except BaseException:
@@ -413,7 +441,11 @@ def stream(config: dict, alias: str, quality: str, output: str | None = None) ->
     delay = 1
     while running:
         try:
-            connection, info = connect(config, channel, selector, sessions.token())
+            try:
+                connection, info = connect(config, channel, selector, sessions.token())
+            except VtmRejected:
+                sessions.invalidate()
+                raise
             video, last, sequence = Hevc(config["verification_code"]), time.monotonic(), 1
             log("connected", camera=alias, stream=quality)
             delay, reconnect = 1, False
