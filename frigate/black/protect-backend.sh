@@ -14,7 +14,7 @@ iptables -w -F FRIGATE-PROXY
 for source in "${sources[@]}"; do
   iptables -w -A FRIGATE-PROXY -s "$source" -j RETURN
 done
-iptables -w -A FRIGATE-PROXY -j REJECT --reject-with tcp-reset
+iptables -w -A FRIGATE-PROXY -p tcp -j REJECT --reject-with tcp-reset
 while iptables -w -C DOCKER-USER -p tcp -m conntrack --ctorigdstport 18971 -j FRIGATE-PROXY 2>/dev/null; do
   iptables -w -D DOCKER-USER -p tcp -m conntrack --ctorigdstport 18971 -j FRIGATE-PROXY
 done
