@@ -337,6 +337,9 @@ class Publisher:
                                    {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
             self.session = headers["session"].split(";", 1)[0]
             self.request("RECORD", output, {"Range": "npt=0.000-"})
+            # go2rtc answers the waiting reader's DESCRIBE only after ANNOUNCE.
+            # Hold the initial IRAP while that reader completes SETUP/PLAY.
+            time.sleep(0.5)
         except BaseException:
             self.close()
             raise
