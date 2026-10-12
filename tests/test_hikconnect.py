@@ -34,6 +34,10 @@ class CameraTests(unittest.TestCase):
         for key in ("auth", "ffmpeg", "face_recognition", "record"):
             self.assertEqual(source[key], result[key])
         self.assertEqual(source["go2rtc"]["streams"]["original"], result["go2rtc"]["streams"]["original"])
+        self.assertEqual(["ffmpeg:rtsp://hikconnect-relay:8554/common_camera01_main#video=h264#hardware=cuda#raw=-r 15 -g 30 -flags +global_header"],
+                         result["go2rtc"]["streams"]["common_camera01_main"])
+        self.assertEqual(["rtsp://hikconnect-relay:8554/common_camera01_sub"],
+                         result["go2rtc"]["streams"]["common_camera01_sub"])
         for name, value in source["cameras"].items():
             self.assertEqual(value, result["cameras"][name])
         self.assertEqual(3, len(source["cameras"]))

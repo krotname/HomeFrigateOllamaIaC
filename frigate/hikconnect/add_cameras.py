@@ -22,10 +22,15 @@ def add_cameras(source: dict, *, substream: bool = True) -> dict:
         main, sub = alias + "_main", alias + "_sub"
         for name in (main, sub) if substream else (main,):
             uri = f"rtsp://hikconnect-relay:8554/{name}"
+            if name == main:
+                # Preserve the recorder's frame rate and make the archive playable in Chrome.
+                uri = f"ffmpeg:{uri}#video=h264#hardware=cuda#raw=-r 15 -g 30 -flags +global_header"
             if name in streams and streams[name] != [uri]:
                 raise ValueError("An unrelated stream uses a communal alias")
             streams[name] = [uri]
-        inputs = [{"path": f"rtsp://127.0.0.1:8554/{main}", "input_args": "preset-rtsp-restream",
+        inputs = [{"path": f"rtsp://127.0.0.1:8554/{main}",
+                   "input_args": ["-rtsp_transport", "tcp", "-timeout", "15000000",
+                                  "-analyzeduration", "10000000", "-probesize", "10000000"],
                    "roles": ["record"] if substream else ["record", "detect"]}]
         if substream:
             inputs.append({"path": f"rtsp://127.0.0.1:8554/{sub}", "input_args": "preset-rtsp-restream", "roles": ["detect"]})

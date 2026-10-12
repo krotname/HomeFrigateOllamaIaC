@@ -12,6 +12,13 @@ by the recorder protocol; P slices remain clear. Original RTP timestamps survive
 local publication, fragmentation, clock wraps and reconnects. Audio is omitted.
 There is no dependency on a phone or an open browser.
 
+Frigate's existing go2rtc converts only the main streams to H.264 using the
+already assigned Tesla P40 and CUDA/NVENC. Resolution and 15 fps are preserved;
+the substreams stay HEVC. Encoder headers are available immediately and keyframes
+occur every two seconds. This makes live video and recordings playable in Chrome
+without adding GPU access to the cloud adapter. The existing Black compose GPU
+assignment and FFmpeg 8 installation are required.
+
 ## Build and credentials
 
 Run `build-on-red.sh <main-sha>` from an exact checkout of `origin/main` on Red as
@@ -54,6 +61,13 @@ and PIDs. Each decoder is restricted to one thread. The report includes media
 duration, decoded frames, error counts and a measured three-day storage estimate;
 storage varies with activity. Verify forced session expiry and adapter restart
 with `--allow-reconnect` before the uninterrupted acceptance run.
+Repeat acceptance against the four H.264 main streams with `--main-only --host`
+set to the restream's Docker service name; estimate archive capacity from those
+converted main streams. Format probing allows ten seconds for the initial
+encoder parameters; decoded duration and zero-error requirements still apply.
+A disposable restream container running four CUDA encoders needs a PID limit of
+at least 512; the cloud adapter's separate 128-PID limit is sufficient for its
+eight lightweight workers. No production Frigate PID limit needs changing.
 
 Before applying the validated candidate, retain a temporary local rollback copy
 of the current config and arm an independent systemd timer to restore it and

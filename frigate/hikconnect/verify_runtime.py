@@ -16,6 +16,7 @@ def main() -> None:
     parser.add_argument("--seconds", type=int, default=1800)
     parser.add_argument("--allow-reconnect", action="store_true")
     parser.add_argument("--record-main", action="store_true")
+    parser.add_argument("--main-only", action="store_true")
     parser.add_argument("--directory", type=Path, default=Path("/tmp/acceptance"))
     parser.add_argument("--host", default="hikconnect-relay")
     options = parser.parse_args()
@@ -35,7 +36,8 @@ def main() -> None:
             remaining = options.seconds if attempts == 1 else max(1, deadline - time.monotonic())
             destination = options.directory / f"{name}-{attempts}.mkv"
             command = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp",
-                       "-timeout", "15000000", "-threads", "1", "-i", f"rtsp://{options.host}:8554/{name}",
+                       "-timeout", "15000000", "-analyzeduration", "10000000", "-probesize", "10000000",
+                       "-threads", "1", "-i", f"rtsp://{options.host}:8554/{name}",
                        "-t", str(remaining), "-map", "0:v:0", "-threads", "1", "-an", "-progress", "pipe:1"]
             # Every stream is decoded. Main recordings are a separate copy output.
             command += ["-f", "null", "-"]
@@ -87,7 +89,7 @@ def main() -> None:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         futures = [pool.submit(check, f"common_camera{i:02d}", quality)
-                   for i in range(1, 5) for quality in ("main", "sub")]
+                   for i in range(1, 5) for quality in (("main",) if options.main_only else ("main", "sub"))]
         while not all(future.done() for future in futures):
             with guard:
                 snapshot = {"wall_seconds": round(time.monotonic() - started), "streams": dict(state)}
