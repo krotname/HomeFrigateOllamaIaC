@@ -11,19 +11,21 @@ recorder Black. DNS нового имени указывает на этот ing
 1. На White разместить leaf/fullchain нового имени в
    `/opt/frigate/certs/black-domain-privkey.pem` (root0600) и
    `/opt/frigate/certs/black-domain-fullchain.pem`. Старый сертификат сохранить.
-2. Вооружить автономный systemd rollback timer, сохраняющий оба vhost и состояние
-   enabled-ссылок; он должен восстановить их и перечитать nginx без SSH/агента.
-3. Установить `frigate-black-domain.conf` как
-   `/etc/nginx/sites-available/frigate-black-domain` и включить его ссылкой в
-   `sites-enabled`; `frigate-white-redirect.conf` установить вместо прежнего
-   `/etc/nginx/sites-available/frigate-white-domain`. Выполнить `nginx -t`, затем reload.
+2. Выполнить `sudo bash frigate/black/url-cutover.sh arm`: он проверяет исходное
+   отсутствие нового vhost и правильную ссылку старого, сохраняет старый конфиг
+   и ставит независимый systemd timer на 1200с. `url-rollback.sh` восстанавливает
+   старый vhost, удаляет новый и его ссылку, проверяет и перечитывает nginx.
+3. Выполнить `sudo bash frigate/black/url-cutover.sh apply`: новый vhost включается,
+   а старый временно возвращает 307. Постоянный редирект до приёмки не кэшируется.
 4. На OpenWrt добавить отдельный UCI domain `dhcp.frigate_adler_black` с
    `name=frigate.adler-black-u2.lan`, `ip=192.168.1.138`; commit dhcp и reload dnsmasq.
    Существующие address/host/domain записи не заменять. Перед изменением запустить
    независимый процесс отката только этой новой записи и подтвердить его работу.
 5. С ноутбука проверить доверенный TLS обоих имён, новый anonymous401/auth200,
    старый308 с путём/query, WS, реальные WebRTC кадры трёх камер и архив. Немедленно
-   отменить оба отката после приёмки. IP-входы8971/443 и RTSP остаются совместимыми.
+   отменить DNS-откат и выполнить `sudo bash frigate/black/url-cutover.sh finish`:
+   timer nginx отключается, после чего редирект становится постоянным308.
+   Повторно проверить308. IP-входы8971/443 и RTSP остаются совместимыми.
 
 Проверенный пробный запуск: три камеры по 3 кадра/с, около 734 МиБ VRAM для
 детектора и NVDEC. Русский запрос к Jina v2 на CPU занимает около 6,5 секунды

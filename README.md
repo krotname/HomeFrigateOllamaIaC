@@ -42,7 +42,7 @@ record_continuous_days: 3
 - Frigate: CUDA ffmpeg + ONNX GPU detector YOLOv9-t 320.
 - Ollama: `huihui_ai/gpt-oss-abliterated:20b`.
 - ASR: `Systran/faster-whisper-large-v3`, CUDA `int8`.
-- Frigate HTTPS LAN: `https://frigate.adler-white-w1.lan/` (VM on White, `192.168.1.138`).
+- Frigate HTTPS LAN: `https://frigate.adler-black-u2.lan/` (recorder on Black; authenticated TLS ingress on White, `192.168.1.138`).
 - Ollama HTTPS LAN: `https://192.168.1.138:11443/`.
 - ASR HTTPS LAN: `https://192.168.1.138:9443/`.
 
@@ -215,7 +215,7 @@ ansible-playbook -i .\ansible\inventory.yml .\ansible\playbooks\site.yml --ask-b
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-frigate-local-ca.ps1 `
-  -FrigateUrl https://frigate.adler-white-w1.lan `
+  -FrigateUrl https://frigate.adler-black-u2.lan `
   -CaCertPath C:\secure-transfer\fullchain.pem
 ```
 
@@ -243,7 +243,7 @@ Config-only backups are documented in `docs\backup-policy.md` and tracked in
 
 ```powershell
 curl.exe -u "$env:FRIGATE_BASIC_USER`:$env:FRIGATE_BASIC_PASSWORD" `
-  https://frigate.adler-white-w1.lan/api/version
+  https://frigate.adler-black-u2.lan/api/version
 ```
 
 Ollama API:
