@@ -36,6 +36,7 @@ CERT_FILE = os.getenv("OCR_CERT_FILE") or None
 KEY_FILE = os.getenv("OCR_KEY_FILE") or None
 TMP_DIR = Path(os.getenv("OCR_TMP_DIR", "/tmp/ocr"))
 LLM_URL = os.getenv("OCR_LLM_URL", "http://127.0.0.1:18090").rstrip("/")
+LLM_IDLE_ENABLED = os.getenv("OCR_LLM_IDLE_ENABLED", "0") == "1"
 MODEL_NAME = os.getenv("OCR_MODEL_NAME", "Qwen3-VL-2B-Instruct-Q8_0")
 FONT_FILE = os.getenv("OCR_FONT_FILE", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
@@ -238,6 +239,7 @@ def ask_model(png: bytes, prompt: str, *, repeat_penalty: Optional[float] = None
         json.dumps(body).encode(),
         {"Content-Type": "application/json"},
     )
+    wake_model(LLM_TIMEOUT)
     with _llm_opener.open(request, timeout=LLM_TIMEOUT) as response:
         choice = json.load(response)["choices"][0]
     return choice["message"].get("content") or "", choice.get("finish_reason") == "length"
@@ -466,7 +468,18 @@ def prepare_caption_images(images: list[bytes]) -> list[bytes]:
     return normalized
 
 
+def wake_model(timeout: float) -> None:
+    if LLM_IDLE_ENABLED:
+        # llama.cpp #29689: reset the idle timer with a tiny task before the
+        # handler tokenizes a large multimodal request during a sleep transition.
+        request_bytes(LLM_URL + "/completion", method="POST",
+                      body=b'{"prompt":"hi","n_predict":1,"cache_prompt":false}',
+                      limit=64 * 1024, timeout=min(timeout, 30))
+
+
 def ask_caption(images: list[bytes], timeout: float) -> str:
+    deadline = time.monotonic() + timeout
+    wake_model(timeout)
     content = [{"type": "image_url", "image_url": {
         "url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")
     }} for image in images]
@@ -477,7 +490,7 @@ def ask_caption(images: list[bytes], timeout: float) -> str:
     }
     reply = json.loads(request_bytes(
         LLM_URL + "/v1/chat/completions", method="POST", body=json.dumps(body).encode(),
-        limit=64 * 1024, timeout=timeout,
+        limit=64 * 1024, timeout=max(0.001, deadline - time.monotonic()),
     ))
     choice = reply["choices"][0]
     text = choice["message"].get("content")
@@ -636,7 +649,7 @@ async def ocr_foreground(request, file, response_format, pages, dpi, max_tokens)
                         results[index] = await run_foreground_call(recognize, page, normalized_format)
                     else:
                         results[index] = await run_foreground_call(recognize, page, normalized_format, max_tokens)
-                except (OSError, ValueError, KeyError, IndexError) as exc:
+                except (RemoteError, OSError, ValueError, KeyError, IndexError) as exc:
                     # URLError and timeouts are OSError; a malformed reply is ValueError/KeyError.
                     raise HTTPException(status_code=503, detail="OCR model is unavailable") from exc
             if normalized_format == "pdf":

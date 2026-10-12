@@ -2,6 +2,7 @@ services:
   frigate-caption:
     container_name: frigate-caption
     image: ${OCR_API_IMAGE:-home-ocr:local}
+    user: "0:0"
     restart: unless-stopped
     network_mode: host
     entrypoint: ["python", "/app/frigate_caption_worker.py"]
@@ -11,8 +12,15 @@ services:
       FRIGATE_CAPTION_PRIORITY_KEY_FILE: /run/secrets/llm-key
       FRIGATE_CAPTION_ASR_HEALTH_URL: https://127.0.0.1:19443/health
     volumes:
-      - /var/lib/frigate-caption:/state
-      - /etc/black-qwen/api-key:/run/secrets/llm-key:ro
+      - type: bind
+        source: /var/lib/frigate-caption
+        target: /state
+        bind: {create_host_path: false}
+      - type: bind
+        source: /etc/black-qwen/api-key
+        target: /run/secrets/llm-key
+        read_only: true
+        bind: {create_host_path: false}
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

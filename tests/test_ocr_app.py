@@ -374,6 +374,13 @@ class CaptionRequest(FakeRequest):
 
 
 class CaptionEndpointTests(unittest.TestCase):
+    def test_sleeping_model_is_woken_with_one_short_completion(self):
+        with mock.patch.object(APP, "LLM_IDLE_ENABLED", True), mock.patch.object(APP, "request_bytes") as send:
+            APP.wake_model(90)
+        self.assertEqual(APP.LLM_URL + "/completion", send.call_args.args[0])
+        self.assertEqual(1, json.loads(send.call_args.kwargs["body"])["n_predict"])
+        self.assertEqual(30, send.call_args.kwargs["timeout"])
+
     def assert_slot_free(self):
         self.assertFalse(APP._caption_active)
         self.assertEqual(0, APP._foreground_jobs)
@@ -771,6 +778,24 @@ class CaptionWorkerTests(unittest.TestCase):
         self.worker.tick()
         self.assertEqual("done", self.row()["status"])
         self.assertEqual(1, self.transport.count("/v1/frigate-caption"))
+
+    def test_single_gpu_fallback_defers_caption_when_general_llm_is_stopped(self):
+        self.worker.config = dataclasses.replace(
+            self.config, priority_url="http://127.0.0.1:18091/slots",
+            asr_health_url="https://127.0.0.1:19443/health")
+        original = self.transport
+
+        def fallback_transport(url, **options):
+            if urlsplit(url).path == "/health":
+                return b'{"idle":true}'
+            if urlsplit(url).path == "/slots":
+                raise WORKER.RemoteError(0)
+            return original(url, **options)
+
+        self.worker.transport = fallback_transport
+        self.worker.tick()
+        self.assertEqual("queued", self.row()["status"])
+        self.assertEqual(0, self.transport.count("/v1/frigate-caption"))
 
     def test_worker_config_rejects_remote_targets_credentials_and_excess_bounds(self):
         for url in ("https://example.org/slots", "http://127.0.0.1.evil/", "http://user:pass@127.0.0.1/"):

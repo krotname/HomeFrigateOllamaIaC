@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 readonly STATE=/run/frigate-black-cutover
-systemctl stop frigate-black.service
+systemctl disable --now frigate-black.service
 running=$(docker inspect frigate --format '{{.State.Running}}' 2>/dev/null || true)
 [[ "$running" != true ]] || { echo 'Black writer still running'; exit 1; }
 mountpoint -q /media/frigate

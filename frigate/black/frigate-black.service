@@ -9,6 +9,7 @@ BindsTo=media-frigate.mount
 Type=simple
 WorkingDirectory=/opt/frigate
 ExecStartPre=/usr/bin/mountpoint -q /media/frigate
+ExecStartPre=/opt/frigate/protect-backend.sh
 ExecStart=/usr/bin/docker compose --env-file /opt/frigate/.env -f /opt/frigate/compose.yml up --abort-on-container-exit --exit-code-from frigate
 ExecStop=/usr/bin/docker compose --env-file /opt/frigate/.env -f /opt/frigate/compose.yml stop -t 30
 Restart=always
