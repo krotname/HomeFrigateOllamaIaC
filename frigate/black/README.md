@@ -1,5 +1,30 @@
 # Frigate 0.18 на Black, архив на White
 
+Канонический адрес — `https://frigate.adler-black-u2.lan/`. TLS и прежний Basic
+auth обслуживает nginx VM White (`192.168.1.138`), который передаёт запросы единственному
+recorder Black. DNS нового имени указывает на этот ingress, а не на Black443: там
+работает OCR. Backend Black18971 остаётся доступен только с White; NFS и RTSP не меняются.
+Старый `https://frigate.adler-white-w1.lan/` возвращает 308 с исходным путём и query.
+
+Установка URL после проверки сертификата от штатного LAN CA:
+
+1. На White разместить leaf/fullchain нового имени в
+   `/opt/frigate/certs/black-domain-privkey.pem` (root0600) и
+   `/opt/frigate/certs/black-domain-fullchain.pem`. Старый сертификат сохранить.
+2. Вооружить автономный systemd rollback timer, сохраняющий оба vhost и состояние
+   enabled-ссылок; он должен восстановить их и перечитать nginx без SSH/агента.
+3. Установить `frigate-black-domain.conf` как
+   `/etc/nginx/sites-available/frigate-black-domain` и включить его ссылкой в
+   `sites-enabled`; `frigate-white-redirect.conf` установить вместо прежнего
+   `/etc/nginx/sites-available/frigate-white-domain`. Выполнить `nginx -t`, затем reload.
+4. На OpenWrt добавить отдельный UCI domain `dhcp.frigate_adler_black` с
+   `name=frigate.adler-black-u2.lan`, `ip=192.168.1.138`; commit dhcp и reload dnsmasq.
+   Существующие address/host/domain записи не заменять. Перед изменением запустить
+   независимый процесс отката только этой новой записи и подтвердить его работу.
+5. С ноутбука проверить доверенный TLS обоих имён, новый anonymous401/auth200,
+   старый308 с путём/query, WS, реальные WebRTC кадры трёх камер и архив. Немедленно
+   отменить оба отката после приёмки. IP-входы8971/443 и RTSP остаются совместимыми.
+
 Проверенный пробный запуск: три камеры по 3 кадра/с, около 734 МиБ VRAM для
 детектора и NVDEC. Русский запрос к Jina v2 на CPU занимает около 6,5 секунды
 на Xeon E5-1650 v3; этот поиск экономит видеопамять ценой задержки.
