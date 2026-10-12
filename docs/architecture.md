@@ -2,10 +2,21 @@
 
 This repository deploys the home video AI stack as code.
 
-The architecture below is the retained GPU reference design. In current
-production (2026-09-14), the Tesla P40 is no longer installed in White and the
-Frigate VM is off. The Pi kiosk camera path is now camera -> go2rtc on Red ->
-HTTPS kiosk, with no Frigate hop. See [Current Production State](current-state.md).
+Since 2026-10-12 production Frigate runs on Black. White remains the archive
+server and nginx frontend; its old recorder is stopped and fenced. The Pi kiosk
+uses go2rtc on Red independently. See [Current Production State](current-state.md)
+and the [Black installation procedure](../frigate/black/README.md).
+
+```mermaid
+flowchart LR
+  Cameras --> Black[Frigate on Black: P40 detection and decoding]
+  Black --> NFS[White: existing archive over NFS]
+  Browser --> White[White: nginx and existing Basic auth]
+  White --> Black
+  Black --> CPU[CPU: Jina semantic search and FaceNet]
+```
+
+The components and paths below are the retained legacy GPU reference design.
 
 ## Components
 
