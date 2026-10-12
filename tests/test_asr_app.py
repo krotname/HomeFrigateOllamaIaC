@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -177,6 +178,160 @@ class AsrAppTests(unittest.TestCase):
                 self.assertEqual(expected_status, error.exception.status_code)
                 self.assertEqual([], list(Path(temp_dir).iterdir()))
                 self.assertTrue(upload.closed)
+
+
+class AsrIdleTests(unittest.TestCase):
+    def setUp(self):
+        self.model = mock.Mock()
+        patch = mock.patch.multiple(APP, _model=self.model, _model_loaded=True,
+                                    _active_transcriptions=0, _last_activity=100.0, IDLE_TIMEOUT=300)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_idle_offload_and_reload_keep_the_whisper_wrapper(self):
+        self.assertFalse(APP.unload_idle_model(399.9))
+        self.assertTrue(APP.unload_idle_model(400.0))
+        self.model.model.unload_model.assert_called_once_with(to_cpu=True)
+        self.assertFalse(APP.unload_idle_model(900.0))
+        with mock.patch.object(APP, "WhisperModel") as constructor:
+            self.assertFalse(APP.health()["loaded"])
+            self.assertTrue(APP.health()["idle"])
+            constructor.assert_not_called()
+            self.model.model.load_model.assert_not_called()
+            self.assertIs(self.model, APP.get_model())
+            self.model.model.load_model.assert_called_once_with()
+            self.assertTrue(APP.health()["loaded"])
+
+    def test_never_offloads_an_active_lazy_iterator(self):
+        entered = threading.Event()
+        finish = threading.Event()
+        failures = []
+
+        def iterator():
+            entered.set()
+            if not finish.wait(3):
+                raise RuntimeError("Test iterator did not finish")
+            yield types.SimpleNamespace(start=0.0, end=1.0, text="test")
+
+        self.model.transcribe.return_value = (iterator(), object())
+
+        def transcribe():
+            try:
+                APP.run_transcription(Path("unused.wav"), "ru", "transcribe", None, True, False)
+            except BaseException as exc:
+                failures.append(exc)
+
+        runner = threading.Thread(target=transcribe)
+        runner.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            self.assertFalse(APP.health()["idle"])
+            # Far beyond the timeout; last_activity alone must not permit unload.
+            self.assertFalse(APP.unload_idle_model(100000000000.0))
+            self.model.model.unload_model.assert_not_called()
+        finally:
+            finish.set()
+            runner.join(3)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual([], failures)
+        self.assertTrue(APP.health()["idle"])
+        self.assertFalse(APP.unload_idle_model(APP._last_activity + 299))
+        self.assertTrue(APP.unload_idle_model(APP._last_activity + 300))
+
+    def test_transcription_admission_and_reload_wait_for_offload_lock(self):
+        unloading = threading.Event()
+        finish_unload = threading.Event()
+        admitted = threading.Event()
+        failures = []
+
+        def unload(**_kwargs):
+            unloading.set()
+            if not finish_unload.wait(3):
+                raise RuntimeError("Offload did not finish")
+
+        def transcribe(*_args, **_kwargs):
+            self.model.model.load_model.assert_called_once_with()
+            admitted.set()
+            return iter([]), object()
+
+        self.model.model.unload_model.side_effect = unload
+        self.model.transcribe.side_effect = transcribe
+
+        def run(function, *args):
+            try:
+                function(*args)
+            except BaseException as exc:
+                failures.append(exc)
+
+        offloader = threading.Thread(target=run, args=(APP.unload_idle_model, 400.0))
+        caller = threading.Thread(target=run, args=(APP.run_transcription,
+                                  Path("unused.wav"), "ru", "transcribe", None, True, False))
+        offloader.start()
+        try:
+            self.assertTrue(unloading.wait(2))
+            caller.start()
+            self.assertFalse(admitted.wait(0.05))
+        finally:
+            finish_unload.set()
+            offloader.join(3)
+            if caller.ident is not None:
+                caller.join(3)
+        self.assertTrue(admitted.is_set())
+        self.assertEqual([], failures)
+        self.assertEqual(0, APP._active_transcriptions)
+
+    def test_failed_iterator_is_closed_before_activity_is_released(self):
+        closed = []
+
+        def iterator():
+            try:
+                raise ValueError("Decode error")
+                yield
+            finally:
+                closed.append(APP._active_transcriptions)
+
+        self.model.transcribe.return_value = (iterator(), object())
+        with self.assertRaises(ValueError):
+            APP.run_transcription(Path("bad.wav"), None, "transcribe", None, True, False)
+        self.assertEqual([1], closed)
+        self.assertEqual(0, APP._active_transcriptions)
+
+    def test_cancelled_http_request_retains_slot_until_transcription_thread_finishes(self):
+        entered, finish = threading.Event(), threading.Event()
+        info = types.SimpleNamespace(language="ru", language_probability=1.0, duration=1.0)
+
+        def iterator():
+            entered.set()
+            if not finish.wait(3):
+                raise RuntimeError("ASR iterator did not finish")
+            yield types.SimpleNamespace(start=0.0, end=1.0, text="test")
+
+        self.model.transcribe.return_value = (iterator(), info)
+
+        async def scenario():
+            upload = FakeUpload([b"audio"])
+            task = asyncio.create_task(APP.transcribe(FakeRequest(), upload))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                task.cancel()
+                await asyncio.sleep(0)
+                self.assertFalse(task.done())
+                self.assertFalse(APP._transcription_slots.acquire(blocking=False))
+                self.assertFalse(APP.unload_idle_model(100000000000.0))
+                self.assertFalse(upload.closed)
+            finally:
+                finish.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            self.assertTrue(upload.closed)
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(APP, "TMP_DIR", Path(directory)), mock.patch.object(
+            APP, "run_in_threadpool", side_effect=asyncio.to_thread
+        ):
+            asyncio.run(scenario())
+            self.assertEqual([], list(Path(directory).iterdir()))
+        self.assertTrue(APP._transcription_slots.acquire(blocking=False))
+        APP._transcription_slots.release()
 
 
 if __name__ == "__main__":

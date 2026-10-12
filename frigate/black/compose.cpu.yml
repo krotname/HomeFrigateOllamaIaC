@@ -1,0 +1,9 @@
+services:
+  frigate:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: !reset null
+      NVIDIA_DRIVER_CAPABILITIES: !reset null
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []

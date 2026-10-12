@@ -1,0 +1,47 @@
+services:
+  frigate:
+    container_name: ${FRIGATE_CONTAINER_NAME:-frigate}
+    image: ${FRIGATE_IMAGE:-ghcr.io/blakeblackshear/frigate:0.18.0-tensorrt}
+    # systemd owns restarts and requires the archive mount before each start.
+    restart: "no"
+    shm_size: "1gb"
+    env_file:
+      - .env
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${FRIGATE_GPU_UUID:-GPU-d9edf332-2d18-bd6d-efdd-c4617743a0e0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${FRIGATE_GPU_UUID:-GPU-d9edf332-2d18-bd6d-efdd-c4617743a0e0}"]
+              capabilities: [gpu]
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${FRIGATE_ROOT:-/opt/frigate}/config:/config
+      - ${FRIGATE_ROOT:-/opt/frigate}/certs:/etc/letsencrypt/live/frigate:ro
+      - type: bind
+        source: ${FRIGATE_MEDIA:-/media/frigate}
+        target: /media/frigate
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp/cache:rw,size=1073741824
+    ports:
+      - "${FRIGATE_BIND_IP:-192.168.1.242}:18971:8971"
+      - "127.0.0.1:15000:5000"
+      - "${FRIGATE_BIND_IP:-192.168.1.242}:8554:8554/tcp"
+      - "${FRIGATE_BIND_IP:-192.168.1.242}:8555:8555/tcp"
+      - "${FRIGATE_BIND_IP:-192.168.1.242}:8555:8555/udp"
+    mem_limit: 12g
+    memswap_limit: 14g
+    cpus: "4"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+

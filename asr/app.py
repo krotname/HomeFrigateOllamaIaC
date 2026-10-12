@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import os
 import re
 import tempfile
 import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -41,15 +44,56 @@ MAX_UPLOAD_BYTES = bounded_int_setting(
 MAX_CONCURRENT_TRANSCRIPTIONS = bounded_int_setting(
     "ASR_MAX_CONCURRENT_TRANSCRIPTIONS", 1, 1, 8
 )
+IDLE_TIMEOUT = bounded_int_setting("ASR_IDLE_TIMEOUT", 300, 1, 86400)
 
-app = FastAPI(title="Home ASR", version="1.0")
-_model_lock = threading.Lock()
+log = logging.getLogger("home-asr")
+_model_lock = threading.RLock()
 _transcription_slots = threading.BoundedSemaphore(MAX_CONCURRENT_TRANSCRIPTIONS)
 _model: Optional[WhisperModel] = None
+_model_loaded = False
+_active_transcriptions = 0
+_last_activity = time.monotonic()
+
+
+def unload_idle_model(now: Optional[float] = None) -> bool:
+    global _model_loaded
+    # Loading, admission and offloading share this lock. A transcription remains
+    # active until its lazy iterator has been exhausted (or closed on error).
+    with _model_lock:
+        current = time.monotonic() if now is None else now
+        if (_model is None or not _model_loaded or _active_transcriptions
+                or current - _last_activity < IDLE_TIMEOUT):
+            return False
+        _model.model.unload_model(to_cpu=True)
+        _model_loaded = False
+        return True
+
+
+def idle_watch(stop: threading.Event) -> None:
+    while not stop.wait(min(5.0, IDLE_TIMEOUT)):
+        try:
+            unload_idle_model()
+        except Exception:
+            log.exception("ASR idle offload failed")
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    stop = threading.Event()
+    watcher = threading.Thread(target=idle_watch, args=(stop,), name="asr-idle", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        await run_in_threadpool(watcher.join)
+
+
+app = FastAPI(title="Home ASR", version="1.0", lifespan=lifespan)
 
 
 def get_model() -> WhisperModel:
-    global _model
+    global _model, _model_loaded, _last_activity
     with _model_lock:
         if _model is None:
             _model = WhisperModel(
@@ -58,18 +102,28 @@ def get_model() -> WhisperModel:
                 compute_type=COMPUTE_TYPE,
                 cpu_threads=CPU_THREADS,
             )
+            _model_loaded = True
+            _last_activity = time.monotonic()
+        elif not _model_loaded:
+            _model.model.load_model()
+            _model_loaded = True
+            _last_activity = time.monotonic()
         return _model
 
 
 @app.get("/health")
 def health() -> dict:
-    return {
-        "status": "ok",
-        "model": MODEL_NAME,
-        "device": DEVICE,
-        "compute_type": COMPUTE_TYPE,
-        "loaded": _model is not None,
-    }
+    with _model_lock:
+        return {
+            "status": "ok",
+            "model": MODEL_NAME,
+            "device": DEVICE,
+            "compute_type": COMPUTE_TYPE,
+            "loaded": _model_loaded,
+            "idle": _active_transcriptions == 0,
+            "active_transcriptions": _active_transcriptions,
+            "idle_timeout": IDLE_TIMEOUT,
+        }
 
 
 def safe_upload_suffix(filename: Optional[str]) -> str:
@@ -114,6 +168,20 @@ def run_transcription(
 ) -> tuple[list[dict], object]:
     # The caller holds a transcription slot for the whole call, including the lazy
     # segments iterator: several concurrent runs can exhaust GPU memory.
+    global _active_transcriptions, _last_activity
+    with _model_lock:
+        _active_transcriptions += 1
+    try:
+        return collect_transcription(
+            temp_path, language, task, prompt, vad_filter, word_timestamps
+        )
+    finally:
+        with _model_lock:
+            _active_transcriptions -= 1
+            _last_activity = time.monotonic()
+
+
+def collect_transcription(temp_path, language, task, prompt, vad_filter, word_timestamps):
     model = get_model()
     segments_iter, info = model.transcribe(
         str(temp_path),
@@ -125,24 +193,29 @@ def run_transcription(
         word_timestamps=word_timestamps,
     )
     segments = []
-    for index, segment in enumerate(segments_iter):
-        item = {
-            "id": index,
-            "start": round(segment.start, 3),
-            "end": round(segment.end, 3),
-            "text": segment.text.strip(),
-        }
-        if word_timestamps:
-            item["words"] = [
-                {
-                    "start": round(word.start, 3),
-                    "end": round(word.end, 3),
-                    "word": word.word.strip(),
-                    "probability": round(word.probability, 6),
-                }
-                for word in (segment.words or [])
-            ]
-        segments.append(item)
+    try:
+        for index, segment in enumerate(segments_iter):
+            item = {
+                "id": index,
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "text": segment.text.strip(),
+            }
+            if word_timestamps:
+                item["words"] = [
+                    {
+                        "start": round(word.start, 3),
+                        "end": round(word.end, 3),
+                        "word": word.word.strip(),
+                        "probability": round(word.probability, 6),
+                    }
+                    for word in (segment.words or [])
+                ]
+            segments.append(item)
+    finally:
+        close = getattr(segments_iter, "close", None)
+        if close is not None:
+            close()
     return segments, info
 
 
@@ -155,6 +228,28 @@ async def acquire_transcription_slot(request: Request) -> bool:
             return False
         await asyncio.sleep(0.5)
     return True
+
+
+async def await_transcription(*args):
+    # Retain the caller's slot/temp file through cancellation as well as normal
+    # iteration. Cancelling an await cannot stop CTranslate2 in a worker thread.
+    task = asyncio.create_task(run_in_threadpool(run_transcription, *args))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError
+            raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 @app.post("/v1/audio/transcriptions")
@@ -193,8 +288,7 @@ async def transcribe(
         if not await acquire_transcription_slot(request):
             raise HTTPException(status_code=503, detail="Client disconnected while queued")
         try:
-            segments, info = await run_in_threadpool(
-                run_transcription,
+            segments, info = await await_transcription(
                 temp_path,
                 safe_language,
                 task,

@@ -40,6 +40,8 @@ services:
       - "4"
       - --temp
       - "0"
+      - --sleep-idle-seconds
+      - "${OCR_MODEL_IDLE_SECONDS:-300}"
     volumes:
       - ./models:/models:ro
     tmpfs:
@@ -86,6 +88,7 @@ services:
       OCR_PORT: "443"
       OCR_RUN_AS: "10001:10001"
       OCR_LLM_URL: http://127.0.0.1:18090
+      OCR_LLM_IDLE_ENABLED: "1"
       OCR_MODEL_NAME: Qwen3-VL-2B-Instruct-Q8_0
       OCR_CERT_FILE: /certs/fullchain.pem
       OCR_KEY_FILE: /certs/privkey.pem

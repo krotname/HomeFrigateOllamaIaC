@@ -1,4 +1,15 @@
 ---
+- name: Check whether the recorder moved to Black
+  ansible.builtin.stat:
+    path: "{{ frigate_root }}/moved-to-black"
+  register: frigate_vm_migration_marker
+
+- name: Prevent a second recorder after the Black migration
+  ansible.builtin.assert:
+    that:
+      - not frigate_vm_migration_marker.stat.exists
+    fail_msg: "Frigate moved to Black; maintain frigate/black instead of restarting the White recorder."
+
 - name: Resolve service settings
   ansible.builtin.set_fact:
     frigate_vm_profile_resolved: "{{ frigate_profile | default(frigate_vm_profile) }}"
