@@ -1,0 +1,19 @@
+api:
+  listen: "127.0.0.1:1984"
+rtsp:
+  listen: ":8554"
+webrtc:
+  listen: ""
+log:
+  level: info
+exec:
+  allow_paths: ["/usr/local/bin/python3"]
+streams:
+  common_camera01_main: exec:/usr/local/bin/python3 /app/relay.py common_camera01 main {output}#killsignal=2#killtimeout=5
+  common_camera01_sub: exec:/usr/local/bin/python3 /app/relay.py common_camera01 sub {output}#killsignal=2#killtimeout=5
+  common_camera02_main: exec:/usr/local/bin/python3 /app/relay.py common_camera02 main {output}#killsignal=2#killtimeout=5
+  common_camera02_sub: exec:/usr/local/bin/python3 /app/relay.py common_camera02 sub {output}#killsignal=2#killtimeout=5
+  common_camera03_main: exec:/usr/local/bin/python3 /app/relay.py common_camera03 main {output}#killsignal=2#killtimeout=5
+  common_camera03_sub: exec:/usr/local/bin/python3 /app/relay.py common_camera03 sub {output}#killsignal=2#killtimeout=5
+  common_camera04_main: exec:/usr/local/bin/python3 /app/relay.py common_camera04 main {output}#killsignal=2#killtimeout=5
+  common_camera04_sub: exec:/usr/local/bin/python3 /app/relay.py common_camera04 sub {output}#killsignal=2#killtimeout=5

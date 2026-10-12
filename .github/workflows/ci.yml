@@ -84,7 +84,7 @@ jobs:
           -e @ansible/group_vars/all.example.yml
       - name: Run dependency-free Python tests
         run: |
-          python -m compileall -q asr ocr ollama-audio-transcription tests
+          python -m compileall -q asr ocr ollama-audio-transcription frigate tests
           python -m unittest discover -s tests -p 'test_*.py'
       - name: Validate ASR Compose model
         # config only parses the model; it does not need a Docker daemon.
@@ -95,6 +95,7 @@ jobs:
           docker compose -f asr/docker-compose.black.cpu.yml config --quiet
           docker compose -f ocr/docker-compose.black.yml config --quiet
           docker compose -f ocr/docker-compose.black.cpu.yml config --quiet
+          HIK_RELAY_IMAGE=krt/hikconnect-relay:ci docker compose -f frigate/hikconnect/compose.yml config --quiet
 
   powershell-validation:
     name: PowerShell validation
