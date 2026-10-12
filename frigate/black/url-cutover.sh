@@ -37,7 +37,10 @@ case "${1:-}" in
     ! systemctl is-active --quiet frigate-url-rollback.service
     grep -q 'return 307 https://frigate.adler-black-u2.lan$request_uri;' /etc/nginx/sites-available/frigate-white-domain
     nginx -t
-    systemctl stop frigate-url-rollback.timer frigate-url-rollback.service
+    systemctl stop frigate-url-rollback.timer
+    if [ "$(systemctl show -p LoadState --value frigate-url-rollback.service)" != not-found ]; then
+      systemctl stop frigate-url-rollback.service
+    fi
     ! systemctl is-active --quiet frigate-url-rollback.service
     test "$(readlink -f /etc/nginx/sites-enabled/frigate-black-domain)" = /etc/nginx/sites-available/frigate-black-domain
     cmp -s "$here/frigate-black-domain.conf" /etc/nginx/sites-available/frigate-black-domain
