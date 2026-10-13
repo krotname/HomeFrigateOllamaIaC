@@ -1,5 +1,16 @@
 # Frigate 0.18 на Black, архив на White
 
+Общий обзор двора доступен по `/review/courtyard/` на основном домене. Он
+использует существующую Basic auth и API Frigate, группирует тревоги и обнаружения
+`common_camera01–03` по пересечению времени и типу объекта, показывает общую
+шкалу движения и ссылки на исходные клипы. Это временная группировка: совпадение
+не подтверждает, что на разных ракурсах один и тот же человек или автомобиль.
+Штатный `/review` и записи камер не меняются. На White статические файлы из
+`frigate/black/courtyard-review/` устанавливаются в
+`/opt/frigate/courtyard-review/`, а `frigate-black-domain.conf` — в действующий
+vhost; перед reload требуется `nginx -t`. Откат — вернуть прежний vhost и
+выполнить `nginx -t && systemctl reload nginx`; Frigate на Black не перезапускается.
+
 Канонический адрес — `https://frigate.adler-black-u2.lan/`. TLS и прежний Basic
 auth обслуживает nginx VM White (`192.168.1.138`), который передаёт запросы единственному
 recorder Black. DNS нового имени указывает на этот ingress, а не на Black443: там
