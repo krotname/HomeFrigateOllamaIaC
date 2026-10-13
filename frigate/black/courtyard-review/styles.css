@@ -25,6 +25,7 @@ section.motion, section.events { padding-top: 36px; }
 .motion-chart { height: 120px; display: flex; align-items: end; gap: 2px; padding: 8px 8px 0; border: 1px solid #2b3b46; border-radius: 12px; background: linear-gradient(#14232b, #101a23); overflow: hidden; }
 .motion-bar { flex: 1 0 2px; min-width: 2px; background: #4fc3b3; border-radius: 2px 2px 0 0; opacity: .8; }
 .motion-bar:hover { background: #adf4e2; opacity: 1; }
+.motion-bar.gap { background: transparent; }
 .motion-axis { display: flex; justify-content: space-between; margin-top: 8px; color: #8da3b0; font-size: .78rem; font-variant-numeric: tabular-nums; }
 .filters { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }
 .filters button { border: 1px solid #344752; background: #17242e; color: #b9cbd3; padding: 8px 15px; border-radius: 999px; }

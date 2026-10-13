@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { groupReviewItems } = require("../frigate/black/courtyard-review/app.js");
+const { groupReviewItems, buildMotionSlots } = require("../frigate/black/courtyard-review/app.js");
 
 const item = (camera, start, end, severity = "alert", label = "person") => ({
   id: `${camera}-${start}`, camera, start_time: start, end_time: end,
@@ -27,13 +27,23 @@ test("different object types, severities, distant times and non-courtyard camera
   assert.ok(grouped.every((group) => group.items.length === 1));
 });
 
-test("an open segment uses its start time and does not absorb an unrelated later incident", () => {
+test("an open segment overlaps another camera until now but does not absorb distant incidents", () => {
   const grouped = groupReviewItems([
-    item("common_camera01", 100, null), item("common_camera02", 112, 125),
+    item("common_camera01", 100, null), item("common_camera02", 130, 145),
     item("common_camera03", 400, null),
-  ]);
+  ], 450);
   assert.equal(grouped.length, 2);
   assert.equal(grouped[1].items.length, 2);
+});
+
+test("motion slots retain missing 30-second intervals on the one-hour timeline", () => {
+  const slots = buildMotionSlots([
+    { start_time: 0, motion: 20 }, { start_time: 60, motion: 10 },
+  ], 3600);
+  assert.equal(slots.length, 120);
+  assert.deepEqual(slots.slice(0, 3).map((point) => point.start_time), [0, 30, 60]);
+  assert.equal(slots[1].missing, true);
+  assert.equal(slots[2].motion, 10);
 });
 
 test("successive segments from the same camera remain separate source incidents", () => {

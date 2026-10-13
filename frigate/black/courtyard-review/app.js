@@ -9,7 +9,7 @@ const CAMERA_NAMES = {
 const MAX_GAP_SECONDS = 15;
 const MAX_GROUP_SECONDS = 180;
 
-function groupReviewItems(items) {
+function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
   const allowed = new Set(CAMERAS);
   const sorted = items.filter((item) =>
     allowed.has(item.camera) && Number.isFinite(item.start_time) &&
@@ -19,7 +19,7 @@ function groupReviewItems(items) {
 
   for (const item of sorted) {
     const itemLabels = new Set(item.data?.objects ?? []);
-    const itemEnd = Number.isFinite(item.end_time) ? item.end_time : item.start_time;
+    const itemEnd = Number.isFinite(item.end_time) ? item.end_time : Math.max(item.start_time, nowSeconds);
     const group = [...groups].reverse().find((candidate) =>
       candidate.severity === item.severity &&
       !candidate.items.some((previous) => previous.camera === item.camera) &&
@@ -39,8 +39,17 @@ function groupReviewItems(items) {
   return groups.sort((a, b) => b.start - a.start);
 }
 
+function buildMotionSlots(points, nowSeconds = Date.now() / 1000) {
+  const start = Math.floor((nowSeconds - 3600) / 30) * 30;
+  const byTime = new Map(points.map((point) => [point.start_time, point]));
+  return Array.from({ length: 120 }, (_, index) => {
+    const start_time = start + index * 30;
+    return byTime.get(start_time) ?? { start_time, motion: 0, missing: true };
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { groupReviewItems };
+  module.exports = { groupReviewItems, buildMotionSlots };
 }
 
 if (typeof document !== "undefined") {
@@ -49,6 +58,7 @@ if (typeof document !== "undefined") {
   const refreshButton = document.getElementById("refresh");
   let allGroups = [];
   let activeFilter = "all";
+  let isTruncated = false;
   let loading = false;
 
   const time = (seconds, options = {}) => new Intl.DateTimeFormat("ru-RU", {
@@ -71,11 +81,12 @@ if (typeof document !== "undefined") {
   function renderGroups() {
     list.replaceChildren();
     const visible = allGroups.filter((group) => activeFilter === "all" || group.severity === activeFilter);
+    const truncationWarning = isTruncated ? " Достигнут предел 500 записей; ранние события суток могут отсутствовать." : "";
     if (!visible.length) {
-      status.textContent = "За выбранный период событий нет.";
+      status.textContent = "За выбранный период событий нет." + truncationWarning;
       return;
     }
-    status.textContent = `Показано ${visible.length} временных групп. Совпадение по времени не доказывает, что на разных камерах один объект.`;
+    status.textContent = `Показано ${visible.length} временных групп. Совпадение по времени не доказывает, что на разных камерах один объект.` + truncationWarning;
     for (const group of visible) {
       const cameras = new Set(group.items.map((item) => item.camera));
       const card = element("article", "incident" + (group.items.every((item) => item.has_been_reviewed) ? " reviewed" : ""));
@@ -126,15 +137,17 @@ if (typeof document !== "undefined") {
       chart.textContent = "Нет данных движения за последний час.";
       return;
     }
-    const max = Math.max(...points.map((point) => Number(point.motion) || 0), 1);
-    for (const point of points) {
-      const bar = element("div", "motion-bar");
+    const slots = buildMotionSlots(points);
+    const max = Math.max(...slots.map((point) => Number(point.motion) || 0), 1);
+    for (const point of slots) {
+      const bar = element("div", "motion-bar" + (point.missing ? " gap" : ""));
       bar.style.height = `${Math.max(2, Math.round(((Number(point.motion) || 0) / max) * 100))}%`;
-      bar.title = `${time(point.start_time)} · движение ${Math.round(Number(point.motion) || 0)} · ${point.camera || "нет камер"}`;
+      bar.title = point.missing ? `${time(point.start_time)} · нет данных движения` :
+        `${time(point.start_time)} · движение ${Math.round(Number(point.motion) || 0)} · ${point.camera || "нет камер"}`;
       chart.append(bar);
     }
-    document.getElementById("motion-from").textContent = time(points[0].start_time);
-    document.getElementById("motion-to").textContent = time(points.at(-1).start_time + 30);
+    document.getElementById("motion-from").textContent = time(slots[0].start_time);
+    document.getElementById("motion-to").textContent = time(slots.at(-1).start_time + 30);
   }
 
   async function getJson(path) {
@@ -156,12 +169,12 @@ if (typeof document !== "undefined") {
       ]);
       if (!Array.isArray(reviews) || !Array.isArray(motion)) throw new Error("Неожиданный ответ API");
       allGroups = groupReviewItems(reviews);
+      isTruncated = reviews.length === 500;
       document.getElementById("group-count").textContent = String(allGroups.length);
       document.getElementById("source-count").textContent = String(allGroups.reduce((n, group) => n + group.items.length, 0));
       document.getElementById("updated-at").textContent = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date());
       renderMotion(motion);
       renderGroups();
-      if (reviews.length === 500) status.textContent += " Достигнут предел 500 записей; ранние события суток могут отсутствовать.";
       status.classList.remove("error");
     } catch (error) {
       status.textContent = `Не удалось получить события Frigate: ${error.message}`;
