@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import unittest
 from pathlib import Path
@@ -48,6 +49,40 @@ class MigrationTests(unittest.TestCase):
     def test_empty_source_rejected(self):
         with self.assertRaises(ValueError):
             MODULE.black_config({})
+
+    def test_courtyard_review_only_keeps_recording_and_unrelated_cameras(self):
+        source = self.source()
+        source["review"] = {"alerts": {"enabled": True, "labels": ["person"]},
+                            "detections": {"enabled": True, "labels": ["cat", "dog"]}}
+        source["cameras"] = {
+            "cam1_ds_i202": {"record": {"continuous": {"days": 3}}},
+            "common_camera01": {"review": {"alerts": {"enabled": True, "labels": ["person"]},
+                                             "detections": {"labels": ["car", "dog"]}},
+                                "record": {"continuous": {"days": 3}}},
+            "common_camera02": {"review": {"alerts": {"enabled": True, "labels": ["person"]}}},
+            "common_camera03": {"review": {"alerts": {"enabled": True, "labels": ["person"]}}},
+            "common_camera04": {"review": {"alerts": {"enabled": True, "labels": ["person"]}}},
+        }
+        before = copy.deepcopy(source)
+        converted = MODULE.configure_courtyard_review(source)
+        self.assertEqual(before, source)
+        self.assertEqual(converted, MODULE.configure_courtyard_review(converted))
+        self.assertEqual(source.get("record"), converted.get("record"))
+        self.assertEqual(source["cameras"]["common_camera04"], converted["cameras"]["common_camera04"])
+        self.assertEqual(source["cameras"]["common_camera01"]["record"],
+                         converted["cameras"]["common_camera01"]["record"])
+        self.assertTrue(converted["cameras"]["common_camera02"]["review"]["alerts"]["enabled"])
+        for name in MODULE.COURTYARD_SECONDARY:
+            review = converted["cameras"][name]["review"]
+            self.assertFalse(review["alerts"]["enabled"])
+            self.assertTrue(review["detections"]["enabled"])
+            self.assertIn("person", review["detections"]["labels"])
+        self.assertEqual(["person", "car", "dog"],
+                         converted["cameras"]["common_camera01"]["review"]["detections"]["labels"])
+
+    def test_courtyard_policy_requires_all_four_angles(self):
+        with self.assertRaises(ValueError):
+            MODULE.configure_courtyard_review({"cameras": {"common_camera02": {}}})
 
     def test_proxy_switch_preserves_auth_and_unrelated_backends(self):
         source = 'auth_basic "home"; proxy_pass https://127.0.0.1:18971; proxy_pass http://127.0.0.1:6800;'

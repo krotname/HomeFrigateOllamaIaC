@@ -46,8 +46,27 @@ class CameraTests(unittest.TestCase):
         camera = result["cameras"]["common_camera01"]
         self.assertEqual([["record"], ["detect"]], [v["roles"] for v in camera["ffmpeg"]["inputs"]])
         self.assertEqual(["person"], camera["review"]["alerts"]["labels"])
-        self.assertEqual(CONFIG.LABELS[1:], camera["review"]["detections"]["labels"])
+        self.assertFalse(camera["review"]["alerts"]["enabled"])
+        self.assertEqual(CONFIG.LABELS, camera["review"]["detections"]["labels"])
         self.assertFalse(camera["face_recognition"]["enabled"])
+        self.assertEqual(result, CONFIG.add_cameras(result))
+
+    def test_existing_courtyard_alerts_are_migrated_without_changing_street_alerts(self):
+        source = {"version": "0.18-0", "review": {"detections": {"labels": ["cat", "dog"]}},
+                  "cameras": {"cam1_ds_i202": {"review": {"alerts": {"enabled": True}}}}}
+        legacy = CONFIG.add_cameras(source)
+        for name in ("common_camera01", "common_camera03"):
+            legacy["cameras"][name]["review"] = {
+                "alerts": {"enabled": True, "labels": ["person"]},
+                "detections": {"enabled": True, "labels": CONFIG.LABELS[1:]},
+            }
+        legacy["cameras"]["cam1_ds_i202"] = source["cameras"]["cam1_ds_i202"]
+        result = CONFIG.add_cameras(legacy)
+        for name in CONFIG.COURTYARD_SECONDARY:
+            self.assertFalse(result["cameras"][name]["review"]["alerts"]["enabled"])
+            self.assertIn("person", result["cameras"][name]["review"]["detections"]["labels"])
+        for name in ("common_camera02", "common_camera04"):
+            self.assertTrue(result["cameras"][name]["review"]["alerts"]["enabled"])
         self.assertEqual(result, CONFIG.add_cameras(result))
 
     def test_main_fallback_and_alias_conflicts(self):

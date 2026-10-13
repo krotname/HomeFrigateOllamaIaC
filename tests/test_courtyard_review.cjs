@@ -7,21 +7,36 @@ const item = (camera, start, end, severity = "alert", label = "person") => ({
   severity, data: { objects: [label] },
 });
 
-test("overlapping courtyard angles form one group and preserve both source records", () => {
+test("primary alert and secondary detections form one four-angle incident", () => {
   const grouped = groupReviewItems([
-    item("common_camera02", 105, 120), item("common_camera01", 100, 110),
+    item("cam1_ds_i202", 98, 109, "detection"),
+    item("common_camera02", 105, 120),
+    item("common_camera01", 100, 110, "detection"),
+    item("common_camera03", 107, 118, "detection"),
   ]);
   assert.equal(grouped.length, 1);
-  assert.deepEqual(grouped[0].items.map((entry) => entry.camera), ["common_camera01", "common_camera02"]);
+  assert.equal(grouped[0].severity, "alert");
+  assert.deepEqual(grouped[0].items.map((entry) => entry.camera),
+    ["cam1_ds_i202", "common_camera01", "common_camera02", "common_camera03"]);
 });
 
-test("different object types, severities, distant times and non-courtyard cameras stay apart", () => {
+test("secondary-only incidents remain detections", () => {
+  const grouped = groupReviewItems([
+    item("common_camera01", 100, 110, "detection"),
+    item("common_camera03", 104, 116, "detection"),
+  ]);
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].severity, "detection");
+});
+
+test("different objects, distant times and non-courtyard cameras stay apart", () => {
   const grouped = groupReviewItems([
     item("common_camera01", 100, 110),
     item("common_camera02", 105, 115, "detection", "car"),
     item("common_camera03", 105, 115, "alert", "dog"),
     item("common_camera02", 300, 310),
     item("common_camera04", 100, 110),
+    item("cam2_ds_i551", 100, 110),
   ]);
   assert.equal(grouped.length, 4);
   assert.ok(grouped.every((group) => group.items.length === 1));

@@ -10,6 +10,16 @@ from pathlib import Path
 
 LABELS = ["person", "car", "truck", "bus", "bicycle", "motorcycle", "cat", "dog"]
 ALIASES = [f"common_camera{i:02d}" for i in range(1, 5)]
+COURTYARD_SECONDARY = ("cam1_ds_i202", "common_camera01", "common_camera03")
+
+
+def _detection_only(camera: dict, default_labels: list[str]) -> None:
+    review = camera.setdefault("review", {})
+    review.setdefault("alerts", {})["enabled"] = False
+    detections = review.setdefault("detections", {})
+    labels = detections.get("labels", default_labels)
+    detections["enabled"] = True
+    detections["labels"] = list(dict.fromkeys(["person", *labels]))
 
 
 def add_cameras(source: dict, *, substream: bool = True) -> dict:
@@ -50,9 +60,15 @@ def add_cameras(source: dict, *, substream: bool = True) -> dict:
             "face_recognition": {"enabled": False},
             "live": {"streams": {alias: main}},
         }
-        if alias in cameras and cameras[alias] != camera:
+        previous_camera = copy.deepcopy(camera)
+        if alias in COURTYARD_SECONDARY:
+            _detection_only(camera, LABELS[1:])
+        if alias in cameras and cameras[alias] not in (previous_camera, camera):
             raise ValueError("An unrelated camera uses a communal alias")
         cameras[alias] = camera
+    if "cam1_ds_i202" in cameras:
+        defaults = result.get("review", {}).get("detections", {}).get("labels", ["cat", "dog"])
+        _detection_only(cameras["cam1_ds_i202"], defaults)
     return result
 
 

@@ -1,9 +1,10 @@
 "use strict";
 
-const CAMERAS = ["common_camera01", "common_camera02", "common_camera03"];
+const CAMERAS = ["common_camera02", "cam1_ds_i202", "common_camera01", "common_camera03"];
 const CAMERA_NAMES = {
+  cam1_ds_i202: "Камера у машины · двор",
   common_camera01: "Камера 01 · навес",
-  common_camera02: "Камера 02 · двор",
+  common_camera02: "Камера 02 · двор · основная тревога",
   common_camera03: "Камера 03 · двор сверху",
 };
 const MAX_GAP_SECONDS = 15;
@@ -21,7 +22,6 @@ function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
     const itemLabels = new Set(item.data?.objects ?? []);
     const itemEnd = Number.isFinite(item.end_time) ? item.end_time : Math.max(item.start_time, nowSeconds);
     const group = [...groups].reverse().find((candidate) =>
-      candidate.severity === item.severity &&
       !candidate.items.some((previous) => previous.camera === item.camera) &&
       item.start_time <= candidate.end + MAX_GAP_SECONDS &&
       item.start_time - candidate.start <= MAX_GROUP_SECONDS &&
@@ -30,6 +30,7 @@ function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
     if (group) {
       group.items.push(item);
       group.end = Math.max(group.end, itemEnd);
+      if (item.severity === "alert") group.severity = "alert";
       for (const label of itemLabels) group.labels.add(label);
     } else {
       groups.push({ start: item.start_time, end: itemEnd, severity: item.severity,
@@ -101,7 +102,9 @@ if (typeof document !== "undefined") {
       heading.append(element("h3", "", `${date}, ${time(group.start)}–${time(group.end)}`));
       const meta = element("div", "incident-meta");
       meta.append(element("span", `pill ${group.severity}`, group.severity === "alert" ? "Тревога" : "Обнаружение"));
-      meta.append(element("span", "", `${cameras.size} ${cameras.size === 1 ? "камера" : "камеры"} · ${group.items.length} записей`));
+      const cameraWord = cameras.size === 1 ? "камера" : cameras.size < 5 ? "камеры" : "камер";
+      const recordWord = group.items.length === 1 ? "запись" : group.items.length < 5 ? "записи" : "записей";
+      meta.append(element("span", "", `${cameras.size} ${cameraWord} · ${group.items.length} ${recordWord}`));
       if (cameras.size > 1) meta.append(element("span", "pill", "Совпали по времени"));
       if (card.classList.contains("reviewed")) meta.append(element("span", "", "Просмотрено"));
       heading.append(meta);

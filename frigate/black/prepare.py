@@ -10,6 +10,34 @@ from pathlib import Path
 
 import yaml
 
+COURTYARD_PRIMARY = "common_camera02"
+COURTYARD_SECONDARY = ("cam1_ds_i202", "common_camera01", "common_camera03")
+
+
+def configure_courtyard_review(source: dict) -> dict:
+    """Keep one person alert and detection review items on overlapping angles."""
+    config = copy.deepcopy(source)
+    cameras = config.get("cameras", {})
+    required = (COURTYARD_PRIMARY, *COURTYARD_SECONDARY)
+    missing = [name for name in required if name not in cameras]
+    if missing:
+        raise ValueError(f"Courtyard cameras are missing: {', '.join(missing)}")
+
+    primary_alerts = cameras[COURTYARD_PRIMARY].setdefault("review", {}).setdefault("alerts", {})
+    primary_alerts["enabled"] = True
+    primary_labels = primary_alerts.get("labels", config.get("review", {}).get("alerts", {}).get("labels", ["person"]))
+    primary_alerts["labels"] = list(dict.fromkeys(["person", *primary_labels]))
+
+    default_detections = config.get("review", {}).get("detections", {}).get("labels", ["cat", "dog"])
+    for name in COURTYARD_SECONDARY:
+        review = cameras[name].setdefault("review", {})
+        review.setdefault("alerts", {})["enabled"] = False
+        detections = review.setdefault("detections", {})
+        labels = detections.get("labels", default_detections)
+        detections["enabled"] = True
+        detections["labels"] = list(dict.fromkeys(["person", *labels]))
+    return config
+
 
 def black_config(source: dict, *, staging: bool = False, cpu: bool = False) -> dict:
     config = copy.deepcopy(source)
@@ -57,6 +85,8 @@ def black_config(source: dict, *, staging: bool = False, cpu: bool = False) -> d
             camera.pop(key, None)
         camera["face_recognition"] = {"enabled": True}
     config["version"] = "0.18-0"
+    if all(name in config["cameras"] for name in (COURTYARD_PRIMARY, *COURTYARD_SECONDARY)):
+        config = configure_courtyard_review(config)
     return config
 
 
@@ -81,11 +111,19 @@ def main() -> None:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--staging", action="store_true")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--courtyard-only", action="store_true",
+                        help="Change only courtyard review alerts/detections in an existing config")
     options = parser.parse_args()
     source = yaml.safe_load(options.source.read_text())
-    converted = black_config(source, staging=options.staging, cpu=options.cpu)
+    if options.courtyard_only and (options.cpu or options.staging):
+        parser.error("--courtyard-only cannot be combined with --cpu or --staging")
+    converted = configure_courtyard_review(source) if options.courtyard_only else black_config(
+        source, staging=options.staging, cpu=options.cpu)
     write_atomic(options.destination, yaml.safe_dump(converted, sort_keys=False, allow_unicode=True))
-    print(f"Prepared {len(converted['cameras'])} cameras; archive={'disabled' if options.staging else 'White NFS'}")
+    if options.courtyard_only:
+        print("Configured one courtyard alert camera; recording and other cameras unchanged")
+    else:
+        print(f"Prepared {len(converted['cameras'])} cameras; archive={'disabled' if options.staging else 'White NFS'}")
 
 
 if __name__ == "__main__":
