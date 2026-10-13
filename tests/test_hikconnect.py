@@ -69,6 +69,13 @@ class CameraTests(unittest.TestCase):
             self.assertTrue(result["cameras"][name]["review"]["alerts"]["enabled"])
         self.assertEqual(result, CONFIG.add_cameras(result))
 
+    def test_existing_angle_keeps_unrestricted_detection_default(self):
+        source = {"version": "0.18-0", "cameras": {"cam1_ds_i202": {}}}
+        result = CONFIG.add_cameras(source)
+        detections = result["cameras"]["cam1_ds_i202"]["review"]["detections"]
+        self.assertTrue(detections["enabled"])
+        self.assertNotIn("labels", detections)
+
     def test_main_fallback_and_alias_conflicts(self):
         source = {"version": "0.18-0", "cameras": {"existing": {}}}
         camera = CONFIG.add_cameras(source, substream=False)["cameras"]["common_camera01"]

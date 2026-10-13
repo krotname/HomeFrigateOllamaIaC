@@ -25,17 +25,19 @@ def configure_courtyard_review(source: dict) -> dict:
 
     primary_alerts = cameras[COURTYARD_PRIMARY].setdefault("review", {}).setdefault("alerts", {})
     primary_alerts["enabled"] = True
-    primary_labels = primary_alerts.get("labels", config.get("review", {}).get("alerts", {}).get("labels", ["person"]))
-    primary_alerts["labels"] = list(dict.fromkeys(["person", *primary_labels]))
+    primary_labels = primary_alerts.get("labels", config.get("review", {}).get("alerts", {}).get("labels"))
+    if primary_labels is not None:
+        primary_alerts["labels"] = list(dict.fromkeys(["person", *primary_labels]))
 
-    default_detections = config.get("review", {}).get("detections", {}).get("labels", ["cat", "dog"])
+    default_detections = config.get("review", {}).get("detections", {}).get("labels")
     for name in COURTYARD_SECONDARY:
         review = cameras[name].setdefault("review", {})
         review.setdefault("alerts", {})["enabled"] = False
         detections = review.setdefault("detections", {})
         labels = detections.get("labels", default_detections)
         detections["enabled"] = True
-        detections["labels"] = list(dict.fromkeys(["person", *labels]))
+        if labels is not None:
+            detections["labels"] = list(dict.fromkeys(["person", *labels]))
     return config
 
 

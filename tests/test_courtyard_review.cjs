@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { groupReviewItems, buildMotionSlots } = require("../frigate/black/courtyard-review/app.js");
+const { groupReviewItems, buildMotionSlots, fetchReviewItems } = require("../frigate/black/courtyard-review/app.js");
 
 const item = (camera, start, end, severity = "alert", label = "person") => ({
   id: `${camera}-${start}`, camera, start_time: start, end_time: end,
@@ -66,4 +66,22 @@ test("successive segments from the same camera remain separate source incidents"
     item("common_camera01", 100, 110), item("common_camera01", 113, 125),
   ]);
   assert.equal(grouped.length, 2);
+});
+
+test("a full alert page does not hide supporting detections", async () => {
+  const alerts = Array.from({ length: 500 }, (_, index) =>
+    item("common_camera02", 1000 - index, 1010 - index));
+  const detections = [item("common_camera01", 1000, 1010, "detection")];
+  const calls = [];
+  const result = await fetchReviewItems(async (path) => {
+    const query = new URL(path, "https://frigate.example").searchParams;
+    calls.push(query.get("severity"));
+    if (query.get("severity") === "detection") return detections;
+    return calls.filter((severity) => severity === "alert").length === 1 ? alerts : [];
+  }, 0);
+  assert.equal(result.reviews.length, 501);
+  assert.equal(result.truncated, false);
+  assert.equal(calls.filter((severity) => severity === "alert").length, 2);
+  assert.ok(groupReviewItems(result.reviews).some((group) => group.severity === "alert" &&
+    group.items.some((entry) => entry.camera === "common_camera01")));
 });

@@ -52,8 +52,11 @@ Python environment. Validate the candidate with that installed Frigate version
 before replacement. This operation does not import or run the Black migration.
 It preserves the existing cameras and global settings, adds continuous main
 recording and substream detection at 3 fps, retains recordings/events/snapshots
-for three days, and disables face recognition on the new cameras. People are
-alerts; the selected vehicles and animals are detections. `--main-only` is the
+for three days, and disables face recognition on the new cameras. Courtyard
+camera `common_camera02` creates person alerts; `common_camera01` and
+`common_camera03` provide person detections without duplicate alerts, along with
+the existing `cam1_ds_i202` angle. Street camera `common_camera04` keeps person
+alerts; selected vehicles and animals remain detections. `--main-only` is the
 fallback when a recorder has no working substream.
 
 `verify_runtime.py --seconds 1800 --record-main` checks all eight streams in

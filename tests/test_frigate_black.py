@@ -84,6 +84,18 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.configure_courtyard_review({"cameras": {"common_camera02": {}}})
 
+    def test_unrestricted_detection_labels_remain_unrestricted(self):
+        source = {"cameras": {name: {} for name in
+                  (MODULE.COURTYARD_PRIMARY, *MODULE.COURTYARD_SECONDARY)}}
+        converted = MODULE.configure_courtyard_review(source)
+        for name in MODULE.COURTYARD_SECONDARY:
+            detections = converted["cameras"][name]["review"]["detections"]
+            self.assertTrue(detections["enabled"])
+            self.assertNotIn("labels", detections)
+        source["cameras"]["common_camera01"] = {"review": {"detections": {"labels": None}}}
+        converted = MODULE.configure_courtyard_review(source)
+        self.assertIsNone(converted["cameras"]["common_camera01"]["review"]["detections"]["labels"])
+
     def test_proxy_switch_preserves_auth_and_unrelated_backends(self):
         source = 'auth_basic "home"; proxy_pass https://127.0.0.1:18971; proxy_pass http://127.0.0.1:6800;'
         converted = DEPLOY.proxy_config(source)
