@@ -114,7 +114,7 @@ if (typeof document !== "undefined") {
       return;
     }
     const visible = allGroups.filter((group) => activeFilter === "all" || group.severity === activeFilter);
-    const truncationWarning = isTruncated ? " Достигнут предел 500 записей; ранние события суток могут отсутствовать." : "";
+    const truncationWarning = isTruncated ? " Достигнут предел загрузки; ранние события суток могут отсутствовать." : "";
     if (!visible.length) {
       status.textContent = "За выбранный период событий нет." + truncationWarning;
       return;
