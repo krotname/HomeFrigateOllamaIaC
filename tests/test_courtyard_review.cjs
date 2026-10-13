@@ -1,27 +1,42 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { groupReviewItems, buildMotionSlots } = require("../frigate/black/courtyard-review/app.js");
+const { groupReviewItems, buildMotionSlots, fetchReviewItems } = require("../frigate/black/courtyard-review/app.js");
 
 const item = (camera, start, end, severity = "alert", label = "person") => ({
   id: `${camera}-${start}`, camera, start_time: start, end_time: end,
   severity, data: { objects: [label] },
 });
 
-test("overlapping courtyard angles form one group and preserve both source records", () => {
+test("primary alert and secondary detections form one four-angle incident", () => {
   const grouped = groupReviewItems([
-    item("common_camera02", 105, 120), item("common_camera01", 100, 110),
+    item("cam1_ds_i202", 98, 109, "detection"),
+    item("common_camera02", 105, 120),
+    item("common_camera01", 100, 110, "detection"),
+    item("common_camera03", 107, 118, "detection"),
   ]);
   assert.equal(grouped.length, 1);
-  assert.deepEqual(grouped[0].items.map((entry) => entry.camera), ["common_camera01", "common_camera02"]);
+  assert.equal(grouped[0].severity, "alert");
+  assert.deepEqual(grouped[0].items.map((entry) => entry.camera),
+    ["cam1_ds_i202", "common_camera01", "common_camera02", "common_camera03"]);
 });
 
-test("different object types, severities, distant times and non-courtyard cameras stay apart", () => {
+test("secondary-only incidents remain detections", () => {
+  const grouped = groupReviewItems([
+    item("common_camera01", 100, 110, "detection"),
+    item("common_camera03", 104, 116, "detection"),
+  ]);
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].severity, "detection");
+});
+
+test("different objects, distant times and non-courtyard cameras stay apart", () => {
   const grouped = groupReviewItems([
     item("common_camera01", 100, 110),
     item("common_camera02", 105, 115, "detection", "car"),
     item("common_camera03", 105, 115, "alert", "dog"),
     item("common_camera02", 300, 310),
     item("common_camera04", 100, 110),
+    item("cam2_ds_i551", 100, 110),
   ]);
   assert.equal(grouped.length, 4);
   assert.ok(grouped.every((group) => group.items.length === 1));
@@ -51,4 +66,22 @@ test("successive segments from the same camera remain separate source incidents"
     item("common_camera01", 100, 110), item("common_camera01", 113, 125),
   ]);
   assert.equal(grouped.length, 2);
+});
+
+test("a full alert page does not hide supporting detections", async () => {
+  const alerts = Array.from({ length: 500 }, (_, index) =>
+    item("common_camera02", 1000 - index, 1010 - index));
+  const detections = [item("common_camera01", 1000, 1010, "detection")];
+  const calls = [];
+  const result = await fetchReviewItems(async (path) => {
+    const query = new URL(path, "https://frigate.example").searchParams;
+    calls.push(query.get("severity"));
+    if (query.get("severity") === "detection") return detections;
+    return calls.filter((severity) => severity === "alert").length === 1 ? alerts : [];
+  }, 0);
+  assert.equal(result.reviews.length, 501);
+  assert.equal(result.truncated, false);
+  assert.equal(calls.filter((severity) => severity === "alert").length, 2);
+  assert.ok(groupReviewItems(result.reviews).some((group) => group.severity === "alert" &&
+    group.items.some((entry) => entry.camera === "common_camera01")));
 });

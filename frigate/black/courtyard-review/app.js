@@ -1,13 +1,16 @@
 "use strict";
 
-const CAMERAS = ["common_camera01", "common_camera02", "common_camera03"];
+const CAMERAS = ["common_camera02", "cam1_ds_i202", "common_camera01", "common_camera03"];
 const CAMERA_NAMES = {
+  cam1_ds_i202: "Камера у машины · двор",
   common_camera01: "Камера 01 · навес",
-  common_camera02: "Камера 02 · двор",
+  common_camera02: "Камера 02 · двор · основная тревога",
   common_camera03: "Камера 03 · двор сверху",
 };
 const MAX_GAP_SECONDS = 15;
 const MAX_GROUP_SECONDS = 180;
+const REVIEW_PAGE_SIZE = 500;
+const MAX_REVIEW_PAGES = 20;
 
 function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
   const allowed = new Set(CAMERAS);
@@ -21,7 +24,6 @@ function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
     const itemLabels = new Set(item.data?.objects ?? []);
     const itemEnd = Number.isFinite(item.end_time) ? item.end_time : Math.max(item.start_time, nowSeconds);
     const group = [...groups].reverse().find((candidate) =>
-      candidate.severity === item.severity &&
       !candidate.items.some((previous) => previous.camera === item.camera) &&
       item.start_time <= candidate.end + MAX_GAP_SECONDS &&
       item.start_time - candidate.start <= MAX_GROUP_SECONDS &&
@@ -30,6 +32,7 @@ function groupReviewItems(items, nowSeconds = Date.now() / 1000) {
     if (group) {
       group.items.push(item);
       group.end = Math.max(group.end, itemEnd);
+      if (item.severity === "alert") group.severity = "alert";
       for (const label of itemLabels) group.labels.add(label);
     } else {
       groups.push({ start: item.start_time, end: itemEnd, severity: item.severity,
@@ -48,8 +51,33 @@ function buildMotionSlots(points, nowSeconds = Date.now() / 1000) {
   });
 }
 
+async function fetchReviewItems(getJson, since) {
+  const severityPages = await Promise.all(["alert", "detection"].map(async (severity) => {
+    const items = new Map();
+    let before = Date.now() / 1000 + 1;
+    for (let page = 0; page < MAX_REVIEW_PAGES; page++) {
+      const query = new URLSearchParams({ cameras: CAMERAS.join(","), severity,
+        after: String(since), before: String(before), limit: String(REVIEW_PAGE_SIZE) });
+      const batch = await getJson(`/api/review?${query}`);
+      if (!Array.isArray(batch)) throw new Error("Неожиданный ответ API обзора");
+      for (const item of batch) items.set(item.id, item);
+      if (batch.length < REVIEW_PAGE_SIZE) return { items: [...items.values()], truncated: false };
+      const oldest = Math.min(...batch.map((item) => item.start_time).filter(Number.isFinite));
+      // Include the boundary again so simultaneous camera items are not lost.
+      const nextBefore = oldest + 0.001;
+      if (!Number.isFinite(nextBefore) || nextBefore >= before) {
+        return { items: [...items.values()], truncated: true };
+      }
+      before = nextBefore;
+    }
+    return { items: [...items.values()], truncated: true };
+  }));
+  return { reviews: severityPages.flatMap((page) => page.items),
+    truncated: severityPages.some((page) => page.truncated) };
+}
+
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { groupReviewItems, buildMotionSlots };
+  module.exports = { groupReviewItems, buildMotionSlots, fetchReviewItems };
 }
 
 if (typeof document !== "undefined") {
@@ -86,7 +114,7 @@ if (typeof document !== "undefined") {
       return;
     }
     const visible = allGroups.filter((group) => activeFilter === "all" || group.severity === activeFilter);
-    const truncationWarning = isTruncated ? " Достигнут предел 500 записей; ранние события суток могут отсутствовать." : "";
+    const truncationWarning = isTruncated ? " Достигнут предел загрузки; ранние события суток могут отсутствовать." : "";
     if (!visible.length) {
       status.textContent = "За выбранный период событий нет." + truncationWarning;
       return;
@@ -101,7 +129,9 @@ if (typeof document !== "undefined") {
       heading.append(element("h3", "", `${date}, ${time(group.start)}–${time(group.end)}`));
       const meta = element("div", "incident-meta");
       meta.append(element("span", `pill ${group.severity}`, group.severity === "alert" ? "Тревога" : "Обнаружение"));
-      meta.append(element("span", "", `${cameras.size} ${cameras.size === 1 ? "камера" : "камеры"} · ${group.items.length} записей`));
+      const cameraWord = cameras.size === 1 ? "камера" : cameras.size < 5 ? "камеры" : "камер";
+      const recordWord = group.items.length === 1 ? "запись" : group.items.length < 5 ? "записи" : "записей";
+      meta.append(element("span", "", `${cameras.size} ${cameraWord} · ${group.items.length} ${recordWord}`));
       if (cameras.size > 1) meta.append(element("span", "pill", "Совпали по времени"));
       if (card.classList.contains("reviewed")) meta.append(element("span", "", "Просмотрено"));
       heading.append(meta);
@@ -168,16 +198,15 @@ if (typeof document !== "undefined") {
     loading = true;
     refreshButton.disabled = true;
     const since = Math.floor(Date.now() / 1000) - 86400;
-    const query = new URLSearchParams({ cameras: CAMERAS.join(","), after: String(since), limit: "500" });
     try {
       const [reviewResult, motionResult] = await Promise.allSettled([
-        getJson(`/api/review?${query}`),
+        fetchReviewItems(getJson, since),
         getJson(`/api/review/activity/motion?cameras=${CAMERAS.join(",")}`),
       ]);
-      if (reviewResult.status === "fulfilled" && Array.isArray(reviewResult.value)) {
-        const reviews = reviewResult.value;
+      if (reviewResult.status === "fulfilled") {
+        const { reviews, truncated } = reviewResult.value;
         allGroups = groupReviewItems(reviews);
-        isTruncated = reviews.length === 500;
+        isTruncated = truncated;
         loadError = null;
         document.getElementById("group-count").textContent = String(allGroups.length);
         document.getElementById("source-count").textContent = String(allGroups.reduce((n, group) => n + group.items.length, 0));
