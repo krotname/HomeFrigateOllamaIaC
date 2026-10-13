@@ -59,6 +59,7 @@ if (typeof document !== "undefined") {
   let allGroups = [];
   let activeFilter = "all";
   let isTruncated = false;
+  let loadError = null;
   let loading = false;
 
   const time = (seconds, options = {}) => new Intl.DateTimeFormat("ru-RU", {
@@ -80,6 +81,10 @@ if (typeof document !== "undefined") {
 
   function renderGroups() {
     list.replaceChildren();
+    if (loadError) {
+      status.textContent = loadError;
+      return;
+    }
     const visible = allGroups.filter((group) => activeFilter === "all" || group.severity === activeFilter);
     const truncationWarning = isTruncated ? " Достигнут предел 500 записей; ранние события суток могут отсутствовать." : "";
     if (!visible.length) {
@@ -135,6 +140,8 @@ if (typeof document !== "undefined") {
     chart.replaceChildren();
     if (!points.length) {
       chart.textContent = "Нет данных движения за последний час.";
+      document.getElementById("motion-from").textContent = "—";
+      document.getElementById("motion-to").textContent = "—";
       return;
     }
     const slots = buildMotionSlots(points);
@@ -163,22 +170,38 @@ if (typeof document !== "undefined") {
     const since = Math.floor(Date.now() / 1000) - 86400;
     const query = new URLSearchParams({ cameras: CAMERAS.join(","), after: String(since), limit: "500" });
     try {
-      const [reviews, motion] = await Promise.all([
+      const [reviewResult, motionResult] = await Promise.allSettled([
         getJson(`/api/review?${query}`),
         getJson(`/api/review/activity/motion?cameras=${CAMERAS.join(",")}`),
       ]);
-      if (!Array.isArray(reviews) || !Array.isArray(motion)) throw new Error("Неожиданный ответ API");
-      allGroups = groupReviewItems(reviews);
-      isTruncated = reviews.length === 500;
-      document.getElementById("group-count").textContent = String(allGroups.length);
-      document.getElementById("source-count").textContent = String(allGroups.reduce((n, group) => n + group.items.length, 0));
-      document.getElementById("updated-at").textContent = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date());
-      renderMotion(motion);
-      renderGroups();
-      status.classList.remove("error");
-    } catch (error) {
-      status.textContent = `Не удалось получить события Frigate: ${error.message}`;
-      status.classList.add("error");
+      if (reviewResult.status === "fulfilled" && Array.isArray(reviewResult.value)) {
+        const reviews = reviewResult.value;
+        allGroups = groupReviewItems(reviews);
+        isTruncated = reviews.length === 500;
+        loadError = null;
+        document.getElementById("group-count").textContent = String(allGroups.length);
+        document.getElementById("source-count").textContent = String(allGroups.reduce((n, group) => n + group.items.length, 0));
+        document.getElementById("updated-at").textContent = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+        status.classList.remove("error");
+        renderGroups();
+      } else {
+        const reason = reviewResult.status === "rejected" ? reviewResult.reason : new Error("Неожиданный ответ API");
+        loadError = `Не удалось получить события Frigate: ${reason.message}`;
+        status.classList.add("error");
+        renderGroups();
+      }
+      const motionStatus = document.getElementById("motion-status");
+      if (motionResult.status === "fulfilled" && Array.isArray(motionResult.value)) {
+        renderMotion(motionResult.value);
+        motionStatus.textContent = "";
+        motionStatus.classList.remove("error");
+      } else {
+        const reason = motionResult.status === "rejected" ? motionResult.reason : new Error("Неожиданный ответ API");
+        renderMotion([]);
+        document.getElementById("motion-chart").textContent = "Шкала движения недоступна.";
+        motionStatus.textContent = `Не удалось получить движение Frigate: ${reason.message}`;
+        motionStatus.classList.add("error");
+      }
     } finally {
       loading = false;
       refreshButton.disabled = false;
