@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Двор · общий обзор Frigate</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="/review">← Штатный обзор Frigate</a>
+    <span class="site-name">FRIGATE / ДВОР</span>
+    <button id="refresh" type="button">Обновить</button>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Три ракурса · общая шкала времени</p>
+      <h1>События во дворе</h1>
+      <p>Тревоги и обнаружения с камер 01–03 собраны по времени. Каждый исходный клип остаётся доступен отдельно.</p>
+      <div class="summary" aria-live="polite">
+        <div><strong id="group-count">—</strong><span>временных групп</span></div>
+        <div><strong id="source-count">—</strong><span>записей камер</span></div>
+        <div><strong id="updated-at">—</strong><span>обновлено</span></div>
+      </div>
+    </section>
+
+    <section class="motion" aria-labelledby="motion-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Последний час</p>
+          <h2 id="motion-title">Движение всех трёх камер</h2>
+        </div>
+        <span>30 секунд на столбец</span>
+      </div>
+      <div id="motion-chart" class="motion-chart" role="img" aria-label="Общее движение камер по времени"></div>
+      <div class="motion-axis"><span id="motion-from">—</span><span id="motion-to">—</span></div>
+    </section>
+
+    <section class="events" aria-labelledby="events-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Последние 24 часа</p>
+          <h2 id="events-title">Тревоги и обнаружения</h2>
+        </div>
+        <span id="scope-note">Группировка по времени, не распознавание одного объекта</span>
+      </div>
+      <div class="filters" role="group" aria-label="Тип событий">
+        <button type="button" class="selected" data-filter="all" aria-pressed="true">Все</button>
+        <button type="button" data-filter="alert" aria-pressed="false">Тревоги</button>
+        <button type="button" data-filter="detection" aria-pressed="false">Обнаружения</button>
+      </div>
+      <p id="status" class="status" role="status">Загружаю события…</p>
+      <div id="incident-list" class="incident-list"></div>
+    </section>
+  </main>
+</body>
+</html>
