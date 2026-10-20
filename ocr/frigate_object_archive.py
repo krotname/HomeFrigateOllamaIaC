@@ -267,6 +267,7 @@ def _scan(args):
             fingerprints.setdefault((row["camera"], item["kind"]), []).append(item["fingerprint"])
     detector = Encoder(args.detector, args.gpu, audit=True, wait_for_idle=True)
     encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True, car_model=args.car_model)
+    encoder.bound_car_digest = models["car_model"]
     proof_path = directory / "execution.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
     # A legacy generic result cannot establish which feature model ran.
