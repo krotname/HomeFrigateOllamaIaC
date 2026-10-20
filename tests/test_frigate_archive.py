@@ -11,10 +11,41 @@ from unittest.mock import patch
 
 from ocr.frigate_object_archive import detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
-from ocr.frigate_object_worker import Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
+from ocr.frigate_object_worker import Encoder, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_two_cuda_sessions_account_only_for_their_own_calls(self):
+        session = SimpleNamespace(disable_fallback=lambda: None,
+            get_providers=lambda: ["CUDAExecutionProvider"],
+            get_inputs=lambda: [SimpleNamespace(name="input")], run=lambda *args: ["output"])
+        ort = SimpleNamespace(preload_dlls=lambda: None,
+            SessionOptions=lambda: SimpleNamespace(add_session_config_entry=lambda *args: None),
+            InferenceSession=lambda *args, **kwargs: session)
+        stats = lambda free: {"free_mib": free, "util_percent": 0}
+        detector, encoder = Encoder("detector", "gpu"), Encoder("encoder", "gpu")
+        with patch.dict("sys.modules", {"onnxruntime": ort}), \
+                patch("ocr.frigate_object_worker.wait_for_gpu", side_effect=[stats(x) for x in (6000, 4990, 4280)]), \
+                patch("ocr.frigate_object_worker.gpu_stats", side_effect=[stats(x) for x in (5000, 4990, 4290, 4280, 4270)]), \
+                patch("ocr.frigate_object_worker.time.sleep"):
+            detector.infer(None)
+            encoder.infer(None)
+            detector.infer(None)
+        self.assertEqual(1020, detector.load_mib)
+        self.assertEqual(710, encoder.load_mib)
+
+    def test_profileless_training_is_rejected_without_changing_gallery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                with self.assertRaisesRegex(ValueError, "Negative references require validation"):
+                    store.add_reference("negative", None, "car", "train", [0, 1], group_id="visit")
+                self.assertEqual([], store.refs())
+                store.add_reference("negative", None, "car", "validation", [0, 1], group_id="visit")
+                self.assertEqual(1, len(store.refs()))
+            finally:
+                store.db.close()
+
     def test_padded_encounters_are_one_visit_and_blank_is_uncurated(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
@@ -67,6 +98,9 @@ class ArchiveTests(unittest.TestCase):
             store = Store(root / "gallery")
             try:
                 store.profile("car-a", "car", "Car A")
+                with self.assertRaisesRegex(ValueError, "Negative references require validation"):
+                    import_archive(store, root, filename, None, "train", "visit-negative", model)
+                self.assertEqual([], store.refs())
                 with patch("ocr.frigate_object_worker.Encoder") as encoder:
                     result = import_archive(store, root, filename, "car-a", "train", " visit-a ", model)
                     encoder.assert_not_called()

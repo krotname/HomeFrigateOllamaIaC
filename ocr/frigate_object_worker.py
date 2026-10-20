@@ -186,6 +186,8 @@ class Store:
     def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
+        if not profile_id and role != "validation":
+            raise ValueError("Negative references require validation")
         group_id = encounter_group(group_id)
         group = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=?",
                                 (group_id,)).fetchall() if group_id else []
@@ -405,7 +407,7 @@ class Encoder:
         self.last_run = 0.0
         self.last_used = 0.0
         self.load_mib = 0
-        self.baseline_free = None
+        self.current_load_mib = 0
         self.inference_ms = 0.0
 
     def unload(self):
@@ -422,7 +424,7 @@ class Encoder:
             self.unload()
             raise
         if self.session is None:
-            self.baseline_free = before["free_mib"]
+            self.current_load_mib = self.load_mib = 0
             ort.preload_dlls()
             options = ort.SessionOptions()
             options.intra_op_num_threads = 1
@@ -442,17 +444,22 @@ class Encoder:
             if "CUDAExecutionProvider" not in self.session.get_providers():
                 self.unload()
                 raise RuntimeError("CUDA-only execution was not established")
-            self.load_mib = max(0, before["free_mib"] - gpu_stats(self.gpu_uuid)["free_mib"])
+            loaded = gpu_stats(self.gpu_uuid)
+            self.current_load_mib = self.load_mib = max(0, before["free_mib"] - loaded["free_mib"])
             if self.load_mib > MODEL_BUDGET_MIB:
                 self.unload()
                 raise RuntimeError("GPU model memory budget exceeded")
+            before = loaded
         time.sleep(max(0.0, MIN_INTERVAL - (time.monotonic() - self.last_run)))
         started = time.monotonic()
         output = self.session.run(None, {self.session.get_inputs()[0].name: tensor})[0]
         self.inference_ms = (time.monotonic() - started) * 1000
         self.last_run = self.last_used = time.monotonic()
         after = gpu_stats(self.gpu_uuid)
-        self.load_mib = max(self.load_mib, self.baseline_free - after["free_mib"])
+        # Only account for changes during this session's own call. Another
+        # session may allocate between calls; a lifetime baseline includes it.
+        self.current_load_mib = max(0, self.current_load_mib + before["free_mib"] - after["free_mib"])
+        self.load_mib = max(self.load_mib, self.current_load_mib)
         # This sample includes our own kernels; contention is checked before inference.
         if not gpu_available(after, True, check_utilization=False) or self.load_mib > MODEL_BUDGET_MIB:
             self.unload()
