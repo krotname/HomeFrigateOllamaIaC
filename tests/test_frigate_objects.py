@@ -436,6 +436,41 @@ class IntegrationPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Frigate().event("../config")
 
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_car_snapshot_uses_native_recording_but_cat_keeps_verified_jpeg(self):
+        from PIL import Image
+        def jpeg(size):
+            output = io.BytesIO()
+            Image.new("RGB", size).save(output, format="JPEG")
+            return output.getvalue()
+        small, native = jpeg((352, 288)), jpeg((1920, 1080))
+        for kind in ("car", "cat"):
+            event = {"id": "1-a", "label": kind, "camera": "common_camera02",
+                     "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+            responses = [(small, {"x-frame-time": "20"})] + ([native] if kind == "car" else [])
+            with self.subTest(kind=kind), patch("ocr.frigate_object_worker.request_bytes", side_effect=responses) as request:
+                crop = Frigate().snapshot(event)
+                with Image.open(io.BytesIO(crop)) as image:
+                    self.assertEqual(kind == "car", image.width > 1000)
+                self.assertEqual(2 if kind == "car" else 1, request.call_count)
+                if kind == "car":
+                    self.assertIn("/common_camera02/recordings/20.0/snapshot.jpg?height=1080", request.call_args.args[0])
+                    self.assertTrue(request.call_args.kwargs["bypass_cache"])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_car_recording_requires_matching_event_frame_and_missing_segment_is_retryable(self):
+        event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                 "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+        with patch("ocr.frigate_object_worker.request_bytes", return_value=(b"jpg", {"x-frame-time": "19"})) as request:
+            with self.assertRaises(ValueError):
+                Frigate().snapshot(event)
+            self.assertEqual(1, request.call_count)
+        with patch("ocr.frigate_object_worker.request_bytes", side_effect=[
+                (b"jpg", {"x-frame-time": "20"}), RemoteError(404)]) as request:
+            with self.assertRaises(RemoteError):
+                Frigate().snapshot(event)
+            self.assertEqual(2, request.call_count)
+
     def test_concurrent_enrollment_stops_stale_gallery_write(self):
         with tempfile.TemporaryDirectory() as directory:
             store, other = Store(directory), Store(directory)

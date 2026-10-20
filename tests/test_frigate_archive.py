@@ -326,9 +326,10 @@ class ArchiveTests(unittest.TestCase):
         Image.new("RGB", (640, 480)).save(data, format="JPEG")
         event = {"id": "1-a", "label": "car", "camera": "common_camera02",
                  "data": {"snapshot_frame_time": 10, "box": [.1, .1, .5, .5]}}
-        with patch("ocr.frigate_object_worker.request_bytes", return_value=(data.getvalue(), {"x-frame-time": "10"})) as request:
+        with patch("ocr.frigate_object_worker.request_bytes", side_effect=[
+                (data.getvalue(), {"x-frame-time": "10"}), data.getvalue()]) as request:
             Frigate().snapshot(event)
-        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0]).query)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args_list[0].args[0]).query)
         self.assertEqual(["0"], query["bbox"])
         self.assertNotIn("bounding_box", query)
 

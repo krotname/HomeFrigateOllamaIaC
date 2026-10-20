@@ -384,6 +384,13 @@ class Frigate:
         actual = float(headers.get("x-frame-time", 0))
         if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
+        if event["label"] == "car":
+            # Event JPEGs come from the small detection stream. Use the native
+            # recording at its verified best-frame time, preserving the same
+            # normalized box. An unfinished/missing recording remains retryable.
+            data = request_bytes(self.base + "/" + event["camera"] + "/recordings/"
+                + str(expected) + "/snapshot.jpg?height=1080",
+                limit=8 * 1024 * 1024, timeout=20, bypass_cache=True)
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if image.width * image.height > Image.MAX_IMAGE_PIXELS:
