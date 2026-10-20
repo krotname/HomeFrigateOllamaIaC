@@ -10,10 +10,64 @@ from unittest.mock import patch
 
 from ocr.frigate_object_archive import detections, event_pages, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
-from ocr.frigate_object_worker import Frigate, Store
+from ocr.frigate_object_worker import Frigate, Store, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_sampler_waits_for_stale_utilization_but_never_ignores_contention(self):
+        ready = {"free_mib": 6000, "util_percent": 0}
+        busy = {"free_mib": 6000, "util_percent": 60}
+        with patch("ocr.frigate_object_worker.gpu_stats", side_effect=[busy, ready]), \
+                patch("ocr.frigate_object_worker.time.sleep") as sleep:
+            self.assertEqual(ready, wait_for_gpu("gpu", attempts=3))
+            sleep.assert_called_once_with(.25)
+        with patch("ocr.frigate_object_worker.gpu_stats", return_value=busy) as stats, \
+                patch("ocr.frigate_object_worker.time.sleep"):
+            with self.assertRaises(RuntimeError):
+                wait_for_gpu("gpu", attempts=3)
+            self.assertEqual(3, stats.call_count)
+        with patch("ocr.frigate_object_worker.gpu_stats", return_value={"free_mib": 100, "util_percent": 0}), \
+                patch("ocr.frigate_object_worker.time.sleep") as sleep:
+            with self.assertRaises(RuntimeError):
+                wait_for_gpu("gpu", attempts=3)
+            sleep.assert_not_called()
+
+    def test_events_without_curated_visits_cannot_enable_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                store.profile("car-a", "car", "Car A")
+                for i in range(3):
+                    store.add_reference(f"camera-a-{i}", "car-a", "car", "train", [1, 0])
+                    store.add_reference(f"negative-{i}", None, "car", "validation", [0, 1])
+                for i in range(2):
+                    store.add_reference(f"camera-b-{i}", "car-a", "car", "validation", [1, 0])
+                policy = store.calibrate("car-a")
+                self.assertFalse(policy["enabled"])
+                self.assertEqual("uncurated_encounters", policy["reason"])
+                self.assertEqual({"train": 0, "positive_test": 0, "negative_test": 0}, policy["independent_groups"])
+            finally:
+                store.db.close()
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_resume_rejects_replaced_model_at_same_path(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            model, detector = Path(directory, "encoder.onnx"), Path(directory, "detector.onnx")
+            model.write_bytes(b"model-a")
+            detector.write_bytes(b"detector-a")
+            args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector=str(detector), model=str(model), gpu="gpu")
+            plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
+                "events": [], "coverage": {}, "jobs": []}
+            with patch("ocr.frigate_object_archive.build_plan", return_value=plan):
+                scan(args)
+            model.write_bytes(b"model-b")
+            with self.assertRaisesRegex(ValueError, "original model identities"):
+                scan(args)
+            self.assertEqual("", Path(directory, "results.jsonl").read_text())
+
     def test_sampling_records_gaps_instead_of_claiming_missing_video(self):
         samples, gaps = sample_plan([
             {"start_time": 0, "end_time": 5}, {"start_time": 20, "end_time": 40}], 0, 40, 10)
@@ -68,8 +122,8 @@ class ArchiveTests(unittest.TestCase):
         with patch("ocr.frigate_object_worker.request_bytes", return_value=(data.getvalue(), {"x-frame-time": "10"})) as request:
             Frigate().snapshot(event)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0]).query)
-        self.assertEqual(["0"], query["bounding_box"])
-        self.assertNotIn("bbox", query)
+        self.assertEqual(["0"], query["bbox"])
+        self.assertNotIn("bounding_box", query)
 
     @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
                          "image libraries available in GPU runtime")
@@ -80,7 +134,8 @@ class ArchiveTests(unittest.TestCase):
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
-            with patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"test": "model-a"}), \
+                    patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.request_bytes", side_effect=RemoteError(404, "absent")):
                 scan(args)
             with open(directory + "/report.json", encoding="utf-8") as stream:
@@ -99,7 +154,7 @@ class ArchiveTests(unittest.TestCase):
         image.save(data, format="JPEG")
 
         class FakeEncoder:
-            def __init__(self, *args, audit=False):
+            def __init__(self, *args, audit=False, wait_for_idle=False):
                 self.audit, self.load_mib = audit, 1
             def infer(self, tensor):
                 return None
@@ -120,7 +175,8 @@ class ArchiveTests(unittest.TestCase):
                 "status": "sampled", "crops": [{"kind": "car", "fingerprint": 0}]}) + "\n", encoding="utf-8")
             plan["jobs"].insert(0, {"id": "old", "camera": "common_camera01", "time": 0, "event": None})
             objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9} for kind in ("car", "cat")]
-            with patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"test": "model-a"}), \
+                    patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.Encoder", FakeEncoder), \
                     patch("ocr.frigate_object_archive.request_bytes", return_value=data.getvalue()), \
                     patch("ocr.frigate_object_archive.detections", return_value=objects), \
@@ -130,6 +186,8 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual({"car": 1, "cat": 1}, report["crops"])
             self.assertEqual({"car": 1}, report["budget_skips"])
             self.assertTrue(report["complete"])
+            result = json.loads(Path(directory, "results.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+            self.assertIsNone(result["crops"][0]["group_id"])
 
     def test_encounter_cannot_leak_between_train_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -151,9 +209,9 @@ class ArchiveTests(unittest.TestCase):
                 for n in range(3):
                     store.add_reference(f"train-{n}", "car-a", "car", "train", [1, 0], group_id="one-visit")
                 for n in range(2):
-                    store.add_reference(f"positive-{n}", "car-a", "car", "validation", [1, 0])
+                    store.add_reference(f"positive-{n}", "car-a", "car", "validation", [1, 0], group_id=f"positive-visit-{n}")
                 for n in range(3):
-                    store.add_reference(f"negative-{n}", None, "car", "validation", [0, 1])
+                    store.add_reference(f"negative-{n}", None, "car", "validation", [0, 1], group_id=f"negative-visit-{n}")
                 policy = store.calibrate("car-a")
                 self.assertFalse(policy["enabled"])
                 self.assertEqual(1, policy["independent_groups"]["train"])
@@ -169,7 +227,7 @@ class ArchiveTests(unittest.TestCase):
             db.close()
             store = Store(directory)
             try:
-                self.assertEqual("old", store.refs()[0]["group_id"])
+                self.assertEqual("", store.refs()[0]["group_id"])
                 self.assertEqual([1, 0], store.refs()[0]["vector"])
             finally:
                 store.db.close()

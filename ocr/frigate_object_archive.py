@@ -2,6 +2,7 @@
 
 import argparse
 import bisect
+import hashlib
 import io
 import json
 import math
@@ -12,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from ocr.frigate_caption_worker import RemoteError, request_bytes
-from ocr.frigate_object_worker import CAMERAS, Encoder, Frigate
+from ocr.frigate_object_worker import CAMERAS, MODEL_REVISION, Encoder, Frigate
 
 
 def get_json(path):
@@ -171,6 +172,17 @@ def build_plan(after, before, interval, event_after, max_frames):
             "coverage": coverage, "events": minimal, "jobs": jobs}
 
 
+def model_identity(args):
+    identity = {"feature_revision": MODEL_REVISION}
+    for name in ("model", "detector"):
+        digest = hashlib.sha256()
+        with Path(getattr(args, name)).open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        identity[name] = digest.hexdigest()
+    return identity
+
+
 def scan(args):
     import numpy as np
     from PIL import Image
@@ -178,14 +190,18 @@ def scan(args):
     os.umask(0o077)
     directory = Path(args.output)
     directory.mkdir(parents=True, exist_ok=True)
+    models = model_identity(args)
     plan_path = directory / "plan.json"
     if plan_path.exists():
         plan = json.loads(plan_path.read_text(encoding="utf-8"))
         if (plan["after"], plan["before"], plan["interval"], plan["event_after"]) != (
                 args.after, args.before, args.interval, args.event_after):
             raise ValueError("Resume requires the original time range and interval")
+        if plan.get("models") != models:
+            raise ValueError("Resume requires the original model identities")
     else:
         plan = build_plan(args.after, args.before, args.interval, args.event_after, args.max_frames)
+        plan["models"] = models
         atomic_json(plan_path, plan)
     if len(plan["jobs"]) > args.max_frames:
         raise ValueError("Resume plan exceeds the explicit frame budget")
@@ -200,8 +216,8 @@ def scan(args):
     for row in previous:
         for item in row.get("crops", []):
             fingerprints.setdefault((row["camera"], item["kind"]), []).append(item["fingerprint"])
-    detector = Encoder(args.detector, args.gpu, audit=True)
-    encoder = Encoder(args.model, args.gpu, audit=True)
+    detector = Encoder(args.detector, args.gpu, audit=True, wait_for_idle=True)
+    encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True)
     proof_path = directory / "execution.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
     deadline = time.monotonic() + args.max_seconds
@@ -254,8 +270,8 @@ def scan(args):
                         (directory / filename).write_bytes(buffer.getvalue())
                         row["crops"].append({**item, "image": filename, "vector": vector,
                             "fingerprint": fingerprint, "detail": detail,
-                            "group_id": job["event"]["id"] if job["event"] else
-                                f'{job["camera"]}:{int(job["time"] // 600)}',
+                            # Different events/cameras do not prove different visits.
+                            "group_id": None,
                             "confirmed_profile": None})
                         seen.append(fingerprint)
                         crop_counts[item["kind"]] += 1

@@ -131,7 +131,6 @@ class Store:
         self.db.execute("BEGIN IMMEDIATE")
         if "group_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(refs)")}:
             self.db.execute("ALTER TABLE refs ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
-            self.db.execute("UPDATE refs SET group_id=source")
             # Old thresholds did not check encounter-level independence.
             self.db.execute("UPDATE profiles SET calibration='{}'")
         self.db.commit()
@@ -166,11 +165,11 @@ class Store:
     def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
-        group_id = group_id or source
-        if not isinstance(group_id, str) or not group_id or len(group_id) > 160:
+        group_id = group_id or ""
+        if not isinstance(group_id, str) or len(group_id) > 160:
             raise ValueError("Invalid encounter group")
         group = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=?",
-                                (group_id,)).fetchall()
+                                (group_id,)).fetchall() if group_id else []
         if any(tuple(row) != (profile_id, kind, role) for row in group):
             raise ValueError("An encounter cannot cross identities or train/validation")
         if self.db.execute("SELECT 1 FROM refs WHERE source=?", (source,)).fetchone():
@@ -197,15 +196,17 @@ class Store:
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         policy = calibration(train, positive, negative)
         groups = {
-            "train": {r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"},
-            "positive_test": {r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "validation"},
+            "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
+            "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
             "negative_test": {r["group_id"] for r in refs if r["profile_id"] != identity
-                              and r["kind"] == profile["kind"] and r["role"] == "validation"},
+                              and r["group_id"] and r["kind"] == profile["kind"] and r["role"] == "validation"},
         }
         policy["independent_groups"] = {key: len(value) for key, value in groups.items()}
         if any(len(groups[key]) < required for key, required in
                (("train", 3), ("positive_test", 2), ("negative_test", 3))):
             policy.update(enabled=False, reason="insufficient_independent_encounters")
+        if any(not r["group_id"] for r in refs if r["kind"] == profile["kind"]):
+            policy.update(enabled=False, reason="uncurated_encounters")
         if policy["enabled"]:
             profile["calibration"] = policy
             if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
@@ -283,7 +284,7 @@ class Frigate:
             raise ValueError("Invalid relative object box")
         data, headers = request_bytes(
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
-            + "/snapshot.jpg?crop=0&bounding_box=0&timestamp=0&height=512&quality=90",
+            + "/snapshot.jpg?crop=0&bbox=0&timestamp=0&height=512&quality=90",
             limit=4 * 1024 * 1024, timeout=8, return_headers=True, bypass_cache=True)
         if abs(float(headers.get("x-frame-time", 0)) - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
@@ -347,10 +348,23 @@ def gpu_available(stats, loaded=False, *, check_utilization=True):
             and (not check_utilization or stats["util_percent"] < 25))
 
 
+def wait_for_gpu(uuid, loaded=False, *, attempts=1):
+    for attempt in range(attempts):
+        stats = gpu_stats(uuid)
+        if gpu_available(stats, loaded):
+            return stats
+        if (not gpu_available(stats, loaded, check_utilization=False)
+                or attempt + 1 == attempts):
+            raise RuntimeError("GPU priority/headroom guard")
+        # nvidia-smi may still include a preceding sampler kernel in its window.
+        time.sleep(.25)
+
+
 class Encoder:
-    def __init__(self, model, gpu_uuid, audit=False):
+    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False):
         self.model, self.gpu_uuid = model, gpu_uuid
         self.audit = audit
+        self.wait_for_idle = wait_for_idle
         self.session = None
         self.last_run = 0.0
         self.last_used = 0.0
@@ -365,10 +379,12 @@ class Encoder:
     def infer(self, tensor):
         """Run a prepared tensor under the same CUDA priority and memory guards."""
         import onnxruntime as ort
-        before = gpu_stats(self.gpu_uuid)
-        if not gpu_available(before, self.session is not None):
+        try:
+            before = wait_for_gpu(self.gpu_uuid, self.session is not None,
+                                  attempts=9 if self.wait_for_idle else 1)
+        except RuntimeError:
             self.unload()
-            raise RuntimeError("GPU priority/headroom guard")
+            raise
         if self.session is None:
             self.baseline_free = before["free_mib"]
             ort.preload_dlls()
