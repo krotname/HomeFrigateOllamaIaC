@@ -2,6 +2,8 @@
 
 Run on a server in the existing Frigate runtime, without network or added packages.
 The original graph and weights are preserved; only the documented input is fixed.
+This offline converter does not authenticate, download or deploy its input.
+Validate recognition against the prepared output before enrolling a gallery.
 """
 import argparse
 from pathlib import Path
@@ -17,7 +19,7 @@ def prepare(source, target):
 
     source, target = Path(source), Path(target)
     if source.stat().st_size != SOURCE_BYTES:
-        raise ValueError("Original model size differs from the official manifest")
+        raise ValueError("Input size differs from the expected vehicle export")
     model = onnx.load(str(source))
     if len(model.graph.input) != 1 or model.graph.input[0].name != "input":
         raise ValueError("Unexpected vehicle model input")

@@ -396,6 +396,52 @@ class ArchiveTests(unittest.TestCase):
             result = json.loads(Path(directory, "results.jsonl").read_text(encoding="utf-8").splitlines()[-1])
             self.assertIsNone(result["crops"][0]["group_id"])
 
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_mixed_archive_audits_both_feature_models(self):
+        from PIL import Image
+        from pathlib import Path
+        image = Image.new("RGB", (64, 64))
+        data = io.BytesIO()
+        image.save(data, format="JPEG")
+        audited = []
+
+        class FakeEncoder:
+            def __init__(self, model, *args, audit=False, **kwargs):
+                self.audit, self.load_mib, self.kind = audit, 1, "detector"
+            def infer(self, tensor):
+                return None
+            def encode(self, data, kind="cat"):
+                self.kind = kind
+                return [1., 0.]
+            def audit_providers(self):
+                audited.append(self.kind)
+                return ["CUDAExecutionProvider"]
+            def unload(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
+                max_frames=2, max_seconds=10, max_crops_per_kind=2, detector="d", model="m", car_model="c", gpu="gpu")
+            plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
+                "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
+                                                       "time": 0, "event": None}]}
+            objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9} for kind in ("car", "cat", "car")]
+            # Legacy output does not prove either of the two feature models.
+            Path(directory, "execution.json").write_text(json.dumps({"encoder": ["CUDAExecutionProvider"]}))
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"test": "model-a"}), \
+                    patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
+                    patch("ocr.frigate_object_archive.Encoder", FakeEncoder), \
+                    patch("ocr.frigate_object_archive.request_bytes", return_value=data.getvalue()), \
+                    patch("ocr.frigate_object_archive.detections", return_value=objects), \
+                    patch("ocr.frigate_object_archive.crop_image", return_value=(image, 7, 10)):
+                scan(args)
+            report = json.loads(Path(directory, "report.json").read_text())
+            self.assertEqual(["detector", "car", "cat"], audited)
+            self.assertEqual({"car": ["CUDAExecutionProvider"], "cat": ["CUDAExecutionProvider"]},
+                             report["executed_providers"]["encoders"])
+            self.assertNotIn("encoder", report["executed_providers"])
+
     def test_encounter_cannot_leak_between_train_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)

@@ -269,6 +269,8 @@ def _scan(args):
     encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True, car_model=args.car_model)
     proof_path = directory / "execution.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
+    # A legacy generic result cannot establish which feature model ran.
+    proof.pop("encoder", None)
     deadline = time.monotonic() + args.max_seconds
     pause = None
     try:
@@ -310,9 +312,10 @@ def _scan(args):
                             continue
                         buffer = io.BytesIO()
                         crop.save(buffer, format="JPEG", quality=92)
+                        encoder.audit = item["kind"] not in proof.setdefault("encoders", {})
                         vector = encoder.encode(buffer.getvalue(), item["kind"])
                         if encoder.audit:
-                            proof["encoder"] = encoder.audit_providers()
+                            proof["encoders"][item["kind"]] = encoder.audit_providers()
                             atomic_json(proof_path, proof)
                             encoder.audit = False
                         filename = f'{job["id"]}-{index}-{item["kind"]}.jpg'
