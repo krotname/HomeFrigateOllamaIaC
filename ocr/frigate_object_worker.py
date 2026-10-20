@@ -28,7 +28,9 @@ LOG = logging.getLogger("frigate-objects")
 KINDS = {"cat", "car"}
 CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
            "common_camera02", "common_camera03"}
-MODEL_REVISION = "mobilenetv2-12-gap-v1"
+MODEL_REVISION = "dinov2-small-cls-v1"
+DEFAULT_MODEL = "/models/dinov2-small-cls.onnx"
+FEATURE_DIMENSIONS = 384
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
@@ -37,6 +39,7 @@ POLL_SECONDS = 15
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048
+MIN_VALIDATION_COVERAGE = .75
 
 
 def encounter_group(value, *, required=False):
@@ -64,24 +67,33 @@ def similarity(left, right):
     return sum(x * y for x, y in zip(left, right))
 
 
-def reference_score(vector, references):
-    scores = sorted((similarity(vector, x) for x in references), reverse=True)
+def reference_score(vector, references, groups=None):
+    scores = [similarity(vector, x) for x in references]
+    if groups is not None:
+        encounters = {}
+        for group, score in zip(groups, scores):
+            encounters[group] = max(encounters.get(group, -1.0), score)
+        scores = list(encounters.values())
+    scores.sort(reverse=True)
     return sum(scores[:2]) / min(2, len(scores)) if scores else -1.0
 
 
-def calibration(positive_train, positive_test, negative_test):
+def calibration(positive_train, positive_test, negative_test, train_groups=None):
     """Threshold selection on separate events; these are small-sample checks."""
     counts = {"train": len(positive_train), "positive_test": len(positive_test),
               "negative_test": len(negative_test)}
     if counts["train"] < 3 or counts["positive_test"] < 2 or counts["negative_test"] < 3:
         return {"enabled": False, "reason": "insufficient_separate_examples", **counts}
-    low_positive = min(reference_score(x, positive_train) for x in positive_test)
-    high_negative = max(reference_score(x, positive_train) for x in negative_test)
+    low_positive = min(reference_score(x, positive_train, train_groups) for x in positive_test)
+    high_negative = max(reference_score(x, positive_train, train_groups) for x in negative_test)
     threshold = max(0.85, high_negative + 0.04)
-    enabled = threshold <= min(0.995, low_positive)
+    accepted = sum(reference_score(x, positive_train, train_groups) >= threshold for x in positive_test)
+    coverage = accepted / len(positive_test)
+    enabled = threshold <= .995 and accepted >= 2 and coverage >= MIN_VALIDATION_COVERAGE
     return {"enabled": enabled, "reason": "validated" if enabled else "overlapping_examples",
             "threshold": round(threshold, 6), "margin": 0.06,
-            "lowest_positive": low_positive, "highest_negative": high_negative, **counts}
+            "lowest_positive": low_positive, "highest_negative": high_negative,
+            "accepted_positive": accepted, "positive_coverage": coverage, **counts}
 
 
 def choose(vector, profiles, references, kind):
@@ -89,19 +101,19 @@ def choose(vector, profiles, references, kind):
     for p in profiles:
         if p["kind"] != kind:
             continue
-        train = [r["vector"] for r in references
-                 if r["profile_id"] == p["id"] and r["role"] == "train"]
-        ranked.append((reference_score(vector, train), p))
+        train = [r for r in references if r["profile_id"] == p["id"] and r["role"] == "train"]
+        ranked.append((reference_score(vector, [r["vector"] for r in train],
+                                       [r.get("group_id", str(i)) for i, r in enumerate(train)]), p))
     ranked.sort(key=lambda x: x[0], reverse=True)
     if not ranked:
         return None
     score, profile = ranked[0]
     policy = profile["calibration"]
     runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
-    unknowns = [r["vector"] for r in references
-                if r["kind"] == kind and not r["profile_id"]]
+    unknowns = [r for r in references if r["kind"] == kind and not r["profile_id"]]
     if unknowns:
-        runner_up = max(runner_up, reference_score(vector, unknowns))
+        runner_up = max(runner_up, reference_score(vector, [r["vector"] for r in unknowns],
+                                                  [r.get("group_id", str(i)) for i, r in enumerate(unknowns)]))
     if (not policy.get("enabled") or score < policy["threshold"]
             or score - runner_up < policy["margin"]):
         return None
@@ -152,7 +164,15 @@ class Store:
         for row in dirty:
             self.db.execute("UPDATE refs SET group_id='' WHERE source=?", (row["source"],))
             self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
-        if dirty:
+        # A new feature space cannot reuse thresholds or temporal votes from
+        # older vectors. Keep the sources for explicit re-encoding.
+        stale_kinds = {row[0] for row in self.db.execute(
+            "SELECT DISTINCT kind FROM refs WHERE model!=?", (MODEL_REVISION,))}
+        for kind in stale_kinds:
+            self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        if stale_kinds:
+            self.db.execute("UPDATE events SET status='observing' WHERE status='complete_unknown'")
+        if dirty or stale_kinds:
             self.reset_votes()
         self.db.commit()
 
@@ -193,15 +213,21 @@ class Store:
                                 (group_id,)).fetchall() if group_id else []
         if any(tuple(row) != (profile_id, kind, role) for row in group):
             raise ValueError("An encounter cannot cross identities or train/validation")
-        if self.db.execute("SELECT 1 FROM refs WHERE source=?", (source,)).fetchone():
-            raise ValueError("Source already enrolled; train/test reuse is forbidden")
-        if self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
+        existing = self.db.execute("SELECT * FROM refs WHERE source=?", (source,)).fetchone()
+        if existing:
+            if existing["model"] == MODEL_REVISION:
+                raise ValueError("Source already enrolled; train/test reuse is forbidden")
+            if tuple(existing[key] for key in ("profile_id", "kind", "role", "group_id")) != (
+                    profile_id, kind, role, group_id):
+                raise ValueError("Re-encoding must preserve identity, kind, role and encounter")
+        if not existing and self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
             raise ValueError("Reference gallery is full")
         if profile_id and not self.db.execute(
                 "SELECT 1 FROM profiles WHERE id=? AND kind=?", (profile_id, kind)).fetchone():
             raise ValueError("Unknown profile or wrong object kind")
         self.db.execute("INSERT INTO refs(source,profile_id,kind,role,vector,model,group_id) "
-                        "VALUES(?,?,?,?,?,?,?)", (source, profile_id, kind, role,
+                        "VALUES(?,?,?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET "
+                        "vector=excluded.vector,model=excluded.model", (source, profile_id, kind, role,
                         json.dumps(unit(vector)), MODEL_REVISION, group_id))
         # Changing any gallery entry invalidates thresholds of the same object kind.
         self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
@@ -234,7 +260,8 @@ class Store:
         positive = [r["vector"] for r in refs if r["profile_id"] == identity and r["role"] == "validation"]
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
-        policy = calibration(train, positive, negative)
+        train_groups = [r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"]
+        policy = calibration(train, positive, negative, train_groups)
         groups = {
             "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
             "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
@@ -249,8 +276,24 @@ class Store:
             policy.update(enabled=False, reason="uncurated_encounters")
         if policy["enabled"]:
             profile["calibration"] = policy
-            if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
-                   for vector in positive):
+            held_out = [r for r in refs if r["profile_id"] == identity and r["role"] == "validation"]
+            predictions = [choose(r["vector"], profiles, refs, profile["kind"]) for r in held_out]
+            accepted_groups = {r["group_id"] for r, match in zip(held_out, predictions)
+                               if match and match["id"] == identity}
+            accepted = sum(bool(match) and match["id"] == identity for match in predictions)
+            encounter_results = {}
+            for reference, match in zip(held_out, predictions):
+                results = encounter_results.setdefault(reference["group_id"], [])
+                results.append(bool(match) and match["id"] == identity)
+            # Each encounter has equal weight regardless of its frame count.
+            coverages = [sum(results) / len(results) for results in encounter_results.values()]
+            policy.update(accepted_positive=accepted, positive_coverage=accepted / len(held_out),
+                          accepted_positive_groups=len(accepted_groups),
+                          positive_group_coverage=sum(coverages) / len(coverages))
+            if (any(match and match["id"] != identity for match in predictions)
+                    or len(accepted_groups) < 2
+                    or policy["positive_coverage"] < MIN_VALIDATION_COVERAGE
+                    or policy["positive_group_coverage"] < MIN_VALIDATION_COVERAGE):
                 policy.update(enabled=False, reason="validation_margin_failed")
         self.db.execute("UPDATE profiles SET calibration=? WHERE id=?", (json.dumps(policy), identity))
         self.reset_votes()
@@ -317,7 +360,7 @@ class Frigate:
             raise ValueError("Only cats/cars on the configured property cameras")
         expected = float(event.get("data", {}).get("snapshot_frame_time", 0))
         box = event.get("data", {}).get("box")
-        if not expected or not isinstance(box, list) or len(box) != 4:
+        if not math.isfinite(expected) or expected <= 0 or not isinstance(box, list) or len(box) != 4:
             raise ValueError("No verified snapshot frame/box")
         if (any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in box)
                 or min(box) < 0 or max(box) > 1 or min(box[2:]) <= 0):
@@ -326,7 +369,8 @@ class Frigate:
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
             + "/snapshot.jpg?crop=0&bbox=0&timestamp=0&height=512&quality=90",
             limit=4 * 1024 * 1024, timeout=8, return_headers=True, bypass_cache=True)
-        if abs(float(headers.get("x-frame-time", 0)) - expected) > 0.001:
+        actual = float(headers.get("x-frame-time", 0))
+        if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
@@ -483,7 +527,11 @@ class Encoder:
             array = np.asarray(canvas, dtype=np.float32) / 255.0
         array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
-        return unit(self.infer(tensor).reshape(-1).tolist())
+        vector = self.infer(tensor).reshape(-1)
+        if vector.size != FEATURE_DIMENSIONS:
+            self.unload()
+            raise ValueError("Feature model revision/dimensions do not match")
+        return unit(vector.tolist())
 
     def audit_providers(self):
         if not self.audit or self.session is None:
@@ -534,6 +582,14 @@ def run(store, encoder, api, once=False):
                     if previous and (previous["status"] in {"applied", "protected", "complete_unknown"}
                                      or previous["frame"] == frame):
                         continue
+                    try:
+                        timestamp = float(frame)
+                        if not math.isfinite(timestamp) or timestamp <= 0:
+                            continue
+                        if previous and previous["frame"] and timestamp <= float(previous["frame"]):
+                            continue  # An older best frame cannot supply another confirmation.
+                    except (TypeError, ValueError):
+                        continue
                     if event.get("sub_label"):
                         store.remember(event["id"], frame, [], "protected")
                         continue
@@ -545,8 +601,8 @@ def run(store, encoder, api, once=False):
                     match = choose(vector, profiles, refs, event["label"])
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
-                    # Require two distinct best-frame timestamps, never repeated polls of one JPG.
-                    accepted = match and bool(frame) and votes.count(match["id"]) >= 2
+                    # Require consecutive matches on strictly increasing best-frame timestamps.
+                    accepted = match and bool(frame) and votes[-2:] == [match["id"], match["id"]]
                     if accepted:
                         if store.data_version() != version:
                             break
@@ -614,7 +670,7 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
     row, item = selected
     if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
             or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
-            or len(item["vector"]) != 1280 or len(item["box"]) != 4
+            or len(item["vector"]) != FEATURE_DIMENSIONS or len(item["box"]) != 4
             or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
         raise ValueError("Invalid archive proposal")
     # Stable across renamed directories and sampler frame numbering.
@@ -628,7 +684,7 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
-    parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", "/models/mobilenetv2-gap.onnx"))
+    parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", DEFAULT_MODEL))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")

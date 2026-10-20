@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from ocr.frigate_object_worker import (
-    Encoder, Frigate, Store, calibration, choose, gpu_available, run, unit,
+    Encoder, Frigate, Store, calibration, choose, gpu_available, reference_score, run, unit,
 )
 from ocr.frigate_caption_worker import RemoteError, request_bytes
 
@@ -45,6 +45,25 @@ class MatchingTests(unittest.TestCase):
                 for x, v in (("a", a), ("b", b))]
         self.assertIsNone(choose(a, profiles, refs, "car"))
 
+    def test_calibration_abstains_on_a_difficult_minority_without_lowering_threshold(self):
+        good, bad = unit([1, 0]), unit([0, 1])
+        policy = calibration([good] * 3, [good] * 3 + [bad], [bad] * 3)
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(.85, policy["threshold"])
+        self.assertEqual(.75, policy["positive_coverage"])
+        self.assertFalse(calibration([good] * 3, [good] * 2 + [bad] * 2, [bad] * 3)["enabled"])
+
+    def test_duplicate_views_cannot_supply_two_encounter_scores(self):
+        good, bad = unit([1, 0]), unit([0, 1])
+        self.assertEqual(.5, reference_score(good, [good, bad], ["one", "two"]))
+        self.assertEqual(.5, reference_score(good, [good] * 20 + [bad], ["one"] * 20 + ["two"]))
+        profile = {"id": "a", "label": "A", "kind": "car",
+                   "calibration": {"enabled": True, "threshold": .85, "margin": .06}}
+        refs = [{"profile_id": "a", "kind": "car", "role": "train", "vector": v, "group_id": g}
+                for v, g in [(good, "one"), (good, "one"), (bad, "two"), (bad, "three")]]
+        self.assertIsNone(choose(good, [profile], refs, "car"))
+
+
 
 class StorageTests(unittest.TestCase):
     def setUp(self):
@@ -61,6 +80,58 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_reference("event-one", "cat-a", "cat", "validation", [1, 0])
         self.assertEqual(1, len(self.store.refs()))
+
+    def test_stale_reference_reencoding_replaces_at_capacity_and_invalidates_policy(self):
+        self.store.add_reference("old-frame", "cat-a", "cat", "validation", [1, 0], group_id="visit-a")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        self.store.remember("event-one", "123", ["cat-a"], "observing")
+        with patch("ocr.frigate_object_worker.MAX_REFERENCES", 1):
+            self.store.add_reference("old-frame", "cat-a", "cat", "validation", [0, 1], group_id="visit-a")
+        reference = self.store.refs()[0]
+        self.assertEqual(1, len(self.store.refs()))
+        self.assertEqual([0, 1], reference["vector"])
+        self.assertEqual(("cat-a", "validation", "visit-a"),
+                         (reference["profile_id"], reference["role"], reference["group_id"]))
+        self.assertEqual({}, self.store.profiles()[0]["calibration"])
+        self.assertEqual("[]", self.store.db.execute("SELECT votes FROM events").fetchone()[0])
+
+    def test_stale_reference_reencoding_cannot_change_identity_role_or_encounter(self):
+        self.store.profile("cat-b", "cat", "Cat B")
+        self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.commit()
+        for profile, role, group in (("cat-b", "train", "visit-b"),
+                                     ("cat-a", "validation", "visit-b"),
+                                     ("cat-a", "train", "visit-b")):
+            with self.assertRaisesRegex(ValueError, "Re-encoding must preserve"):
+                self.store.add_reference("old-frame", profile, "cat", role, [0, 1], group_id=group)
+        row = self.store.db.execute("SELECT model,vector,role,group_id FROM refs").fetchone()
+        self.assertEqual("previous-feature-space", row["model"])
+        self.assertEqual([1, 0], json.loads(row["vector"]))
+        self.assertEqual(("train", "visit-a"), (row["role"], row["group_id"]))
+
+    def test_feature_revision_change_invalidates_thresholds_and_temporal_votes(self):
+        self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
+        self.store.remember("event-one", "123", ["cat-a"], "observing")
+        self.store.remember("previous-unknown", "124", [], "complete_unknown")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        reopened = Store(self.directory.name)
+        try:
+            self.assertEqual([], reopened.refs())
+            self.assertEqual({}, reopened.profiles()[0]["calibration"])
+            event = reopened.db.execute("SELECT * FROM events WHERE id='event-one'").fetchone()
+            self.assertEqual("[]", event["votes"])
+            self.assertEqual("", event["frame"])
+            unknown = reopened.db.execute("SELECT * FROM events WHERE id='previous-unknown'").fetchone()
+            self.assertEqual("observing", unknown["status"])
+            self.assertEqual("", unknown["frame"])
+            self.assertEqual(1, reopened.db.execute("SELECT count(*) FROM refs").fetchone()[0])
+        finally:
+            reopened.db.close()
 
     def test_people_and_wrong_kind_never_enter_gallery(self):
         with self.assertRaises(ValueError):
@@ -144,12 +215,45 @@ class StorageTests(unittest.TestCase):
         self.assertEqual("pending", rows["uncertain"])
         self.assertEqual(3, len(rows))
 
+    def test_dense_easy_visit_cannot_hide_low_coverage_of_other_visits(self):
+        for i in range(3):
+            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0], group_id=f"train-{i}")
+            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1], group_id=f"other-{i}")
+        for i in range(8):
+            self.store.add_reference(f"easy-{i}", "cat-a", "cat", "validation", [1, 0], group_id="easy-visit")
+        for i in range(3):
+            self.store.add_reference(f"hard-{i}", "cat-a", "cat", "validation", [0, 1], group_id=f"hard-{i}")
+        policy = self.store.calibrate("cat-a")
+        self.assertFalse(policy["enabled"])
+        # Frame coverage itself is insufficient here, regardless of frame density.
+        self.assertLess(policy["positive_coverage"], .75)
+        self.store.add_reference("easy-second", "cat-a", "cat", "validation", [1, 0], group_id="easy-second")
+        policy = self.store.calibrate("cat-a")
+        self.assertFalse(policy["enabled"])
+        self.assertEqual(.75, policy["positive_coverage"])
+        self.assertEqual(.4, policy["positive_group_coverage"])
+
     def test_full_uncertain_write_set_blocks_new_pending_before_post(self):
         with patch("ocr.frigate_object_worker.MAX_PENDING", 1):
             self.store.remember("uncertain", "1", [], "pending")
             with self.assertRaises(RuntimeError):
                 self.store.remember("another", "2", [], "pending")
         self.assertIsNone(self.store.db.execute("SELECT id FROM events WHERE id='another'").fetchone())
+
+    def test_one_good_frame_per_hard_visit_does_not_make_dense_validation_pass(self):
+        for i in range(3):
+            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0], group_id=f"train-{i}")
+            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1], group_id=f"other-{i}")
+        for group, count, accepted in (("easy", 100, 100), ("hard-a", 10, 1),
+                                       ("hard-b", 10, 1), ("hard-c", 10, 1)):
+            for i in range(count):
+                self.store.add_reference(f"{group}-{i}", "cat-a", "cat", "validation",
+                                         [1, 0] if i < accepted else [0, 1], group_id=group)
+        policy = self.store.calibrate("cat-a")
+        self.assertFalse(policy["enabled"])
+        self.assertGreater(policy["positive_coverage"], .75)
+        self.assertEqual(4, policy["accepted_positive_groups"])
+        self.assertAlmostEqual(.325, policy["positive_group_coverage"])
 
     def test_stale_scan_cannot_restore_votes_cleared_by_another_connection(self):
         other = Store(self.directory.name)
@@ -161,6 +265,31 @@ class StorageTests(unittest.TestCase):
 
 
 class IntegrationPolicyTests(unittest.TestCase):
+    def test_confirmation_requires_consecutive_matches_on_newer_frames(self):
+        for votes, timestamp, expected in ((["car-a", "car-b"], 2, False),
+                                           (["car-a", None], 2, False),
+                                           ([None, "car-a"], 2, True),
+                                           (["car-a"], .5, False),
+                                           (["car-a"], float("nan"), False)):
+            with self.subTest(votes=votes, timestamp=timestamp), tempfile.TemporaryDirectory() as directory:
+                store = Store(directory)
+                self.addCleanup(store.db.close)
+                store.profile("car-a", "car", "Car A")
+                store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+                store.db.commit()
+                store.remember("1-a", "1", votes, "observing")
+                event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                         "data": {"snapshot_frame_time": timestamp}}
+                api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+                with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
+                    with patch.object(encoder, "encode", return_value=[1, 0]) as inference, patch(
+                            "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
+                        with patch.object(api, "apply", return_value=True) as write:
+                            run(store, encoder, api, once=True)
+                            self.assertEqual(int(expected), write.call_count)
+                            if timestamp < 1 or timestamp != timestamp:
+                                inference.assert_not_called()
+
     def test_old_parked_event_is_included_and_recent_active_event_is_not_duplicated(self):
         api = Frigate()
         parked = {"id": "old-car", "start_time": 1, "data": {"snapshot_frame_time": 2}}
