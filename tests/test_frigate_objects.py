@@ -1,4 +1,7 @@
 import json
+import importlib.util
+import io
+import math
 import tempfile
 import threading
 import unittest
@@ -62,6 +65,41 @@ class MatchingTests(unittest.TestCase):
         refs = [{"profile_id": "a", "kind": "car", "role": "train", "vector": v, "group_id": g}
                 for v, g in [(good, "one"), (good, "one"), (bad, "two"), (bad, "three")]]
         self.assertIsNone(choose(good, [profile], refs, "car"))
+
+    def test_vehicle_scale_keeps_a_safety_gap_to_other_training_identities(self):
+        train = [unit([1, 0])] * 3
+        positive = [unit([.7, math.sqrt(1 - .7 ** 2)])] * 2
+        negative = [unit([0, 1])] * 3
+        self.assertFalse(calibration(train, positive, negative)["enabled"])
+        self.assertTrue(calibration(train, positive, negative, minimum_similarity=.60)["enabled"])
+        lookalike = unit([.68, math.sqrt(1 - .68 ** 2)])
+        result = calibration(train, positive, negative, minimum_similarity=.60,
+                             negative_train=[lookalike])
+        self.assertFalse(result["enabled"])
+        self.assertGreater(result["threshold"], .7)
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_car_rgb_and_cat_normalization_use_separate_models_and_dimensions(self):
+        import numpy as np
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGB", (80, 40), (10, 20, 30)).save(buffer, format="PNG")
+        encoder = Encoder("cat-model", "gpu", car_model="car-model")
+        with patch.object(encoder, "infer", side_effect=[np.ones(512), np.ones(384)]) as infer:
+            self.assertEqual(512, len(encoder.encode(buffer.getvalue(), "car")))
+            car_tensor = infer.call_args.args[0]
+            self.assertEqual((1, 3, 208, 208), car_tensor.shape)
+            self.assertEqual([10., 20., 30.], car_tensor[0, :, 0, 0].tolist())
+            self.assertEqual("car-model", encoder.model)
+            encoder.session = object()
+            self.assertEqual(384, len(encoder.encode(buffer.getvalue(), "cat")))
+            self.assertEqual((1, 3, 224, 224), infer.call_args.args[0].shape)
+            self.assertEqual("cat-model", encoder.model)
+            self.assertIsNone(encoder.session)
+        with patch.object(encoder, "infer", return_value=np.ones(384)):
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                encoder.encode(buffer.getvalue(), "car")
 
 
 
@@ -411,7 +449,8 @@ class IntegrationPolicyTests(unittest.TestCase):
                      "data": {"snapshot_frame_time": 2}}
             api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
 
-            def enroll(_):
+            def enroll(_, kind):
+                self.assertEqual("car", kind)
                 other.add_reference("another-car", None, "car", "validation", [0, 1])
                 return [1, 0]
 

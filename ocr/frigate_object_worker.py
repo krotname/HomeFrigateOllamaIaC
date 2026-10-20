@@ -28,9 +28,11 @@ LOG = logging.getLogger("frigate-objects")
 KINDS = {"cat", "car"}
 CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
            "common_camera02", "common_camera03"}
-MODEL_REVISION = "dinov2-small-cls-v1"
+MODEL_REVISION = "dinov2-cat-vehicle-reid-car-v1"
 DEFAULT_MODEL = "/models/dinov2-small-cls.onnx"
+DEFAULT_CAR_MODEL = "/models/vehicle-reid-0001-static208.onnx"
 FEATURE_DIMENSIONS = 384
+CAR_FEATURE_DIMENSIONS = 512
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
@@ -78,7 +80,8 @@ def reference_score(vector, references, groups=None):
     return sum(scores[:2]) / min(2, len(scores)) if scores else -1.0
 
 
-def calibration(positive_train, positive_test, negative_test, train_groups=None):
+def calibration(positive_train, positive_test, negative_test, train_groups=None,
+                *, minimum_similarity=.85, negative_train=()):
     """Threshold selection on separate events; these are small-sample checks."""
     counts = {"train": len(positive_train), "positive_test": len(positive_test),
               "negative_test": len(negative_test)}
@@ -86,13 +89,16 @@ def calibration(positive_train, positive_test, negative_test, train_groups=None)
         return {"enabled": False, "reason": "insufficient_separate_examples", **counts}
     low_positive = min(reference_score(x, positive_train, train_groups) for x in positive_test)
     high_negative = max(reference_score(x, positive_train, train_groups) for x in negative_test)
-    threshold = max(0.85, high_negative + 0.04)
+    high_training_negative = max((reference_score(x, positive_train, train_groups)
+                                  for x in negative_train), default=-1.0)
+    threshold = max(minimum_similarity, high_negative + 0.04, high_training_negative + 0.08)
     accepted = sum(reference_score(x, positive_train, train_groups) >= threshold for x in positive_test)
     coverage = accepted / len(positive_test)
     enabled = threshold <= .995 and accepted >= 2 and coverage >= MIN_VALIDATION_COVERAGE
     return {"enabled": enabled, "reason": "validated" if enabled else "overlapping_examples",
             "threshold": round(threshold, 6), "margin": 0.06,
             "lowest_positive": low_positive, "highest_negative": high_negative,
+            "highest_training_negative": high_training_negative,
             "accepted_positive": accepted, "positive_coverage": coverage, **counts}
 
 
@@ -261,7 +267,13 @@ class Store:
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         train_groups = [r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"]
-        policy = calibration(train, positive, negative, train_groups)
+        if profile["kind"] == "car":
+            other_train = [r["vector"] for r in refs if r["profile_id"] != identity
+                           and r["kind"] == "car" and r["role"] == "train"]
+            policy = calibration(train, positive, negative, train_groups,
+                                 minimum_similarity=.60, negative_train=other_train)
+        else:
+            policy = calibration(train, positive, negative, train_groups)
         groups = {
             "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
             "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
@@ -445,8 +457,10 @@ def wait_for_gpu(uuid, loaded=False, *, attempts=1):
 
 
 class Encoder:
-    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False):
+    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False,
+                 car_model=DEFAULT_CAR_MODEL):
         self.model, self.gpu_uuid = model, gpu_uuid
+        self.base_model, self.car_model = model, car_model
         self.audit = audit
         self.wait_for_idle = wait_for_idle
         self.session = None
@@ -512,23 +526,34 @@ class Encoder:
             raise RuntimeError("GPU headroom lost during inference")
         return output
 
-    def encode(self, data):
+    def encode(self, data, kind="cat"):
         import numpy as np
         from PIL import Image
 
+        if kind not in KINDS:
+            raise ValueError("Only cat/car feature models are available")
+        selected_model = self.car_model if kind == "car" else self.base_model
+        if self.model != selected_model:
+            self.unload()
+            self.model = selected_model
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if min(image.size) < 40 or image.width * image.height > Image.MAX_IMAGE_PIXELS:
                 raise ValueError("Object crop dimensions outside limits")
             image = image.convert("RGB")
-            image.thumbnail((224, 224), Image.Resampling.BILINEAR)
-            canvas = Image.new("RGB", (224, 224), (124, 116, 104))
-            canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
-            array = np.asarray(canvas, dtype=np.float32) / 255.0
-        array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
+            if kind == "car":
+                # The original RGB OSNet graph includes input InstanceNormalization.
+                image = image.resize((208, 208), Image.Resampling.BILINEAR)
+                array = np.asarray(image, dtype=np.float32)
+            else:
+                image.thumbnail((224, 224), Image.Resampling.BILINEAR)
+                canvas = Image.new("RGB", (224, 224), (124, 116, 104))
+                canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
+                array = np.asarray(canvas, dtype=np.float32) / 255.0
+                array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
         vector = self.infer(tensor).reshape(-1)
-        if vector.size != FEATURE_DIMENSIONS:
+        if vector.size != (CAR_FEATURE_DIMENSIONS if kind == "car" else FEATURE_DIMENSIONS):
             self.unload()
             raise ValueError("Feature model revision/dimensions do not match")
         return unit(vector.tolist())
@@ -597,7 +622,7 @@ def run(store, encoder, api, once=False):
                         image = api.snapshot(event)
                     except (ValueError, OSError, RemoteError):
                         continue  # Unaligned/low-quality samples remain unknown.
-                    vector = encoder.encode(image)
+                    vector = encoder.encode(image, event["label"])
                     match = choose(vector, profiles, refs, event["label"])
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
@@ -637,7 +662,8 @@ def run(store, encoder, api, once=False):
     encoder.unload()
 
 
-def import_archive(store, directory, image, profile_id, role, group_id, model):
+def import_archive(store, directory, image, profile_id, role, group_id, model,
+                   car_model=DEFAULT_CAR_MODEL):
     """Import one explicitly confirmed proposal without inference or label writes."""
     group_id = encounter_group(group_id, required=True)
     directory = Path(directory).resolve(strict=True)
@@ -653,6 +679,12 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
             digest.update(block)
     models = plan.get("models", {})
     if models.get("feature_revision") != MODEL_REVISION or models.get("model") != digest.hexdigest():
+        raise ValueError("Import requires the original feature model identity")
+    digest = hashlib.sha256()
+    with Path(car_model).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    if models.get("car_model") != digest.hexdigest():
         raise ValueError("Import requires the original feature model identity")
     selected = None
     with (directory / "results.jsonl").open(encoding="utf-8") as stream:
@@ -670,7 +702,8 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
     row, item = selected
     if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
             or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
-            or len(item["vector"]) != FEATURE_DIMENSIONS or len(item["box"]) != 4
+            or len(item["vector"]) != (CAR_FEATURE_DIMENSIONS if item.get("kind") == "car" else FEATURE_DIMENSIONS)
+            or len(item["box"]) != 4
             or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
         raise ValueError("Invalid archive proposal")
     # Stable across renamed directories and sampler frame numbering.
@@ -685,6 +718,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
     parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--car-model", default=os.getenv("FRIGATE_OBJECT_CAR_MODEL", DEFAULT_CAR_MODEL))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")
@@ -719,7 +753,7 @@ def main():
     manual.add_argument("--label", required=True)
     args = parser.parse_args()
     store, api = Store(args.state), Frigate()
-    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe")
+    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model)
     try:
         if args.command == "status":
             health = store.directory / "health.json"
@@ -730,7 +764,7 @@ def main():
                     ("source", "profile_id", "kind", "role", "group_id")} for row in store.refs()]
         elif args.command == "import-archive":
             result = import_archive(store, args.archive, args.image, args.profile,
-                                    args.role, args.group, args.model)
+                                    args.role, args.group, args.model, args.car_model)
         elif args.command == "curate":
             store.curate_reference(args.source, args.group, args.role)
             result = {"source": args.source, "group_id": encounter_group(args.group), "curated": True}
@@ -744,7 +778,7 @@ def main():
         elif args.command in {"enroll", "probe"}:
             event = api.event(args.event)
             image = api.snapshot(event)
-            vector = encoder.encode(image)
+            vector = encoder.encode(image, event["label"])
             if args.command == "enroll":
                 store.add_reference(args.event, args.profile, event["label"], args.role, vector,
                                     group_id=args.group)
@@ -754,7 +788,7 @@ def main():
             if args.command == "probe":
                 warm = []
                 for _ in range(3):
-                    encoder.encode(image)
+                    encoder.encode(image, event["label"])
                     warm.append(encoder.inference_ms)
                 result.update(executed_providers=encoder.audit_providers(), warm_inference_ms=warm)
         else:

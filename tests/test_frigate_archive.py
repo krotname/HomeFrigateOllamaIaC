@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from ocr.frigate_object_archive import build_plan, detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
-from ocr.frigate_object_worker import Encoder, FEATURE_DIMENSIONS, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
+from ocr.frigate_object_worker import CAR_FEATURE_DIMENSIONS, Encoder, FEATURE_DIMENSIONS, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
@@ -121,12 +121,13 @@ class ArchiveTests(unittest.TestCase):
             model = root / "model.onnx"
             model.write_bytes(b"model-a")
             (root / "plan.json").write_text(json.dumps({"models": {
-                "feature_revision": MODEL_REVISION, "model": hashlib.sha256(b"model-a").hexdigest()}}))
+                "feature_revision": MODEL_REVISION, "model": hashlib.sha256(b"model-a").hexdigest(),
+                "car_model": hashlib.sha256(b"model-a").hexdigest()}}))
             filename = "frame-00001-0-car.jpg"
             (root / filename).write_bytes(b"crop")
             row = {"id": "frame-00001", "camera": "common_camera02", "time": 10,
                    "status": "sampled", "event": None, "crops": [{"image": filename,
-                   "kind": "car", "vector": [1.] + [0.] * (FEATURE_DIMENSIONS - 1), "box": [.1, .1, .5, .5],
+                   "kind": "car", "vector": [1.] + [0.] * (CAR_FEATURE_DIMENSIONS - 1), "box": [.1, .1, .5, .5],
                    "confirmed_profile": None, "group_id": None}]}
             (root / "results.jsonl").write_text(json.dumps(row) + "\n")
             store = Store(root / "gallery")
@@ -135,14 +136,14 @@ class ArchiveTests(unittest.TestCase):
                 row["crops"][0]["vector"] = [1.] + [0.] * 1279
                 (root / "results.jsonl").write_text(json.dumps(row) + "\n")
                 with self.assertRaisesRegex(ValueError, "Invalid archive proposal"):
-                    import_archive(store, root, filename, "car-a", "train", "visit-a", model)
-                row["crops"][0]["vector"] = [1.] + [0.] * (FEATURE_DIMENSIONS - 1)
+                    import_archive(store, root, filename, "car-a", "train", "visit-a", model, model)
+                row["crops"][0]["vector"] = [1.] + [0.] * (CAR_FEATURE_DIMENSIONS - 1)
                 (root / "results.jsonl").write_text(json.dumps(row) + "\n")
                 with self.assertRaisesRegex(ValueError, "Negative references require validation"):
-                    import_archive(store, root, filename, None, "train", "visit-negative", model)
+                    import_archive(store, root, filename, None, "train", "visit-negative", model, model)
                 self.assertEqual([], store.refs())
                 with patch("ocr.frigate_object_worker.Encoder") as encoder:
-                    result = import_archive(store, root, filename, "car-a", "train", " visit-a ", model)
+                    result = import_archive(store, root, filename, "car-a", "train", " visit-a ", model, model)
                     encoder.assert_not_called()
                 self.assertTrue(result["imported"])
                 self.assertEqual("visit-a", store.refs()[0]["group_id"])
@@ -153,12 +154,12 @@ class ArchiveTests(unittest.TestCase):
                 row["crops"][0]["image"] = renamed
                 (root / "results.jsonl").write_text(json.dumps(row) + "\n")
                 with self.assertRaisesRegex(ValueError, "Source already enrolled"):
-                    import_archive(store, root, renamed, "car-a", "validation", "visit-b", model)
+                    import_archive(store, root, renamed, "car-a", "validation", "visit-b", model, model)
                 model.write_bytes(b"model-b")
                 with self.assertRaisesRegex(ValueError, "original feature model identity"):
-                    import_archive(store, root, renamed, "car-a", "train", "visit-a", model)
+                    import_archive(store, root, renamed, "car-a", "train", "visit-a", model, model)
                 with self.assertRaises(ValueError):
-                    import_archive(store, root, "../" + filename, "car-a", "train", "visit-a", model)
+                    import_archive(store, root, "../" + filename, "car-a", "train", "visit-a", model, model)
                 self.assertEqual(1, len(store.refs()))
             finally:
                 store.db.close()
@@ -169,7 +170,7 @@ class ArchiveTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
-                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", gpu="gpu")
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", car_model="c", gpu="gpu")
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1"}]}
             previous = json.dumps({"id": "f1", "camera": "common_camera01", "status": "sampled",
@@ -264,7 +265,7 @@ class ArchiveTests(unittest.TestCase):
             model.write_bytes(b"model-a")
             detector.write_bytes(b"detector-a")
             args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
-                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector=str(detector), model=str(model), gpu="gpu")
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector=str(detector), model=str(model), car_model=str(model), gpu="gpu")
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": []}
             with patch("ocr.frigate_object_archive.build_plan", return_value=plan):
@@ -336,7 +337,7 @@ class ArchiveTests(unittest.TestCase):
     def test_missing_video_does_not_claim_cuda_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
-                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", gpu="gpu")
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", car_model="c", gpu="gpu")
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
@@ -360,11 +361,11 @@ class ArchiveTests(unittest.TestCase):
         image.save(data, format="JPEG")
 
         class FakeEncoder:
-            def __init__(self, *args, audit=False, wait_for_idle=False):
+            def __init__(self, *args, audit=False, wait_for_idle=False, car_model=None):
                 self.audit, self.load_mib = audit, 1
             def infer(self, tensor):
                 return None
-            def encode(self, data):
+            def encode(self, data, kind="cat"):
                 return [1., 0.]
             def audit_providers(self):
                 return ["CUDAExecutionProvider"]
@@ -373,7 +374,7 @@ class ArchiveTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
-                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", gpu="gpu")
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", car_model="c", gpu="gpu")
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
