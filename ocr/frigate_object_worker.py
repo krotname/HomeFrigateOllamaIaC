@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import time
 import urllib.parse
+from functools import wraps
 from pathlib import Path
 
 from ocr.frigate_caption_worker import RemoteError, request_bytes
@@ -95,6 +96,20 @@ def choose(vector, profiles, references, kind):
     return {"id": profile["id"], "label": profile["label"], "similarity": score}
 
 
+def transaction(method):
+    @wraps(method)
+    def atomic(self, *args, **kwargs):
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            result = method(self, *args, **kwargs)
+            self.db.commit()
+            return result
+        except BaseException:
+            self.db.rollback()
+            raise
+    return atomic
+
+
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory)
@@ -126,6 +141,10 @@ class Store:
     def data_version(self):
         return self.db.execute("PRAGMA data_version").fetchone()[0]
 
+    def reset_votes(self):
+        self.db.execute("UPDATE events SET votes='[]',frame='' WHERE status='observing'")
+
+    @transaction
     def profile(self, identity, kind, label):
         if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", identity) or kind not in KINDS
                 or not 1 <= len(label.strip()) <= 80 or any(ord(x) < 32 for x in label)):
@@ -135,8 +154,9 @@ class Store:
             raise ValueError("Cannot change profile object kind")
         self.db.execute("INSERT INTO profiles(id,kind,label) VALUES(?,?,?) "
                         "ON CONFLICT(id) DO UPDATE SET label=excluded.label", (identity, kind, label))
-        self.db.commit()
+        self.reset_votes()
 
+    @transaction
     def add_reference(self, source, profile_id, kind, role, vector):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
@@ -151,8 +171,9 @@ class Store:
                         (source, profile_id, kind, role, json.dumps(unit(vector)), MODEL_REVISION))
         # Changing any gallery entry invalidates thresholds of the same object kind.
         self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
-        self.db.commit()
+        self.reset_votes()
 
+    @transaction
     def calibrate(self, identity):
         profiles, refs = self.profiles(), self.refs()
         profile = next(p for p in profiles if p["id"] == identity)
@@ -167,10 +188,21 @@ class Store:
                    for vector in positive):
                 policy.update(enabled=False, reason="validation_margin_failed")
         self.db.execute("UPDATE profiles SET calibration=? WHERE id=?", (json.dumps(policy), identity))
-        self.db.commit()
+        self.reset_votes()
         return policy
 
+    @transaction
     def remember(self, event_id, frame, votes, status):
+        self._remember(event_id, frame, votes, status)
+
+    @transaction
+    def remember_current(self, version, event_id, frame, votes, status):
+        if self.data_version() != version:
+            return False
+        self._remember(event_id, frame, votes, status)
+        return True
+
+    def _remember(self, event_id, frame, votes, status):
         if status == "pending" and self.db.execute(
                 "SELECT count(*) FROM events WHERE status='pending' AND id!=?", (event_id,)
         ).fetchone()[0] >= MAX_PENDING:
@@ -181,7 +213,6 @@ class Store:
         self.db.execute("DELETE FROM events WHERE status!='pending' AND updated<?", (time.time() - EVENT_TTL,))
         self.db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE status!='pending' "
                         "ORDER BY updated DESC LIMIT -1 OFFSET ?)", (MAX_EVENTS,))
-        self.db.commit()
 
     def health(self, **value):
         value.update(updated=time.time(), model=MODEL_REVISION,
@@ -248,7 +279,7 @@ class Frigate:
             crop.convert("RGB").save(output, format="JPEG", quality=90)
             return output.getvalue()
 
-    def apply(self, event_id, label, *, manual=False):
+    def apply(self, event_id, label, *, manual=False, before_write=None):
         current = self.event(event_id)
         allowed = KINDS | ({"person"} if manual else set())
         if current["label"] not in allowed or current["camera"] not in CAMERAS:
@@ -261,6 +292,8 @@ class Frigate:
         if existing and existing != label:
             return False  # Preserve native and human labels.
         if not existing:
+            if before_write is not None:
+                before_write()
             self.json("/events/" + event_id + "/sub_label", {"subLabel": label})
         # Native API publishes an asynchronous metadata update; poll GET, never POST.
         for delay in (0, 0.1, 0.2, 0.4, 0.8, 1.6):
@@ -285,8 +318,9 @@ def gpu_stats(uuid):
     return {"free_mib": int(matching[0][1]), "util_percent": int(matching[0][2])}
 
 
-def gpu_available(stats, loaded=False):
-    return stats["free_mib"] >= HEADROOM_MIB + (0 if loaded else MODEL_BUDGET_MIB) and stats["util_percent"] < 25
+def gpu_available(stats, loaded=False, *, check_utilization=True):
+    return (stats["free_mib"] >= HEADROOM_MIB + (0 if loaded else MODEL_BUDGET_MIB)
+            and (not check_utilization or stats["util_percent"] < 25))
 
 
 class Encoder:
@@ -356,7 +390,8 @@ class Encoder:
         self.last_run = self.last_used = time.monotonic()
         after = gpu_stats(self.gpu_uuid)
         self.load_mib = max(self.load_mib, self.baseline_free - after["free_mib"])
-        if not gpu_available(after, True) or self.load_mib > MODEL_BUDGET_MIB:
+        # This sample includes our own kernels; contention is checked before inference.
+        if not gpu_available(after, True, check_utilization=False) or self.load_mib > MODEL_BUDGET_MIB:
             self.unload()
             raise RuntimeError("GPU headroom lost during inference")
         return unit(output.reshape(-1).tolist())
@@ -425,13 +460,20 @@ def run(store, encoder, api, once=False):
                     accepted = match and bool(frame) and votes.count(match["id"]) >= 2
                     if accepted:
                         if store.data_version() != version:
-                            break  # Enrollment/calibration changed through another connection.
-                        store.remember(event["id"], frame, votes, "pending")
-                        success = api.apply(event["id"], match["label"])
+                            break
+
+                        def before_write():
+                            # The authoritative GET may have taken seconds; check again here.
+                            if not store.remember_current(version, event["id"], frame, votes, "pending"):
+                                raise RuntimeError("Gallery changed before label POST")
+
+                        success = api.apply(event["id"], match["label"], before_write=before_write)
                         status = "applied" if success else "protected"
+                        store.remember(event["id"], frame, votes, status)
                     else:
                         status = "complete_unknown" if event.get("end_time") else "observing"
-                    store.remember(event["id"], frame, votes, status)
+                        if not store.remember_current(version, event["id"], frame, votes, status):
+                            break
                 store.health(state="watching", gpu_loaded=encoder.session is not None,
                              gpu_uuid=encoder.gpu_uuid, load_mib=encoder.load_mib,
                              last_inference_ms=encoder.inference_ms)

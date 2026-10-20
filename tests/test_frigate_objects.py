@@ -81,8 +81,44 @@ class StorageTests(unittest.TestCase):
     def test_new_reference_invalidates_old_calibration(self):
         self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
         self.store.db.commit()
+        self.store.remember("active", "1", ["cat-a"], "observing")
+        self.store.remember("uncertain", "1", ["cat-a"], "pending")
         self.store.add_reference("event-four", None, "cat", "validation", [0, 1])
         self.assertFalse(self.store.profiles()[0]["calibration"].get("enabled", False))
+        row = self.store.db.execute("SELECT frame,votes FROM events WHERE id='active'").fetchone()
+        self.assertEqual(("", "[]"), tuple(row))
+        self.assertEqual("pending", self.store.db.execute("SELECT status FROM events WHERE id='uncertain'").fetchone()[0])
+
+    def test_enrollment_cannot_have_its_invalidation_overwritten_by_concurrent_calibration(self):
+        finished, started, errors = threading.Event(), threading.Event(), []
+
+        def enroll():
+            started.set()
+            try:
+                other = Store(self.directory.name)
+                try:
+                    other.add_reference("concurrent", None, "cat", "validation", [0, 1])
+                finally:
+                    other.db.close()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(target=enroll)
+
+        def calibrate(*_):
+            thread.start()
+            self.assertTrue(started.wait(2))
+            finished.wait(.2)
+            return {"enabled": False, "reason": "old_gallery"}
+
+        with patch("ocr.frigate_object_worker.calibration", side_effect=calibrate):
+            self.store.calibrate("cat-a")
+        thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([], errors)
+        self.assertEqual({}, self.store.profiles()[0]["calibration"])
 
     def test_calibration_rejects_held_out_positives_that_fail_runtime_margin(self):
         for i in range(3):
@@ -114,6 +150,14 @@ class StorageTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.store.remember("another", "2", [], "pending")
         self.assertIsNone(self.store.db.execute("SELECT id FROM events WHERE id='another'").fetchone())
+
+    def test_stale_scan_cannot_restore_votes_cleared_by_another_connection(self):
+        other = Store(self.directory.name)
+        self.addCleanup(other.db.close)
+        version = self.store.data_version()
+        other.add_reference("new", None, "cat", "validation", [0, 1])
+        self.assertFalse(self.store.remember_current(version, "active", "1", ["cat-a"], "observing"))
+        self.assertIsNone(self.store.db.execute("SELECT id FROM events WHERE id='active'").fetchone())
 
 
 class IntegrationPolicyTests(unittest.TestCase):
@@ -161,6 +205,10 @@ class IntegrationPolicyTests(unittest.TestCase):
         self.assertTrue(gpu_available({"free_mib": 3500, "util_percent": 0}, loaded=True))
         self.assertFalse(gpu_available({"free_mib": 6000, "util_percent": 25}))
         self.assertFalse(gpu_available({"free_mib": 2000, "util_percent": 0}, loaded=True))
+        self.assertTrue(gpu_available({"free_mib": 3500, "util_percent": 100}, loaded=True,
+                                      check_utilization=False))
+        self.assertFalse(gpu_available({"free_mib": 2000, "util_percent": 100}, loaded=True,
+                                       check_utilization=False))
 
     def test_existing_manual_label_is_preserved_without_post(self):
         api = Frigate()
@@ -207,7 +255,11 @@ class IntegrationPolicyTests(unittest.TestCase):
             with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
                 with patch.object(encoder, "encode", return_value=[1, 0]), patch(
                         "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
-                    with patch.object(api, "apply", side_effect=RuntimeError("Uncertain write")) as write:
+                    def uncertain(*_, before_write=None):
+                        before_write()
+                        raise RuntimeError("Uncertain write")
+
+                    with patch.object(api, "apply", side_effect=uncertain) as write:
                         run(store, encoder, api, once=True)
                         run(store, encoder, api, once=True)
                         self.assertEqual(1, write.call_count)
@@ -260,7 +312,55 @@ class IntegrationPolicyTests(unittest.TestCase):
                             "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
                         with patch.object(api, "apply", return_value=True) as write:
                             run(store, encoder, api, once=True)
-                            write.assert_called_once_with("valid", "Car A")
+                            self.assertEqual(1, write.call_count)
+                            self.assertEqual(("valid", "Car A"), write.call_args.args)
+
+    def test_failed_authoritative_read_can_retry_without_creating_a_pending_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            self.addCleanup(store.db.close)
+            store.profile("car-a", "car", "Car A")
+            store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+            store.db.commit()
+            store.remember("1-a", "1", ["car-a"], "observing")
+            event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                     "data": {"snapshot_frame_time": 2}}
+            saved = {**event, "sub_label": "Car A"}
+            api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+            with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
+                with patch.object(encoder, "encode", return_value=[1, 0]), patch(
+                        "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
+                    with patch.object(api, "json", side_effect=[RemoteError(0), event, {}, saved]) as request:
+                        run(store, encoder, api, once=True)
+                        self.assertEqual("observing", store.db.execute("SELECT status FROM events").fetchone()[0])
+                        run(store, encoder, api, once=True)
+                        self.assertEqual("applied", store.db.execute("SELECT status FROM events").fetchone()[0])
+                        self.assertEqual(1, sum(call.args[0].endswith("/sub_label") for call in request.call_args_list))
+
+    def test_gallery_changed_during_authoritative_read_prevents_post(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, other = Store(directory), Store(directory)
+            self.addCleanup(store.db.close)
+            self.addCleanup(other.db.close)
+            store.profile("car-a", "car", "Car A")
+            store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+            store.db.commit()
+            store.remember("1-a", "1", ["car-a"], "observing")
+            event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                     "data": {"snapshot_frame_time": 2}}
+            api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+
+            def authoritative_read(_):
+                other.add_reference("new", None, "car", "validation", [0, 1])
+                return event
+
+            with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
+                with patch.object(encoder, "encode", return_value=[1, 0]), patch(
+                        "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
+                    with patch.object(api, "json", side_effect=authoritative_read) as request:
+                        run(store, encoder, api, once=True)
+                        self.assertEqual(1, request.call_count)
+                        self.assertEqual("observing", store.db.execute("SELECT status FROM events").fetchone()[0])
 
     def test_unload_releases_reference_to_gpu_session(self):
         encoder = Encoder("/unused", "GPU-unused")
