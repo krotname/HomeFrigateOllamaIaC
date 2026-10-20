@@ -128,6 +128,12 @@ class Store:
                 id TEXT PRIMARY KEY, updated REAL NOT NULL, frame TEXT NOT NULL,
                 votes TEXT NOT NULL, status TEXT NOT NULL);
         """)
+        self.db.execute("BEGIN IMMEDIATE")
+        if "group_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(refs)")}:
+            self.db.execute("ALTER TABLE refs ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
+            self.db.execute("UPDATE refs SET group_id=source")
+            # Old thresholds did not check encounter-level independence.
+            self.db.execute("UPDATE profiles SET calibration='{}'")
         self.db.commit()
 
     def profiles(self):
@@ -157,9 +163,16 @@ class Store:
         self.reset_votes()
 
     @transaction
-    def add_reference(self, source, profile_id, kind, role, vector):
+    def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
+        group_id = group_id or source
+        if not isinstance(group_id, str) or not group_id or len(group_id) > 160:
+            raise ValueError("Invalid encounter group")
+        group = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=?",
+                                (group_id,)).fetchall()
+        if any(tuple(row) != (profile_id, kind, role) for row in group):
+            raise ValueError("An encounter cannot cross identities or train/validation")
         if self.db.execute("SELECT 1 FROM refs WHERE source=?", (source,)).fetchone():
             raise ValueError("Source already enrolled; train/test reuse is forbidden")
         if self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
@@ -167,8 +180,9 @@ class Store:
         if profile_id and not self.db.execute(
                 "SELECT 1 FROM profiles WHERE id=? AND kind=?", (profile_id, kind)).fetchone():
             raise ValueError("Unknown profile or wrong object kind")
-        self.db.execute("INSERT INTO refs VALUES(?,?,?,?,?,?)",
-                        (source, profile_id, kind, role, json.dumps(unit(vector)), MODEL_REVISION))
+        self.db.execute("INSERT INTO refs(source,profile_id,kind,role,vector,model,group_id) "
+                        "VALUES(?,?,?,?,?,?,?)", (source, profile_id, kind, role,
+                        json.dumps(unit(vector)), MODEL_REVISION, group_id))
         # Changing any gallery entry invalidates thresholds of the same object kind.
         self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
         self.reset_votes()
@@ -182,6 +196,16 @@ class Store:
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         policy = calibration(train, positive, negative)
+        groups = {
+            "train": {r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"},
+            "positive_test": {r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "validation"},
+            "negative_test": {r["group_id"] for r in refs if r["profile_id"] != identity
+                              and r["kind"] == profile["kind"] and r["role"] == "validation"},
+        }
+        policy["independent_groups"] = {key: len(value) for key, value in groups.items()}
+        if any(len(groups[key]) < required for key, required in
+               (("train", 3), ("positive_test", 2), ("negative_test", 3))):
+            policy.update(enabled=False, reason="insufficient_independent_encounters")
         if policy["enabled"]:
             profile["calibration"] = policy
             if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
@@ -259,7 +283,7 @@ class Frigate:
             raise ValueError("Invalid relative object box")
         data, headers = request_bytes(
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
-            + "/snapshot.jpg?crop=0&bbox=0&timestamp=0&height=512&quality=90",
+            + "/snapshot.jpg?crop=0&bounding_box=0&timestamp=0&height=512&quality=90",
             limit=4 * 1024 * 1024, timeout=8, return_headers=True, bypass_cache=True)
         if abs(float(headers.get("x-frame-time", 0)) - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
@@ -338,12 +362,9 @@ class Encoder:
         self.session = None
         gc.collect()
 
-    def encode(self, data):
-        import numpy as np
+    def infer(self, tensor):
+        """Run a prepared tensor under the same CUDA priority and memory guards."""
         import onnxruntime as ort
-        from PIL import Image
-
-        Image.MAX_IMAGE_PIXELS = 8_000_000
         before = gpu_stats(self.gpu_uuid)
         if not gpu_available(before, self.session is not None):
             self.unload()
@@ -373,16 +394,6 @@ class Encoder:
             if self.load_mib > MODEL_BUDGET_MIB:
                 self.unload()
                 raise RuntimeError("GPU model memory budget exceeded")
-        with Image.open(io.BytesIO(data)) as image:
-            if min(image.size) < 40 or image.width * image.height > Image.MAX_IMAGE_PIXELS:
-                raise ValueError("Object crop dimensions outside limits")
-            image = image.convert("RGB")
-            image.thumbnail((224, 224), Image.Resampling.BILINEAR)
-            canvas = Image.new("RGB", (224, 224), (124, 116, 104))
-            canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
-            array = np.asarray(canvas, dtype=np.float32) / 255.0
-        array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
-        tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
         time.sleep(max(0.0, MIN_INTERVAL - (time.monotonic() - self.last_run)))
         started = time.monotonic()
         output = self.session.run(None, {self.session.get_inputs()[0].name: tensor})[0]
@@ -394,7 +405,24 @@ class Encoder:
         if not gpu_available(after, True, check_utilization=False) or self.load_mib > MODEL_BUDGET_MIB:
             self.unload()
             raise RuntimeError("GPU headroom lost during inference")
-        return unit(output.reshape(-1).tolist())
+        return output
+
+    def encode(self, data):
+        import numpy as np
+        from PIL import Image
+
+        Image.MAX_IMAGE_PIXELS = 8_000_000
+        with Image.open(io.BytesIO(data)) as image:
+            if min(image.size) < 40 or image.width * image.height > Image.MAX_IMAGE_PIXELS:
+                raise ValueError("Object crop dimensions outside limits")
+            image = image.convert("RGB")
+            image.thumbnail((224, 224), Image.Resampling.BILINEAR)
+            canvas = Image.new("RGB", (224, 224), (124, 116, 104))
+            canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
+            array = np.asarray(canvas, dtype=np.float32) / 255.0
+        array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
+        tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
+        return unit(self.infer(tensor).reshape(-1).tolist())
 
     def audit_providers(self):
         if not self.audit or self.session is None:
@@ -509,6 +537,7 @@ def main():
     enroll.add_argument("--event", required=True)
     enroll.add_argument("--profile")
     enroll.add_argument("--role", choices=["train", "validation"], required=True)
+    enroll.add_argument("--group", help="Shared encounter ID for all cameras/frames of one visit")
     calibrate = commands.add_parser("calibrate")
     calibrate.add_argument("--profile", required=True)
     probe = commands.add_parser("probe")
@@ -536,7 +565,8 @@ def main():
             image = api.snapshot(event)
             vector = encoder.encode(image)
             if args.command == "enroll":
-                store.add_reference(args.event, args.profile, event["label"], args.role, vector)
+                store.add_reference(args.event, args.profile, event["label"], args.role, vector,
+                                    group_id=args.group)
             result = {"event": args.event, "dimensions": len(vector), "provider": "CUDAExecutionProvider",
                       "load_mib": encoder.load_mib, "inference_ms": encoder.inference_ms,
                       "match": choose(vector, store.profiles(), store.refs(), event["label"])}
