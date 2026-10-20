@@ -6,6 +6,7 @@ continuous video inference, external inference service, or notification channel.
 
 import argparse
 import gc
+import hashlib
 import io
 import json
 import logging
@@ -36,6 +37,17 @@ POLL_SECONDS = 15
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048
+
+
+def encounter_group(value, *, required=False):
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Invalid encounter group")
+    value = value.strip()
+    if len(value) > 160 or (required and not value):
+        raise ValueError("A valid curated encounter group is required")
+    return value
 
 
 def unit(vector):
@@ -133,6 +145,15 @@ class Store:
             self.db.execute("ALTER TABLE refs ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
             # Old thresholds did not check encounter-level independence.
             self.db.execute("UPDATE profiles SET calibration='{}'")
+        # Previously padded IDs could inflate independence or cross dataset roles.
+        # Preserve the vectors, but require explicit re-curation of those entries.
+        dirty = [row for row in self.db.execute("SELECT source,kind,group_id FROM refs")
+                 if row["group_id"] != encounter_group(row["group_id"])]
+        for row in dirty:
+            self.db.execute("UPDATE refs SET group_id='' WHERE source=?", (row["source"],))
+            self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
+        if dirty:
+            self.reset_votes()
         self.db.commit()
 
     def profiles(self):
@@ -165,9 +186,7 @@ class Store:
     def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
-        group_id = group_id or ""
-        if not isinstance(group_id, str) or len(group_id) > 160:
-            raise ValueError("Invalid encounter group")
+        group_id = encounter_group(group_id)
         group = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=?",
                                 (group_id,)).fetchall() if group_id else []
         if any(tuple(row) != (profile_id, kind, role) for row in group):
@@ -188,8 +207,7 @@ class Store:
 
     @transaction
     def curate_reference(self, source, group_id, role=None):
-        if not isinstance(group_id, str) or not group_id.strip() or len(group_id) > 160:
-            raise ValueError("A curated encounter group is required")
+        group_id = encounter_group(group_id, required=True)
         row = self.db.execute("SELECT * FROM refs WHERE source=?", (source,)).fetchone()
         if row is None:
             raise ValueError("Reference not found")
@@ -554,6 +572,50 @@ def run(store, encoder, api, once=False):
     encoder.unload()
 
 
+def import_archive(store, directory, image, profile_id, role, group_id, model):
+    """Import one explicitly confirmed proposal without inference or label writes."""
+    group_id = encounter_group(group_id, required=True)
+    directory = Path(directory).resolve(strict=True)
+    if Path(image).name != image or not re.fullmatch(r"frame-[0-9]+-[0-9]+-(cat|car)\.jpg", image):
+        raise ValueError("Select one archive crop filename")
+    crop = (directory / image).resolve(strict=True)
+    if crop.parent != directory or not crop.is_file():
+        raise ValueError("Archive crop must remain inside its directory")
+    plan = json.loads((directory / "plan.json").read_text(encoding="utf-8"))
+    digest = hashlib.sha256()
+    with Path(model).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    models = plan.get("models", {})
+    if models.get("feature_revision") != MODEL_REVISION or models.get("model") != digest.hexdigest():
+        raise ValueError("Import requires the original feature model identity")
+    selected = None
+    with (directory / "results.jsonl").open(encoding="utf-8") as stream:
+        for index, line in enumerate(iter(lambda: stream.readline(1024 * 1024), "")):
+            if index >= 20000 or not line.endswith("\n"):
+                raise ValueError("Archive results are incomplete or exceed the import budget")
+            row = json.loads(line)
+            for item in row.get("crops", []):
+                if item.get("image") == image:
+                    if selected is not None:
+                        raise ValueError("Archive crop occurs more than once")
+                    selected = (row, item)
+    if selected is None:
+        raise ValueError("Archive crop not found in results")
+    row, item = selected
+    if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
+            or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
+            or len(item["vector"]) != 1280 or len(item["box"]) != 4
+            or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
+        raise ValueError("Invalid archive proposal")
+    # Stable across renamed directories and sampler frame numbering.
+    identity = json.dumps([row["camera"], float(row["time"]), item["kind"],
+                           [float(x) for x in item["box"]]], separators=(",", ":"))
+    source = "archive:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    store.add_reference(source, profile_id, item["kind"], role, item["vector"], group_id=group_id)
+    return {"source": source, "image": image, "group_id": group_id, "imported": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
@@ -577,6 +639,12 @@ def main():
     curate.add_argument("--source", required=True)
     curate.add_argument("--group", required=True)
     curate.add_argument("--role", choices=["train", "validation"])
+    archive = commands.add_parser("import-archive")
+    archive.add_argument("--archive", required=True)
+    archive.add_argument("--image", required=True)
+    archive.add_argument("--profile")
+    archive.add_argument("--role", choices=["train", "validation"], required=True)
+    archive.add_argument("--group", required=True)
     calibrate = commands.add_parser("calibrate")
     calibrate.add_argument("--profile", required=True)
     probe = commands.add_parser("probe")
@@ -595,9 +663,12 @@ def main():
             if args.references:
                 result["reference_metadata"] = [{key: row[key] for key in
                     ("source", "profile_id", "kind", "role", "group_id")} for row in store.refs()]
+        elif args.command == "import-archive":
+            result = import_archive(store, args.archive, args.image, args.profile,
+                                    args.role, args.group, args.model)
         elif args.command == "curate":
             store.curate_reference(args.source, args.group, args.role)
-            result = {"source": args.source, "group_id": args.group, "curated": True}
+            result = {"source": args.source, "group_id": encounter_group(args.group), "curated": True}
         elif args.command == "profile":
             store.profile(args.id, args.kind, args.label)
             result = {"profiles": store.profiles()}

@@ -241,6 +241,8 @@ def scan(args):
     if len(done) != len(previous) or not done.issubset({job["id"] for job in plan["jobs"]}):
         raise ValueError("Results contain duplicate or foreign frame IDs")
     crop_counts = Counter(item["kind"] for row in previous for item in row.get("crops", []))
+    if any(count > args.max_crops_per_kind for count in crop_counts.values()):
+        raise ValueError("Resume crop count exceeds the explicit per-kind budget")
     fingerprints = {}
     for row in previous:
         for item in row.get("crops", []):

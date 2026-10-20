@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import io
 import json
 import sqlite3
@@ -10,10 +11,104 @@ from unittest.mock import patch
 
 from ocr.frigate_object_archive import detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
-from ocr.frigate_object_worker import Frigate, Store, wait_for_gpu
+from ocr.frigate_object_worker import Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_padded_encounters_are_one_visit_and_blank_is_uncurated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                store.profile("car-a", "car", "Car A")
+                for index, group in enumerate(("visit-a", "visit-a ", " visit-a  ")):
+                    store.add_reference(str(index), "car-a", "car", "train", [1, 0], group_id=group)
+                self.assertEqual(1, store.calibrate("car-a")["independent_groups"]["train"])
+                with self.assertRaises(ValueError):
+                    store.add_reference("cross-role", "car-a", "car", "validation", [1, 0], group_id=" visit-a ")
+                store.add_reference("blank", "car-a", "car", "train", [1, 0], group_id=" \t ")
+                self.assertEqual("uncurated_encounters", store.calibrate("car-a")["reason"])
+                store.curate_reference("blank", " visit-b ")
+                self.assertEqual("visit-b", next(r for r in store.refs() if r["source"] == "blank")["group_id"])
+            finally:
+                store.db.close()
+
+    def test_existing_padded_encounters_invalidate_cached_calibration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.profile("car-a", "car", "Car A")
+            store.add_reference("old", "car-a", "car", "train", [1, 0], group_id="visit-a")
+            store.db.execute("UPDATE refs SET group_id='visit-a '")
+            store.db.execute("UPDATE profiles SET calibration=?", ('{"enabled":true}',))
+            store.db.commit()
+            store.db.close()
+            store = Store(directory)
+            try:
+                self.assertEqual("", store.refs()[0]["group_id"])
+                self.assertEqual([1, 0], store.refs()[0]["vector"])
+                self.assertEqual({}, store.profiles()[0]["calibration"])
+            finally:
+                store.db.close()
+
+    def test_explicit_archive_import_reuses_vector_and_rejects_duplicate(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model.onnx"
+            model.write_bytes(b"model-a")
+            (root / "plan.json").write_text(json.dumps({"models": {
+                "feature_revision": MODEL_REVISION, "model": hashlib.sha256(b"model-a").hexdigest()}}))
+            filename = "frame-00001-0-car.jpg"
+            (root / filename).write_bytes(b"crop")
+            row = {"id": "frame-00001", "camera": "common_camera02", "time": 10,
+                   "status": "sampled", "event": None, "crops": [{"image": filename,
+                   "kind": "car", "vector": [1.] + [0.] * 1279, "box": [.1, .1, .5, .5],
+                   "confirmed_profile": None, "group_id": None}]}
+            (root / "results.jsonl").write_text(json.dumps(row) + "\n")
+            store = Store(root / "gallery")
+            try:
+                store.profile("car-a", "car", "Car A")
+                with patch("ocr.frigate_object_worker.Encoder") as encoder:
+                    result = import_archive(store, root, filename, "car-a", "train", " visit-a ", model)
+                    encoder.assert_not_called()
+                self.assertTrue(result["imported"])
+                self.assertEqual("visit-a", store.refs()[0]["group_id"])
+                self.assertEqual(row["crops"][0]["vector"], store.refs()[0]["vector"])
+                # Renumbering a proposal must not permit train/validation reuse.
+                renamed = "frame-00002-0-car.jpg"
+                (root / renamed).write_bytes(b"crop")
+                row["crops"][0]["image"] = renamed
+                (root / "results.jsonl").write_text(json.dumps(row) + "\n")
+                with self.assertRaisesRegex(ValueError, "Source already enrolled"):
+                    import_archive(store, root, renamed, "car-a", "validation", "visit-b", model)
+                model.write_bytes(b"model-b")
+                with self.assertRaisesRegex(ValueError, "original feature model identity"):
+                    import_archive(store, root, renamed, "car-a", "train", "visit-a", model)
+                with self.assertRaises(ValueError):
+                    import_archive(store, root, "../" + filename, "car-a", "train", "visit-a", model)
+                self.assertEqual(1, len(store.refs()))
+            finally:
+                store.db.close()
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_resume_rejects_crop_budget_below_saved_count_before_loading_gpu(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=directory, after=0, before=1, interval=1, event_after=0,
+                max_frames=2, max_seconds=10, max_crops_per_kind=1, detector="d", model="m", gpu="gpu")
+            plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
+                "events": [], "coverage": {}, "jobs": [{"id": "f1"}]}
+            previous = json.dumps({"id": "f1", "camera": "common_camera01", "status": "sampled",
+                                   "crops": [{"kind": "car"}, {"kind": "car"}]}) + "\n"
+            Path(directory, "results.jsonl").write_text(previous)
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"test": "model-a"}), \
+                    patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
+                    patch("ocr.frigate_object_archive.Encoder") as encoder:
+                with self.assertRaisesRegex(ValueError, "crop count exceeds"):
+                    scan(args)
+                encoder.assert_not_called()
+            self.assertEqual(previous, Path(directory, "results.jsonl").read_text())
+
     def test_interrupted_tail_is_recovered_but_internal_corruption_is_rejected(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
