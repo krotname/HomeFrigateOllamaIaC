@@ -37,6 +37,7 @@ POLL_SECONDS = 15
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048
+MIN_VALIDATION_COVERAGE = .75
 
 
 def encounter_group(value, *, required=False):
@@ -64,24 +65,33 @@ def similarity(left, right):
     return sum(x * y for x, y in zip(left, right))
 
 
-def reference_score(vector, references):
-    scores = sorted((similarity(vector, x) for x in references), reverse=True)
+def reference_score(vector, references, groups=None):
+    scores = [similarity(vector, x) for x in references]
+    if groups is not None:
+        encounters = {}
+        for group, score in zip(groups, scores):
+            encounters[group] = max(encounters.get(group, -1.0), score)
+        scores = list(encounters.values())
+    scores.sort(reverse=True)
     return sum(scores[:2]) / min(2, len(scores)) if scores else -1.0
 
 
-def calibration(positive_train, positive_test, negative_test):
+def calibration(positive_train, positive_test, negative_test, train_groups=None):
     """Threshold selection on separate events; these are small-sample checks."""
     counts = {"train": len(positive_train), "positive_test": len(positive_test),
               "negative_test": len(negative_test)}
     if counts["train"] < 3 or counts["positive_test"] < 2 or counts["negative_test"] < 3:
         return {"enabled": False, "reason": "insufficient_separate_examples", **counts}
-    low_positive = min(reference_score(x, positive_train) for x in positive_test)
-    high_negative = max(reference_score(x, positive_train) for x in negative_test)
+    low_positive = min(reference_score(x, positive_train, train_groups) for x in positive_test)
+    high_negative = max(reference_score(x, positive_train, train_groups) for x in negative_test)
     threshold = max(0.85, high_negative + 0.04)
-    enabled = threshold <= min(0.995, low_positive)
+    accepted = sum(reference_score(x, positive_train, train_groups) >= threshold for x in positive_test)
+    coverage = accepted / len(positive_test)
+    enabled = threshold <= .995 and accepted >= 2 and coverage >= MIN_VALIDATION_COVERAGE
     return {"enabled": enabled, "reason": "validated" if enabled else "overlapping_examples",
             "threshold": round(threshold, 6), "margin": 0.06,
-            "lowest_positive": low_positive, "highest_negative": high_negative, **counts}
+            "lowest_positive": low_positive, "highest_negative": high_negative,
+            "accepted_positive": accepted, "positive_coverage": coverage, **counts}
 
 
 def choose(vector, profiles, references, kind):
@@ -89,19 +99,19 @@ def choose(vector, profiles, references, kind):
     for p in profiles:
         if p["kind"] != kind:
             continue
-        train = [r["vector"] for r in references
-                 if r["profile_id"] == p["id"] and r["role"] == "train"]
-        ranked.append((reference_score(vector, train), p))
+        train = [r for r in references if r["profile_id"] == p["id"] and r["role"] == "train"]
+        ranked.append((reference_score(vector, [r["vector"] for r in train],
+                                       [r.get("group_id", str(i)) for i, r in enumerate(train)]), p))
     ranked.sort(key=lambda x: x[0], reverse=True)
     if not ranked:
         return None
     score, profile = ranked[0]
     policy = profile["calibration"]
     runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
-    unknowns = [r["vector"] for r in references
-                if r["kind"] == kind and not r["profile_id"]]
+    unknowns = [r for r in references if r["kind"] == kind and not r["profile_id"]]
     if unknowns:
-        runner_up = max(runner_up, reference_score(vector, unknowns))
+        runner_up = max(runner_up, reference_score(vector, [r["vector"] for r in unknowns],
+                                                  [r.get("group_id", str(i)) for i, r in enumerate(unknowns)]))
     if (not policy.get("enabled") or score < policy["threshold"]
             or score - runner_up < policy["margin"]):
         return None
@@ -234,7 +244,8 @@ class Store:
         positive = [r["vector"] for r in refs if r["profile_id"] == identity and r["role"] == "validation"]
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
-        policy = calibration(train, positive, negative)
+        train_groups = [r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"]
+        policy = calibration(train, positive, negative, train_groups)
         groups = {
             "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
             "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
@@ -249,8 +260,18 @@ class Store:
             policy.update(enabled=False, reason="uncurated_encounters")
         if policy["enabled"]:
             profile["calibration"] = policy
-            if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
-                   for vector in positive):
+            held_out = [r for r in refs if r["profile_id"] == identity and r["role"] == "validation"]
+            predictions = [choose(r["vector"], profiles, refs, profile["kind"]) for r in held_out]
+            accepted_groups = {r["group_id"] for r, match in zip(held_out, predictions)
+                               if match and match["id"] == identity}
+            accepted = sum(bool(match) and match["id"] == identity for match in predictions)
+            policy.update(accepted_positive=accepted, positive_coverage=accepted / len(held_out),
+                          accepted_positive_groups=len(accepted_groups),
+                          positive_group_coverage=len(accepted_groups) / len(groups["positive_test"]))
+            if (any(match and match["id"] != identity for match in predictions)
+                    or len(accepted_groups) < 2
+                    or policy["positive_coverage"] < MIN_VALIDATION_COVERAGE
+                    or policy["positive_group_coverage"] < MIN_VALIDATION_COVERAGE):
                 policy.update(enabled=False, reason="validation_margin_failed")
         self.db.execute("UPDATE profiles SET calibration=? WHERE id=?", (json.dumps(policy), identity))
         self.reset_votes()
@@ -317,7 +338,7 @@ class Frigate:
             raise ValueError("Only cats/cars on the configured property cameras")
         expected = float(event.get("data", {}).get("snapshot_frame_time", 0))
         box = event.get("data", {}).get("box")
-        if not expected or not isinstance(box, list) or len(box) != 4:
+        if not math.isfinite(expected) or expected <= 0 or not isinstance(box, list) or len(box) != 4:
             raise ValueError("No verified snapshot frame/box")
         if (any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in box)
                 or min(box) < 0 or max(box) > 1 or min(box[2:]) <= 0):
@@ -326,7 +347,8 @@ class Frigate:
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
             + "/snapshot.jpg?crop=0&bbox=0&timestamp=0&height=512&quality=90",
             limit=4 * 1024 * 1024, timeout=8, return_headers=True, bypass_cache=True)
-        if abs(float(headers.get("x-frame-time", 0)) - expected) > 0.001:
+        actual = float(headers.get("x-frame-time", 0))
+        if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
@@ -534,6 +556,14 @@ def run(store, encoder, api, once=False):
                     if previous and (previous["status"] in {"applied", "protected", "complete_unknown"}
                                      or previous["frame"] == frame):
                         continue
+                    try:
+                        timestamp = float(frame)
+                        if not math.isfinite(timestamp) or timestamp <= 0:
+                            continue
+                        if previous and previous["frame"] and timestamp <= float(previous["frame"]):
+                            continue  # An older best frame cannot supply another confirmation.
+                    except (TypeError, ValueError):
+                        continue
                     if event.get("sub_label"):
                         store.remember(event["id"], frame, [], "protected")
                         continue
@@ -545,8 +575,8 @@ def run(store, encoder, api, once=False):
                     match = choose(vector, profiles, refs, event["label"])
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
-                    # Require two distinct best-frame timestamps, never repeated polls of one JPG.
-                    accepted = match and bool(frame) and votes.count(match["id"]) >= 2
+                    # Require consecutive matches on strictly increasing best-frame timestamps.
+                    accepted = match and bool(frame) and votes[-2:] == [match["id"], match["id"]]
                     if accepted:
                         if store.data_version() != version:
                             break

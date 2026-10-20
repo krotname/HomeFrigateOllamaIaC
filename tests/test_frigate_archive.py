@@ -9,12 +9,21 @@ import urllib.parse
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ocr.frigate_object_archive import detections, event_pages, read_results, recording_spans, sample_plan, scan
+from ocr.frigate_object_archive import build_plan, detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
 from ocr.frigate_object_worker import Encoder, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_null_best_snapshot_still_samples_the_recorded_clip(self):
+        event = {"id": "recorded", "start_time": 10, "end_time": 50, "has_clip": True,
+                 "camera": "common_camera02", "label": "car", "data": {"snapshot_frame_time": None}}
+        with patch("ocr.frigate_object_archive.get_json", return_value=[]), patch(
+                "ocr.frigate_object_archive.event_pages", return_value=[event]):
+            plan = build_plan(0, 60, 300, 0, 10)
+        self.assertEqual([10.5, 40], [job["time"] for job in plan["jobs"]])
+        self.assertEqual(10.5, plan["events"][0]["snapshot_time"])
+
     @unittest.skipUnless(importlib.util.find_spec("fcntl"), "Linux advisory locks")
     def test_archive_output_excludes_overlapping_scans_and_releases_on_exit(self):
         import fcntl

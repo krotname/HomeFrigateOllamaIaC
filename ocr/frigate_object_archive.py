@@ -152,7 +152,9 @@ def build_plan(after, before, interval, event_after, max_frames):
             continue
         start = event["start_time"]
         end = min(event.get("end_time") or before, before)
-        frame_time = event.get("data", {}).get("snapshot_frame_time", start + .5)
+        frame_time = event.get("data", {}).get("snapshot_frame_time")
+        if frame_time is None:
+            frame_time = start + .5
         record = {"id": event["id"], "camera": event["camera"], "kind": event["label"],
                   "start": start, "end": end, "snapshot_time": frame_time,
                   "box": event.get("data", {}).get("box")}
