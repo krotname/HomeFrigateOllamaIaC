@@ -64,6 +64,26 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(1020, detector.load_mib)
         self.assertEqual(710, encoder.load_mib)
 
+    def test_feature_model_switch_preserves_peak_memory_for_archive_report(self):
+        session = SimpleNamespace(disable_fallback=lambda: None,
+            get_providers=lambda: ["CUDAExecutionProvider"],
+            get_inputs=lambda: [SimpleNamespace(name="input")], run=lambda *args: ["output"])
+        ort = SimpleNamespace(preload_dlls=lambda: None,
+            SessionOptions=lambda: SimpleNamespace(add_session_config_entry=lambda *args: None),
+            InferenceSession=lambda *args, **kwargs: session)
+        stats = lambda free: {"free_mib": free, "util_percent": 0}
+        encoder = Encoder("large-model", "gpu")
+        with patch.dict("sys.modules", {"onnxruntime": ort}), \
+                patch("ocr.frigate_object_worker.wait_for_gpu", side_effect=[stats(6000), stats(6000)]), \
+                patch("ocr.frigate_object_worker.gpu_stats", side_effect=[stats(x) for x in (5300, 5300, 5800, 5800)]), \
+                patch("ocr.frigate_object_worker.time.sleep"):
+            encoder.infer(None)
+            encoder.unload()
+            encoder.model = "small-model"
+            encoder.infer(None)
+        self.assertEqual(200, encoder.current_load_mib)
+        self.assertEqual(700, encoder.load_mib)
+
     def test_profileless_training_is_rejected_without_changing_gallery(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
@@ -327,7 +347,8 @@ class ArchiveTests(unittest.TestCase):
         event = {"id": "1-a", "label": "car", "camera": "common_camera02",
                  "data": {"snapshot_frame_time": 10, "box": [.1, .1, .5, .5]}}
         with patch("ocr.frigate_object_worker.request_bytes", side_effect=[
-                (data.getvalue(), {"x-frame-time": "10"}), data.getvalue()]) as request:
+                (data.getvalue(), {"x-frame-time": "10"}), data.getvalue()]) as request, \
+                patch.object(Frigate, "json", return_value=[{"id": "segment", "start_time": 9, "end_time": 11}]):
             Frigate().snapshot(event)
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args_list[0].args[0]).query)
         self.assertEqual(["0"], query["bbox"])

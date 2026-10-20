@@ -63,6 +63,14 @@ def unit(vector):
     return [x / norm for x in values]
 
 
+def model_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def similarity(left, right):
     if len(left) != len(right):
         raise ValueError("Feature dimensions differ")
@@ -157,6 +165,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY, updated REAL NOT NULL, frame TEXT NOT NULL,
                 votes TEXT NOT NULL, status TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS feature_models (
+                kind TEXT PRIMARY KEY, digest TEXT NOT NULL);
         """)
         self.db.execute("BEGIN IMMEDIATE")
         if "group_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(refs)")}:
@@ -195,6 +205,23 @@ class Store:
 
     def reset_votes(self):
         self.db.execute("UPDATE events SET votes='[]',frame='' WHERE status='observing'")
+
+    @transaction
+    def bind_model(self, kind, digest):
+        if kind not in KINDS or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Invalid feature model binding")
+        previous = self.db.execute("SELECT digest FROM feature_models WHERE kind=?", (kind,)).fetchone()
+        if previous and previous[0] == digest:
+            return False
+        # An unbound gallery cannot establish which weights produced its vectors.
+        self.db.execute("UPDATE refs SET model='invalidated:'||model WHERE kind=? AND model=?",
+                        (kind, MODEL_REVISION))
+        self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        self.db.execute("UPDATE events SET status='observing' WHERE status='complete_unknown'")
+        self.reset_votes()
+        self.db.execute("INSERT INTO feature_models(kind,digest) VALUES(?,?) "
+                        "ON CONFLICT(kind) DO UPDATE SET digest=excluded.digest", (kind, digest))
+        return True
 
     @transaction
     def profile(self, identity, kind, label):
@@ -336,6 +363,7 @@ class Store:
 
     def health(self, **value):
         value.update(updated=time.time(), model=MODEL_REVISION,
+                     feature_models=dict(self.db.execute("SELECT kind,digest FROM feature_models")),
                      events=dict(self.db.execute("SELECT status,count(*) FROM events GROUP BY status")))
         pending = self.directory / "health.tmp"
         pending.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
@@ -365,6 +393,17 @@ class Frigate:
         merged = {event["id"]: event for event in recent + active}
         return sorted(merged.values(), key=lambda event: event["start_time"], reverse=True)
 
+    def recording_coverage(self, camera, timestamp):
+        query = urllib.parse.urlencode({"after": timestamp, "before": timestamp})
+        segments = self.json("/" + camera + "/recordings?" + query)
+        if not isinstance(segments, list):
+            raise ValueError("Invalid recording coverage")
+        return {(row["id"], row["start_time"], row["end_time"]) for row in segments
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+                and all(isinstance(row.get(key), (int, float)) and math.isfinite(row[key])
+                        for key in ("start_time", "end_time"))
+                and row["start_time"] <= timestamp <= row["end_time"]}
+
     def snapshot(self, event):
         from PIL import Image
 
@@ -388,9 +427,16 @@ class Frigate:
             # Event JPEGs come from the small detection stream. Use the native
             # recording at its verified best-frame time, preserving the same
             # normalized box. An unfinished/missing recording remains retryable.
+            coverage = self.recording_coverage(event["camera"], expected)
+            if not coverage:
+                raise ValueError("No recording at the exact best-frame timestamp")
             data = request_bytes(self.base + "/" + event["camera"] + "/recordings/"
                 + str(expected) + "/snapshot.jpg?height=1080",
                 limit=8 * 1024 * 1024, timeout=20, bypass_cache=True)
+            # Frigate rounds up across recording gaps. Verify the exact interval
+            # before and after extraction, including retention/deletion races.
+            if not coverage.intersection(self.recording_coverage(event["camera"], expected)):
+                raise ValueError("Recording coverage changed during extraction")
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if image.width * image.height > Image.MAX_IMAGE_PIXELS:
@@ -476,6 +522,16 @@ class Encoder:
         self.load_mib = 0
         self.current_load_mib = 0
         self.inference_ms = 0.0
+        self.bound_car_digest = None
+        self._car_stamp = self._car_digest = None
+
+    def car_model_digest(self):
+        info = Path(self.car_model).stat()
+        stamp = (self.car_model, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if stamp != self._car_stamp:
+            self._car_digest = model_digest(self.car_model)
+            self._car_stamp = stamp
+        return self._car_digest
 
     def unload(self):
         self.session = None
@@ -491,7 +547,7 @@ class Encoder:
             self.unload()
             raise
         if self.session is None:
-            self.current_load_mib = self.load_mib = 0
+            self.current_load_mib = 0
             ort.preload_dlls()
             options = ort.SessionOptions()
             options.intra_op_num_threads = 1
@@ -512,7 +568,8 @@ class Encoder:
                 self.unload()
                 raise RuntimeError("CUDA-only execution was not established")
             loaded = gpu_stats(self.gpu_uuid)
-            self.current_load_mib = self.load_mib = max(0, before["free_mib"] - loaded["free_mib"])
+            self.current_load_mib = max(0, before["free_mib"] - loaded["free_mib"])
+            self.load_mib = max(self.load_mib, self.current_load_mib)
             if self.load_mib > MODEL_BUDGET_MIB:
                 self.unload()
                 raise RuntimeError("GPU model memory budget exceeded")
@@ -539,6 +596,10 @@ class Encoder:
 
         if kind not in KINDS:
             raise ValueError("Only cat/car feature models are available")
+        if (kind == "car" and self.bound_car_digest is not None
+                and self.car_model_digest() != self.bound_car_digest):
+            self.unload()
+            raise RuntimeError("Car model changed before inference; gallery must be rebound")
         selected_model = self.car_model if kind == "car" else self.base_model
         if self.model != selected_model:
             self.unload()
@@ -580,7 +641,15 @@ class Encoder:
             path.unlink(missing_ok=True)
 
 
-def run(store, encoder, api, once=False):
+def bind_car_model(store, encoder):
+    digest = encoder.car_model_digest()
+    if encoder.bound_car_digest != digest:
+        encoder.unload()
+    store.bind_model("car", digest)
+    encoder.bound_car_digest = digest
+
+
+def run(store, encoder, api, once=False, refresh_car_model=None):
     stopping = False
 
     def stop(*_):
@@ -591,6 +660,8 @@ def run(store, encoder, api, once=False):
     signal.signal(signal.SIGINT, stop)
     while not stopping:
         try:
+            if refresh_car_model is not None:
+                refresh_car_model()
             version = store.data_version()
             profiles, refs = store.profiles(), store.refs()
             active = [p for p in profiles if p["calibration"].get("enabled")]
@@ -762,6 +833,8 @@ def main():
     store, api = Store(args.state), Frigate()
     encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model)
     try:
+        if args.command in {"enroll", "probe", "import-archive", "calibrate"}:
+            bind_car_model(store, encoder)
         if args.command == "status":
             health = store.directory / "health.json"
             result = {"profiles": store.profiles(), "references": len(store.refs()),
@@ -799,7 +872,7 @@ def main():
                     warm.append(encoder.inference_ms)
                 result.update(executed_providers=encoder.audit_providers(), warm_inference_ms=warm)
         else:
-            run(store, encoder, api, args.once)
+            run(store, encoder, api, args.once, refresh_car_model=lambda: bind_car_model(store, encoder))
             result = {"stopped": True}
         print(json.dumps(result, ensure_ascii=False))
     finally:

@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from ocr.frigate_object_worker import (
-    Encoder, Frigate, Store, calibration, choose, gpu_available, reference_score, run, unit,
+    Encoder, Frigate, Store, bind_car_model, calibration, choose, gpu_available, reference_score, run, unit,
 )
 from ocr.frigate_caption_worker import RemoteError, request_bytes
 
@@ -118,6 +118,43 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_reference("event-one", "cat-a", "cat", "validation", [1, 0])
         self.assertEqual(1, len(self.store.refs()))
+
+    def test_changed_car_weights_invalidate_only_car_references_and_keep_uncertain_writes(self):
+        self.store.profile("car-a", "car", "Car A")
+        self.store.bind_model("car", "a" * 64)
+        self.store.add_reference("cat-frame", "cat-a", "cat", "train", [1, 0], group_id="cat-visit")
+        self.store.add_reference("car-frame", "car-a", "car", "train", [1, 0], group_id="car-visit")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        self.store.remember("observed", "20", ["car-a"], "observing")
+        self.store.remember("uncertain", "21", ["car-a", "car-a"], "pending")
+        self.assertFalse(self.store.bind_model("car", "a" * 64))
+        self.assertEqual(2, len(self.store.refs()))
+        self.assertTrue(self.store.bind_model("car", "b" * 64))
+        self.assertEqual(["cat-frame"], [r["source"] for r in self.store.refs()])
+        profiles = {p["id"]: p for p in self.store.profiles()}
+        self.assertEqual({}, profiles["car-a"]["calibration"])
+        self.assertTrue(profiles["cat-a"]["calibration"]["enabled"])
+        self.assertEqual("[]", self.store.db.execute("SELECT votes FROM events WHERE id='observed'").fetchone()[0])
+        self.assertEqual("pending", self.store.db.execute("SELECT status FROM events WHERE id='uncertain'").fetchone()[0])
+        self.store.add_reference("car-frame", "car-a", "car", "train", [0, 1], group_id="car-visit")
+        self.assertEqual(2, len(self.store.refs()))
+
+    def test_replaced_car_model_is_rejected_before_inference_and_rebind_discards_old_gallery(self):
+        from pathlib import Path
+        model = Path(self.directory.name, "car.onnx")
+        model.write_bytes(b"old")
+        encoder = Encoder("cat.onnx", "gpu", car_model=str(model))
+        bind_car_model(self.store, encoder)
+        self.store.profile("car-a", "car", "Car A")
+        self.store.add_reference("car-frame", "car-a", "car", "train", [1, 0], group_id="car-visit")
+        model.write_bytes(b"new")
+        # The check precedes image parsing and any GPU session load.
+        if importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"):
+            with self.assertRaisesRegex(RuntimeError, "Car model changed"):
+                encoder.encode(b"unused", "car")
+        bind_car_model(self.store, encoder)
+        self.assertEqual([], self.store.refs())
 
     def test_stale_reference_reencoding_replaces_at_capacity_and_invalidates_policy(self):
         self.store.add_reference("old-frame", "cat-a", "cat", "validation", [1, 0], group_id="visit-a")
@@ -448,7 +485,8 @@ class IntegrationPolicyTests(unittest.TestCase):
             event = {"id": "1-a", "label": kind, "camera": "common_camera02",
                      "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
             responses = [(small, {"x-frame-time": "20"})] + ([native] if kind == "car" else [])
-            with self.subTest(kind=kind), patch("ocr.frigate_object_worker.request_bytes", side_effect=responses) as request:
+            with self.subTest(kind=kind), patch("ocr.frigate_object_worker.request_bytes", side_effect=responses) as request, \
+                    patch.object(Frigate, "json", return_value=[{"id": "segment", "start_time": 19, "end_time": 21}]):
                 crop = Frigate().snapshot(event)
                 with Image.open(io.BytesIO(crop)) as image:
                     self.assertEqual(kind == "car", image.width > 1000)
@@ -466,10 +504,26 @@ class IntegrationPolicyTests(unittest.TestCase):
                 Frigate().snapshot(event)
             self.assertEqual(1, request.call_count)
         with patch("ocr.frigate_object_worker.request_bytes", side_effect=[
-                (b"jpg", {"x-frame-time": "20"}), RemoteError(404)]) as request:
+                (b"jpg", {"x-frame-time": "20"}), RemoteError(404)]) as request, \
+                patch.object(Frigate, "json", return_value=[{"id": "segment", "start_time": 19, "end_time": 21}]):
             with self.assertRaises(RemoteError):
                 Frigate().snapshot(event)
             self.assertEqual(2, request.call_count)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_recording_gaps_and_retention_changes_cannot_supply_a_substituted_frame(self):
+        event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                 "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+        for segments in ([], [{"id": "rounded-up", "start_time": 20.1, "end_time": 21}]):
+            with self.subTest(segments=segments), patch.object(Frigate, "json", return_value=segments), \
+                    patch("ocr.frigate_object_worker.request_bytes", return_value=(b"jpg", {"x-frame-time": "20"})) as request:
+                with self.assertRaisesRegex(ValueError, "exact best-frame"):
+                    Frigate().snapshot(event)
+                self.assertEqual(1, request.call_count)
+        with patch.object(Frigate, "json", side_effect=[[{"id": "expired", "start_time": 19, "end_time": 21}], []]), \
+                patch("ocr.frigate_object_worker.request_bytes", side_effect=[(b"jpg", {"x-frame-time": "20"}), b"native"]):
+            with self.assertRaisesRegex(ValueError, "coverage changed"):
+                Frigate().snapshot(event)
 
     def test_concurrent_enrollment_stops_stale_gallery_write(self):
         with tempfile.TemporaryDirectory() as directory:
