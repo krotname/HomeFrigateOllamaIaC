@@ -122,13 +122,13 @@ class StorageTests(unittest.TestCase):
 
     def test_calibration_rejects_held_out_positives_that_fail_runtime_margin(self):
         for i in range(3):
-            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0])
-            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1])
+            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0], group_id=f"train-visit-{i}")
+            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1], group_id=f"other-visit-{i}")
         for i in range(2):
-            self.store.add_reference(f"test-{i}", "cat-a", "cat", "validation", [1, 0])
+            self.store.add_reference(f"test-{i}", "cat-a", "cat", "validation", [1, 0], group_id=f"test-visit-{i}")
         self.assertTrue(self.store.calibrate("cat-a")["enabled"])
         self.store.profile("cat-b", "cat", "Cat B")
-        self.store.add_reference("close-competitor", "cat-b", "cat", "train", [1, .05])
+        self.store.add_reference("close-competitor", "cat-b", "cat", "train", [1, .05], group_id="competitor-visit")
         policy = self.store.calibrate("cat-a")
         self.assertFalse(policy["enabled"])
         self.assertEqual("validation_margin_failed", policy["reason"])

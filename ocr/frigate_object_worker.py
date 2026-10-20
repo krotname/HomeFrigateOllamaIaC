@@ -6,6 +6,7 @@ continuous video inference, external inference service, or notification channel.
 
 import argparse
 import gc
+import hashlib
 import io
 import json
 import logging
@@ -36,6 +37,17 @@ POLL_SECONDS = 15
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048
+
+
+def encounter_group(value, *, required=False):
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Invalid encounter group")
+    value = value.strip()
+    if len(value) > 160 or (required and not value):
+        raise ValueError("A valid curated encounter group is required")
+    return value
 
 
 def unit(vector):
@@ -128,6 +140,20 @@ class Store:
                 id TEXT PRIMARY KEY, updated REAL NOT NULL, frame TEXT NOT NULL,
                 votes TEXT NOT NULL, status TEXT NOT NULL);
         """)
+        self.db.execute("BEGIN IMMEDIATE")
+        if "group_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(refs)")}:
+            self.db.execute("ALTER TABLE refs ADD COLUMN group_id TEXT NOT NULL DEFAULT ''")
+            # Old thresholds did not check encounter-level independence.
+            self.db.execute("UPDATE profiles SET calibration='{}'")
+        # Previously padded IDs could inflate independence or cross dataset roles.
+        # Preserve the vectors, but require explicit re-curation of those entries.
+        dirty = [row for row in self.db.execute("SELECT source,kind,group_id FROM refs")
+                 if row["group_id"] != encounter_group(row["group_id"])]
+        for row in dirty:
+            self.db.execute("UPDATE refs SET group_id='' WHERE source=?", (row["source"],))
+            self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
+        if dirty:
+            self.reset_votes()
         self.db.commit()
 
     def profiles(self):
@@ -157,9 +183,16 @@ class Store:
         self.reset_votes()
 
     @transaction
-    def add_reference(self, source, profile_id, kind, role, vector):
+    def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
+        if not profile_id and role != "validation":
+            raise ValueError("Negative references require validation")
+        group_id = encounter_group(group_id)
+        group = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=?",
+                                (group_id,)).fetchall() if group_id else []
+        if any(tuple(row) != (profile_id, kind, role) for row in group):
+            raise ValueError("An encounter cannot cross identities or train/validation")
         if self.db.execute("SELECT 1 FROM refs WHERE source=?", (source,)).fetchone():
             raise ValueError("Source already enrolled; train/test reuse is forbidden")
         if self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
@@ -167,10 +200,30 @@ class Store:
         if profile_id and not self.db.execute(
                 "SELECT 1 FROM profiles WHERE id=? AND kind=?", (profile_id, kind)).fetchone():
             raise ValueError("Unknown profile or wrong object kind")
-        self.db.execute("INSERT INTO refs VALUES(?,?,?,?,?,?)",
-                        (source, profile_id, kind, role, json.dumps(unit(vector)), MODEL_REVISION))
+        self.db.execute("INSERT INTO refs(source,profile_id,kind,role,vector,model,group_id) "
+                        "VALUES(?,?,?,?,?,?,?)", (source, profile_id, kind, role,
+                        json.dumps(unit(vector)), MODEL_REVISION, group_id))
         # Changing any gallery entry invalidates thresholds of the same object kind.
         self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        self.reset_votes()
+
+    @transaction
+    def curate_reference(self, source, group_id, role=None):
+        group_id = encounter_group(group_id, required=True)
+        row = self.db.execute("SELECT * FROM refs WHERE source=?", (source,)).fetchone()
+        if row is None:
+            raise ValueError("Reference not found")
+        role = role or row["role"]
+        if role not in {"train", "validation"}:
+            raise ValueError("Invalid reference role")
+        if not row["profile_id"] and role != "validation":
+            raise ValueError("Negative references require validation")
+        others = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=? AND source!=?",
+                                 (group_id, source)).fetchall()
+        if any(tuple(other) != (row["profile_id"], row["kind"], role) for other in others):
+            raise ValueError("An encounter cannot cross identities or train/validation")
+        self.db.execute("UPDATE refs SET group_id=?,role=? WHERE source=?", (group_id, role, source))
+        self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
         self.reset_votes()
 
     @transaction
@@ -182,6 +235,18 @@ class Store:
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         policy = calibration(train, positive, negative)
+        groups = {
+            "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
+            "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
+            "negative_test": {r["group_id"] for r in refs if r["profile_id"] != identity
+                              and r["group_id"] and r["kind"] == profile["kind"] and r["role"] == "validation"},
+        }
+        policy["independent_groups"] = {key: len(value) for key, value in groups.items()}
+        if any(len(groups[key]) < required for key, required in
+               (("train", 3), ("positive_test", 2), ("negative_test", 3))):
+            policy.update(enabled=False, reason="insufficient_independent_encounters")
+        if any(not r["group_id"] for r in refs if r["kind"] == profile["kind"]):
+            policy.update(enabled=False, reason="uncurated_encounters")
         if policy["enabled"]:
             profile["calibration"] = policy
             if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
@@ -323,33 +388,45 @@ def gpu_available(stats, loaded=False, *, check_utilization=True):
             and (not check_utilization or stats["util_percent"] < 25))
 
 
+def wait_for_gpu(uuid, loaded=False, *, attempts=1):
+    for attempt in range(attempts):
+        stats = gpu_stats(uuid)
+        if gpu_available(stats, loaded):
+            return stats
+        if (not gpu_available(stats, loaded, check_utilization=False)
+                or attempt + 1 == attempts):
+            raise RuntimeError("GPU priority/headroom guard")
+        # nvidia-smi may still include a preceding sampler kernel in its window.
+        time.sleep(.25)
+
+
 class Encoder:
-    def __init__(self, model, gpu_uuid, audit=False):
+    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False):
         self.model, self.gpu_uuid = model, gpu_uuid
         self.audit = audit
+        self.wait_for_idle = wait_for_idle
         self.session = None
         self.last_run = 0.0
         self.last_used = 0.0
         self.load_mib = 0
-        self.baseline_free = None
+        self.current_load_mib = 0
         self.inference_ms = 0.0
 
     def unload(self):
         self.session = None
         gc.collect()
 
-    def encode(self, data):
-        import numpy as np
+    def infer(self, tensor):
+        """Run a prepared tensor under the same CUDA priority and memory guards."""
         import onnxruntime as ort
-        from PIL import Image
-
-        Image.MAX_IMAGE_PIXELS = 8_000_000
-        before = gpu_stats(self.gpu_uuid)
-        if not gpu_available(before, self.session is not None):
+        try:
+            before = wait_for_gpu(self.gpu_uuid, self.session is not None,
+                                  attempts=9 if self.wait_for_idle else 1)
+        except RuntimeError:
             self.unload()
-            raise RuntimeError("GPU priority/headroom guard")
+            raise
         if self.session is None:
-            self.baseline_free = before["free_mib"]
+            self.current_load_mib = self.load_mib = 0
             ort.preload_dlls()
             options = ort.SessionOptions()
             options.intra_op_num_threads = 1
@@ -369,10 +446,33 @@ class Encoder:
             if "CUDAExecutionProvider" not in self.session.get_providers():
                 self.unload()
                 raise RuntimeError("CUDA-only execution was not established")
-            self.load_mib = max(0, before["free_mib"] - gpu_stats(self.gpu_uuid)["free_mib"])
+            loaded = gpu_stats(self.gpu_uuid)
+            self.current_load_mib = self.load_mib = max(0, before["free_mib"] - loaded["free_mib"])
             if self.load_mib > MODEL_BUDGET_MIB:
                 self.unload()
                 raise RuntimeError("GPU model memory budget exceeded")
+            before = loaded
+        time.sleep(max(0.0, MIN_INTERVAL - (time.monotonic() - self.last_run)))
+        started = time.monotonic()
+        output = self.session.run(None, {self.session.get_inputs()[0].name: tensor})[0]
+        self.inference_ms = (time.monotonic() - started) * 1000
+        self.last_run = self.last_used = time.monotonic()
+        after = gpu_stats(self.gpu_uuid)
+        # Only account for changes during this session's own call. Another
+        # session may allocate between calls; a lifetime baseline includes it.
+        self.current_load_mib = max(0, self.current_load_mib + before["free_mib"] - after["free_mib"])
+        self.load_mib = max(self.load_mib, self.current_load_mib)
+        # This sample includes our own kernels; contention is checked before inference.
+        if not gpu_available(after, True, check_utilization=False) or self.load_mib > MODEL_BUDGET_MIB:
+            self.unload()
+            raise RuntimeError("GPU headroom lost during inference")
+        return output
+
+    def encode(self, data):
+        import numpy as np
+        from PIL import Image
+
+        Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if min(image.size) < 40 or image.width * image.height > Image.MAX_IMAGE_PIXELS:
                 raise ValueError("Object crop dimensions outside limits")
@@ -383,18 +483,7 @@ class Encoder:
             array = np.asarray(canvas, dtype=np.float32) / 255.0
         array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
-        time.sleep(max(0.0, MIN_INTERVAL - (time.monotonic() - self.last_run)))
-        started = time.monotonic()
-        output = self.session.run(None, {self.session.get_inputs()[0].name: tensor})[0]
-        self.inference_ms = (time.monotonic() - started) * 1000
-        self.last_run = self.last_used = time.monotonic()
-        after = gpu_stats(self.gpu_uuid)
-        self.load_mib = max(self.load_mib, self.baseline_free - after["free_mib"])
-        # This sample includes our own kernels; contention is checked before inference.
-        if not gpu_available(after, True, check_utilization=False) or self.load_mib > MODEL_BUDGET_MIB:
-            self.unload()
-            raise RuntimeError("GPU headroom lost during inference")
-        return unit(output.reshape(-1).tolist())
+        return unit(self.infer(tensor).reshape(-1).tolist())
 
     def audit_providers(self):
         if not self.audit or self.session is None:
@@ -492,13 +581,58 @@ def run(store, encoder, api, once=False):
     encoder.unload()
 
 
+def import_archive(store, directory, image, profile_id, role, group_id, model):
+    """Import one explicitly confirmed proposal without inference or label writes."""
+    group_id = encounter_group(group_id, required=True)
+    directory = Path(directory).resolve(strict=True)
+    if Path(image).name != image or not re.fullmatch(r"frame-[0-9]+-[0-9]+-(cat|car)\.jpg", image):
+        raise ValueError("Select one archive crop filename")
+    crop = (directory / image).resolve(strict=True)
+    if crop.parent != directory or not crop.is_file():
+        raise ValueError("Archive crop must remain inside its directory")
+    plan = json.loads((directory / "plan.json").read_text(encoding="utf-8"))
+    digest = hashlib.sha256()
+    with Path(model).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    models = plan.get("models", {})
+    if models.get("feature_revision") != MODEL_REVISION or models.get("model") != digest.hexdigest():
+        raise ValueError("Import requires the original feature model identity")
+    selected = None
+    with (directory / "results.jsonl").open(encoding="utf-8") as stream:
+        for index, line in enumerate(iter(lambda: stream.readline(1024 * 1024), "")):
+            if index >= 20000 or not line.endswith("\n"):
+                raise ValueError("Archive results are incomplete or exceed the import budget")
+            row = json.loads(line)
+            for item in row.get("crops", []):
+                if item.get("image") == image:
+                    if selected is not None:
+                        raise ValueError("Archive crop occurs more than once")
+                    selected = (row, item)
+    if selected is None:
+        raise ValueError("Archive crop not found in results")
+    row, item = selected
+    if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
+            or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
+            or len(item["vector"]) != 1280 or len(item["box"]) != 4
+            or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
+        raise ValueError("Invalid archive proposal")
+    # Stable across renamed directories and sampler frame numbering.
+    identity = json.dumps([row["camera"], float(row["time"]), item["kind"],
+                           [float(x) for x in item["box"]]], separators=(",", ":"))
+    source = "archive:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    store.add_reference(source, profile_id, item["kind"], role, item["vector"], group_id=group_id)
+    return {"source": source, "image": image, "group_id": group_id, "imported": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
     parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", "/models/mobilenetv2-gap.onnx"))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("status")
+    status = commands.add_parser("status")
+    status.add_argument("--references", action="store_true", help="List reference metadata without vectors")
     worker = commands.add_parser("run")
     worker.add_argument("--once", action="store_true")
     profile = commands.add_parser("profile")
@@ -509,6 +643,17 @@ def main():
     enroll.add_argument("--event", required=True)
     enroll.add_argument("--profile")
     enroll.add_argument("--role", choices=["train", "validation"], required=True)
+    enroll.add_argument("--group", help="Shared encounter ID for all cameras/frames of one visit")
+    curate = commands.add_parser("curate")
+    curate.add_argument("--source", required=True)
+    curate.add_argument("--group", required=True)
+    curate.add_argument("--role", choices=["train", "validation"])
+    archive = commands.add_parser("import-archive")
+    archive.add_argument("--archive", required=True)
+    archive.add_argument("--image", required=True)
+    archive.add_argument("--profile")
+    archive.add_argument("--role", choices=["train", "validation"], required=True)
+    archive.add_argument("--group", required=True)
     calibrate = commands.add_parser("calibrate")
     calibrate.add_argument("--profile", required=True)
     probe = commands.add_parser("probe")
@@ -524,6 +669,15 @@ def main():
             health = store.directory / "health.json"
             result = {"profiles": store.profiles(), "references": len(store.refs()),
                       "health": json.loads(health.read_text()) if health.exists() else None}
+            if args.references:
+                result["reference_metadata"] = [{key: row[key] for key in
+                    ("source", "profile_id", "kind", "role", "group_id")} for row in store.refs()]
+        elif args.command == "import-archive":
+            result = import_archive(store, args.archive, args.image, args.profile,
+                                    args.role, args.group, args.model)
+        elif args.command == "curate":
+            store.curate_reference(args.source, args.group, args.role)
+            result = {"source": args.source, "group_id": encounter_group(args.group), "curated": True}
         elif args.command == "profile":
             store.profile(args.id, args.kind, args.label)
             result = {"profiles": store.profiles()}
@@ -536,7 +690,8 @@ def main():
             image = api.snapshot(event)
             vector = encoder.encode(image)
             if args.command == "enroll":
-                store.add_reference(args.event, args.profile, event["label"], args.role, vector)
+                store.add_reference(args.event, args.profile, event["label"], args.role, vector,
+                                    group_id=args.group)
             result = {"event": args.event, "dimensions": len(vector), "provider": "CUDAExecutionProvider",
                       "load_mib": encoder.load_mib, "inference_ms": encoder.inference_ms,
                       "match": choose(vector, store.profiles(), store.refs(), event["label"])}
