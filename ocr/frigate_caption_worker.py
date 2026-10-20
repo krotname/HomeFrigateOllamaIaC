@@ -53,7 +53,8 @@ def loopback_url(url, *, priority=False):
 
 
 def request_bytes(url, *, method="GET", body=None, limit=1024 * 1024,
-                  timeout=10, allow_self_signed=False, priority_key=None):
+                  timeout=10, allow_self_signed=False, priority_key=None,
+                  return_headers=False, bypass_cache=False):
     """Bound bytes AND wall time, including trickled headers/body; no proxy/redirect.
 
     Closing only HTTPConnection is insufficient once getresponse() hands its socket
@@ -91,6 +92,8 @@ def request_bytes(url, *, method="GET", body=None, limit=1024 * 1024,
         timer.daemon = True
         timer.start()
         headers = {"Accept": "application/json", "Connection": "close"}
+        if bypass_cache:
+            headers["X-Cache-Bypass"] = "1"
         if priority_key is not None:
             if method != "GET" or parsed.path != "/slots":
                 raise ValueError("Priority key is restricted to the slots probe")
@@ -112,6 +115,8 @@ def request_bytes(url, *, method="GET", body=None, limit=1024 * 1024,
             raise RemoteError(0, "Incomplete remote response")
         if not 200 <= response.status < 300:
             raise RemoteError(response.status)
+        if return_headers:
+            return data, {key.lower(): value for key, value in response.getheaders()}
         return data
     except (OSError, http.client.HTTPException) as exc:
         raise RemoteError(0) from exc

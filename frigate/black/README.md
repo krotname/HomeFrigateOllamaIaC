@@ -1,5 +1,8 @@
 # Frigate 0.18 на Black, архив на White
 
+Сопоставление кота и знакомых машин по локальным образцам описано в
+[KNOWN-OBJECTS.md](KNOWN-OBJECTS.md); обработчик работает отдельно на GPU.
+
 Общий обзор двора доступен по `/review/courtyard/` на основном домене. Он
 использует существующую Basic auth и API Frigate, группирует тревогу основной
 `common_camera02` с обнаружениями `cam1_ds_i202`, `common_camera01` и

@@ -66,7 +66,7 @@ def black_config(source: dict, *, staging: bool = False, cpu: bool = False) -> d
         config["ffmpeg"]["hwaccel_args"] = "preset-nvidia"
     config["detect"] = {"enabled": True, "fps": 3}
     config["motion"] = {"enabled": True}
-    config["objects"] = {"track": ["person", "cat", "dog"]}
+    config["objects"] = {"track": ["person", "cat", "dog", "car"]}
     config["review"] = {"alerts": {"enabled": True, "labels": ["person"]}, "detections": {"enabled": True, "labels": ["cat", "dog"]}}
     config["snapshots"] = {"enabled": True, "retain": {"default": 3}}
     config["record"] = {

@@ -1,0 +1,55 @@
+services:
+  frigate-objects:
+    container_name: frigate-objects
+    image: ${FRIGATE_OBJECT_IMAGE:-ghcr.io/blakeblackshear/frigate:0.18.0-tensorrt@sha256:82d7475ba7e5f950911bd9d06f2392de96881f39eeacd78824a526dde9b5cad9}
+    user: "65534:65534"
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app
+    entrypoint: [python3, -m, ocr.frigate_object_worker]
+    command: [run]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${FRIGATE_OBJECT_GPU:?Set the exact GPU UUID}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      FRIGATE_OBJECT_GPU: ${FRIGATE_OBJECT_GPU:?Set the exact GPU UUID}
+      PYTHONDONTWRITEBYTECODE: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${FRIGATE_OBJECT_GPU:?Set the exact GPU UUID}"]
+              capabilities: [gpu]
+    volumes:
+      - type: bind
+        source: /opt/frigate-objects/ocr
+        target: /app/ocr
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /opt/frigate-objects/models
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/frigate-objects
+        target: /state
+        bind: {create_host_path: false}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=32m]
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: "1"
+    pids_limit: 96
+    healthcheck:
+      test: [CMD, python3, -c, "import json,time; h=json.load(open('/state/health.json')); assert time.time()-h['updated']<180"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
