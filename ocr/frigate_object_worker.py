@@ -19,7 +19,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from ocr.frigate_caption_worker import request_bytes
+from ocr.frigate_caption_worker import RemoteError, request_bytes
 
 
 LOG = logging.getLogger("frigate-objects")
@@ -29,6 +29,7 @@ CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
 MODEL_REVISION = "mobilenetv2-12-gap-v1"
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
+MAX_PENDING = 512
 EVENT_TTL = 3 * 86400
 POLL_SECONDS = 15
 MIN_INTERVAL = 0.5
@@ -122,6 +123,9 @@ class Store:
         return [{**dict(x), "vector": json.loads(x["vector"])} for x in self.db.execute(
             "SELECT * FROM refs WHERE model=?", (MODEL_REVISION,))]
 
+    def data_version(self):
+        return self.db.execute("PRAGMA data_version").fetchone()[0]
+
     def profile(self, identity, kind, label):
         if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", identity) or kind not in KINDS
                 or not 1 <= len(label.strip()) <= 80 or any(ord(x) < 32 for x in label)):
@@ -157,16 +161,25 @@ class Store:
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         policy = calibration(train, positive, negative)
+        if policy["enabled"]:
+            profile["calibration"] = policy
+            if any((choose(vector, profiles, refs, profile["kind"]) or {}).get("id") != identity
+                   for vector in positive):
+                policy.update(enabled=False, reason="validation_margin_failed")
         self.db.execute("UPDATE profiles SET calibration=? WHERE id=?", (json.dumps(policy), identity))
         self.db.commit()
         return policy
 
     def remember(self, event_id, frame, votes, status):
+        if status == "pending" and self.db.execute(
+                "SELECT count(*) FROM events WHERE status='pending' AND id!=?", (event_id,)
+        ).fetchone()[0] >= MAX_PENDING:
+            raise RuntimeError("Unresolved write limit reached; reconcile pending events")
         self.db.execute("INSERT INTO events VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                         "updated=excluded.updated,frame=excluded.frame,votes=excluded.votes,status=excluded.status",
                         (event_id, time.time(), frame, json.dumps(votes), status))
-        self.db.execute("DELETE FROM events WHERE updated<?", (time.time() - EVENT_TTL,))
-        self.db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events "
+        self.db.execute("DELETE FROM events WHERE status!='pending' AND updated<?", (time.time() - EVENT_TTL,))
+        self.db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events WHERE status!='pending' "
                         "ORDER BY updated DESC LIMIT -1 OFFSET ?)", (MAX_EVENTS,))
         self.db.commit()
 
@@ -374,6 +387,7 @@ def run(store, encoder, api, once=False):
     signal.signal(signal.SIGINT, stop)
     while not stopping:
         try:
+            version = store.data_version()
             profiles, refs = store.profiles(), store.refs()
             active = [p for p in profiles if p["calibration"].get("enabled")]
             if not active:
@@ -381,7 +395,7 @@ def run(store, encoder, api, once=False):
                 store.health(state="waiting_for_references", gpu_loaded=False)
             else:
                 for event in reversed(api.candidates()):
-                    if stopping:
+                    if stopping or store.data_version() != version:
                         break
                     if (event.get("label") not in KINDS or event.get("camera") not in CAMERAS
                             or not any(p["kind"] == event["label"] for p in active)):
@@ -401,7 +415,7 @@ def run(store, encoder, api, once=False):
                         continue
                     try:
                         image = api.snapshot(event)
-                    except ValueError:
+                    except (ValueError, OSError, RemoteError):
                         continue  # Unaligned/low-quality samples remain unknown.
                     vector = encoder.encode(image)
                     match = choose(vector, profiles, refs, event["label"])
@@ -410,6 +424,8 @@ def run(store, encoder, api, once=False):
                     # Require two distinct best-frame timestamps, never repeated polls of one JPG.
                     accepted = match and bool(frame) and votes.count(match["id"]) >= 2
                     if accepted:
+                        if store.data_version() != version:
+                            break  # Enrollment/calibration changed through another connection.
                         store.remember(event["id"], frame, votes, "pending")
                         success = api.apply(event["id"], match["label"])
                         status = "applied" if success else "protected"

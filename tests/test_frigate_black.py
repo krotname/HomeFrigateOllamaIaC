@@ -46,6 +46,14 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("hwaccel_args", config["ffmpeg"])
         self.assertEqual("CPU", config["detectors"]["objects"]["device"])
 
+    def test_car_events_remain_available_after_preparing_camera_overrides(self):
+        source = self.source()
+        source["cameras"]["living"]["objects"] = {"track": ["person", "car"]}
+        converted = MODULE.black_config(source)
+        self.assertIn("car", converted["objects"]["track"])
+        self.assertNotIn("objects", converted["cameras"]["living"])
+        self.assertEqual(["person", "car"], source["cameras"]["living"]["objects"]["track"])
+
     def test_empty_source_rejected(self):
         with self.assertRaises(ValueError):
             MODULE.black_config({})

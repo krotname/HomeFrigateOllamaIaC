@@ -8,7 +8,7 @@ from unittest.mock import patch
 from ocr.frigate_object_worker import (
     Encoder, Frigate, Store, calibration, choose, gpu_available, run, unit,
 )
-from ocr.frigate_caption_worker import request_bytes
+from ocr.frigate_caption_worker import RemoteError, request_bytes
 
 
 class MatchingTests(unittest.TestCase):
@@ -83,6 +83,37 @@ class StorageTests(unittest.TestCase):
         self.store.db.commit()
         self.store.add_reference("event-four", None, "cat", "validation", [0, 1])
         self.assertFalse(self.store.profiles()[0]["calibration"].get("enabled", False))
+
+    def test_calibration_rejects_held_out_positives_that_fail_runtime_margin(self):
+        for i in range(3):
+            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0])
+            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1])
+        for i in range(2):
+            self.store.add_reference(f"test-{i}", "cat-a", "cat", "validation", [1, 0])
+        self.assertTrue(self.store.calibrate("cat-a")["enabled"])
+        self.store.profile("cat-b", "cat", "Cat B")
+        self.store.add_reference("close-competitor", "cat-b", "cat", "train", [1, .05])
+        policy = self.store.calibrate("cat-a")
+        self.assertFalse(policy["enabled"])
+        self.assertEqual("validation_margin_failed", policy["reason"])
+
+    def test_uncertain_write_marker_survives_age_and_capacity_pruning(self):
+        self.store.remember("uncertain", "1", [], "pending")
+        self.store.db.execute("UPDATE events SET updated=0 WHERE id='uncertain'")
+        self.store.db.commit()
+        with patch("ocr.frigate_object_worker.MAX_EVENTS", 2):
+            for i in range(4):
+                self.store.remember(f"ordinary-{i}", "1", [], "complete_unknown")
+        rows = dict(self.store.db.execute("SELECT id,status FROM events"))
+        self.assertEqual("pending", rows["uncertain"])
+        self.assertEqual(3, len(rows))
+
+    def test_full_uncertain_write_set_blocks_new_pending_before_post(self):
+        with patch("ocr.frigate_object_worker.MAX_PENDING", 1):
+            self.store.remember("uncertain", "1", [], "pending")
+            with self.assertRaises(RuntimeError):
+                self.store.remember("another", "2", [], "pending")
+        self.assertIsNone(self.store.db.execute("SELECT id FROM events WHERE id='another'").fetchone())
 
 
 class IntegrationPolicyTests(unittest.TestCase):
@@ -185,6 +216,51 @@ class IntegrationPolicyTests(unittest.TestCase):
     def test_path_injection_is_rejected_before_request(self):
         with self.assertRaises(ValueError):
             Frigate().event("../config")
+
+    def test_concurrent_enrollment_stops_stale_gallery_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, other = Store(directory), Store(directory)
+            self.addCleanup(store.db.close)
+            self.addCleanup(other.db.close)
+            store.profile("car-a", "car", "Car A")
+            store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+            store.db.commit()
+            store.remember("1-a", "1", ["car-a"], "observing")
+            event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                     "data": {"snapshot_frame_time": 2}}
+            api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+
+            def enroll(_):
+                other.add_reference("another-car", None, "car", "validation", [0, 1])
+                return [1, 0]
+
+            with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
+                with patch.object(encoder, "encode", side_effect=enroll), patch(
+                        "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
+                    with patch.object(api, "apply") as write:
+                        run(store, encoder, api, once=True)
+                        write.assert_not_called()
+            self.assertFalse(store.profiles()[0]["calibration"].get("enabled", False))
+
+    def test_bad_snapshot_does_not_starve_the_next_event(self):
+        for failure in (RemoteError(404), OSError("Corrupt JPEG")):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as directory:
+                store = Store(directory)
+                self.addCleanup(store.db.close)
+                store.profile("car-a", "car", "Car A")
+                store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+                store.db.commit()
+                store.remember("valid", "1", ["car-a"], "observing")
+                event = {"id": "valid", "label": "car", "camera": "common_camera02",
+                         "data": {"snapshot_frame_time": 2}}
+                api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+                with patch.object(api, "candidates", return_value=[event, {**event, "id": "bad"}]), patch.object(
+                        api, "snapshot", side_effect=[failure, b"jpg"]):
+                    with patch.object(encoder, "encode", return_value=[1, 0]), patch(
+                            "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
+                        with patch.object(api, "apply", return_value=True) as write:
+                            run(store, encoder, api, once=True)
+                            write.assert_called_once_with("valid", "Car A")
 
     def test_unload_releases_reference_to_gpu_session(self):
         encoder = Encoder("/unused", "GPU-unused")
