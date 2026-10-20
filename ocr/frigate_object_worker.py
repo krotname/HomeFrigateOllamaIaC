@@ -187,6 +187,24 @@ class Store:
         self.reset_votes()
 
     @transaction
+    def curate_reference(self, source, group_id, role=None):
+        if not isinstance(group_id, str) or not group_id.strip() or len(group_id) > 160:
+            raise ValueError("A curated encounter group is required")
+        row = self.db.execute("SELECT * FROM refs WHERE source=?", (source,)).fetchone()
+        if row is None:
+            raise ValueError("Reference not found")
+        role = role or row["role"]
+        if role not in {"train", "validation"}:
+            raise ValueError("Invalid reference role")
+        others = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=? AND source!=?",
+                                 (group_id, source)).fetchall()
+        if any(tuple(other) != (row["profile_id"], row["kind"], role) for other in others):
+            raise ValueError("An encounter cannot cross identities or train/validation")
+        self.db.execute("UPDATE refs SET group_id=?,role=? WHERE source=?", (group_id, role, source))
+        self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
+        self.reset_votes()
+
+    @transaction
     def calibrate(self, identity):
         profiles, refs = self.profiles(), self.refs()
         profile = next(p for p in profiles if p["id"] == identity)
@@ -542,7 +560,8 @@ def main():
     parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", "/models/mobilenetv2-gap.onnx"))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("status")
+    status = commands.add_parser("status")
+    status.add_argument("--references", action="store_true", help="List reference metadata without vectors")
     worker = commands.add_parser("run")
     worker.add_argument("--once", action="store_true")
     profile = commands.add_parser("profile")
@@ -554,6 +573,10 @@ def main():
     enroll.add_argument("--profile")
     enroll.add_argument("--role", choices=["train", "validation"], required=True)
     enroll.add_argument("--group", help="Shared encounter ID for all cameras/frames of one visit")
+    curate = commands.add_parser("curate")
+    curate.add_argument("--source", required=True)
+    curate.add_argument("--group", required=True)
+    curate.add_argument("--role", choices=["train", "validation"])
     calibrate = commands.add_parser("calibrate")
     calibrate.add_argument("--profile", required=True)
     probe = commands.add_parser("probe")
@@ -569,6 +592,12 @@ def main():
             health = store.directory / "health.json"
             result = {"profiles": store.profiles(), "references": len(store.refs()),
                       "health": json.loads(health.read_text()) if health.exists() else None}
+            if args.references:
+                result["reference_metadata"] = [{key: row[key] for key in
+                    ("source", "profile_id", "kind", "role", "group_id")} for row in store.refs()]
+        elif args.command == "curate":
+            store.curate_reference(args.source, args.group, args.role)
+            result = {"source": args.source, "group_id": args.group, "curated": True}
         elif args.command == "profile":
             store.profile(args.id, args.kind, args.label)
             result = {"profiles": store.profiles()}

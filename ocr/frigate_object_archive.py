@@ -172,6 +172,36 @@ def build_plan(after, before, interval, event_after, max_frames):
             "coverage": coverage, "events": minimal, "jobs": jobs}
 
 
+def read_results(path):
+    """Keep complete JSONL rows; only discard an interrupted trailing record."""
+    rows, recovered = [], 0
+    if not path.exists():
+        return rows, recovered
+    with path.open("r+b") as stream:
+        while True:
+            start = stream.tell()
+            line = stream.readline()
+            if not line:
+                break
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                if line.endswith(b"\n"):
+                    raise ValueError("Corrupt complete archive result record") from None
+                recovered = len(line)
+                stream.truncate(start)
+                break
+            if not isinstance(row, dict):
+                raise ValueError("Archive result record must be an object")
+            rows.append(row)
+            if not line.endswith(b"\n"):
+                stream.write(b"\n")
+                break
+    return rows, recovered
+
+
 def model_identity(args):
     identity = {"feature_revision": MODEL_REVISION}
     for name in ("model", "detector"):
@@ -206,8 +236,7 @@ def scan(args):
     if len(plan["jobs"]) > args.max_frames:
         raise ValueError("Resume plan exceeds the explicit frame budget")
     results_path = directory / "results.jsonl"
-    previous = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()] if results_path.exists() else []
+    previous, recovered_tail_bytes = read_results(results_path)
     done = {row["id"] for row in previous}
     if len(done) != len(previous) or not done.issubset({job["id"] for job in plan["jobs"]}):
         raise ValueError("Results contain duplicate or foreign frame IDs")
@@ -307,6 +336,7 @@ def scan(args):
         "crops": dict(Counter(item["kind"] for row in previous for item in row["crops"])),
         "executed_providers": proof, "coverage": plan["coverage"],
         "max_crops_per_kind": args.max_crops_per_kind,
+        "recovered_tail_bytes": recovered_tail_bytes,
         "budget_skips": dict(sum((Counter(row.get("budget_skips", {})) for row in previous), Counter())),
         "detector_vram_mib": detector.load_mib, "encoder_vram_mib": encoder.load_mib,
         "mode": "sparse_archive_proposals_no_label_writes"}

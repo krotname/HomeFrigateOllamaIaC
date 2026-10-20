@@ -8,12 +8,49 @@ import urllib.parse
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ocr.frigate_object_archive import detections, event_pages, recording_spans, sample_plan, scan
+from ocr.frigate_object_archive import detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
 from ocr.frigate_object_worker import Frigate, Store, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_interrupted_tail_is_recovered_but_internal_corruption_is_rejected(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "results.jsonl")
+            complete = b'{"id":"first"}\n'
+            tail = b'{"id":"second","text":"\xd0'
+            path.write_bytes(complete + tail)
+            self.assertEqual(([{"id": "first"}], len(tail)), read_results(path))
+            self.assertEqual(complete, path.read_bytes())
+            path.write_bytes(complete.rstrip(b"\n"))
+            self.assertEqual(([{"id": "first"}], 0), read_results(path))
+            self.assertEqual(complete, path.read_bytes())
+            corrupt = complete + b'broken\n' + complete
+            path.write_bytes(corrupt)
+            with self.assertRaises(ValueError):
+                read_results(path)
+            self.assertEqual(corrupt, path.read_bytes())
+
+    def test_migrated_reference_can_be_curated_without_reembedding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                store.profile("car-a", "car", "Car A")
+                store.add_reference("old", "car-a", "car", "train", [1, 0])
+                store.curate_reference("old", "visit-a")
+                self.assertEqual("visit-a", store.refs()[0]["group_id"])
+                self.assertEqual([1, 0], store.refs()[0]["vector"])
+                store.add_reference("second-camera", "car-a", "car", "train", [1, 0], group_id="visit-a")
+                with self.assertRaises(ValueError):
+                    store.curate_reference("old", "visit-a", "validation")
+                self.assertEqual("train", store.refs()[0]["role"])
+                store.curate_reference("old", "visit-b", "validation")
+                self.assertEqual("validation", store.refs()[0]["role"])
+                self.assertFalse(store.profiles()[0]["calibration"].get("enabled", False))
+            finally:
+                store.db.close()
+
     def test_sampler_waits_for_stale_utilization_but_never_ignores_contention(self):
         ready = {"free_mib": 6000, "util_percent": 0}
         busy = {"free_mib": 6000, "util_percent": 60}
