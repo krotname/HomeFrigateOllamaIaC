@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from ocr.frigate_caption_worker import RemoteError, request_bytes
-from ocr.frigate_object_worker import CAMERAS, DEFAULT_MODEL, MODEL_REVISION, Encoder, Frigate
+from ocr.frigate_object_worker import CAMERAS, DEFAULT_CAR_MODEL, DEFAULT_MODEL, MODEL_REVISION, Encoder, Frigate
 
 
 def get_json(path):
@@ -206,7 +206,7 @@ def read_results(path):
 
 def model_identity(args):
     identity = {"feature_revision": MODEL_REVISION}
-    for name in ("model", "detector"):
+    for name in ("model", "car_model", "detector"):
         digest = hashlib.sha256()
         with Path(getattr(args, name)).open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -266,9 +266,12 @@ def _scan(args):
         for item in row.get("crops", []):
             fingerprints.setdefault((row["camera"], item["kind"]), []).append(item["fingerprint"])
     detector = Encoder(args.detector, args.gpu, audit=True, wait_for_idle=True)
-    encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True)
+    encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True, car_model=args.car_model)
+    encoder.bound_car_digest = models["car_model"]
     proof_path = directory / "execution.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
+    # A legacy generic result cannot establish which feature model ran.
+    proof.pop("encoder", None)
     deadline = time.monotonic() + args.max_seconds
     pause = None
     try:
@@ -310,9 +313,10 @@ def _scan(args):
                             continue
                         buffer = io.BytesIO()
                         crop.save(buffer, format="JPEG", quality=92)
-                        vector = encoder.encode(buffer.getvalue())
+                        encoder.audit = item["kind"] not in proof.setdefault("encoders", {})
+                        vector = encoder.encode(buffer.getvalue(), item["kind"])
                         if encoder.audit:
-                            proof["encoder"] = encoder.audit_providers()
+                            proof["encoders"][item["kind"]] = encoder.audit_providers()
                             atomic_json(proof_path, proof)
                             encoder.audit = False
                         filename = f'{job["id"]}-{index}-{item["kind"]}.jpg'
@@ -376,6 +380,7 @@ def main():
     parser.add_argument("--max-crops-per-kind", type=int, default=600)
     parser.add_argument("--detector", default="/models/yolov9-t-320.onnx")
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--car-model", default=DEFAULT_CAR_MODEL)
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     args = parser.parse_args()
     if not (all(math.isfinite(value) for value in (args.after, args.before, args.event_after))

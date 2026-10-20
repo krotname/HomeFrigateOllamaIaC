@@ -1,4 +1,7 @@
 import json
+import importlib.util
+import io
+import math
 import tempfile
 import threading
 import unittest
@@ -6,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from ocr.frigate_object_worker import (
-    Encoder, Frigate, Store, calibration, choose, gpu_available, reference_score, run, unit,
+    Encoder, Frigate, Store, bind_car_model, calibration, choose, gpu_available, reference_score, run, unit,
 )
 from ocr.frigate_caption_worker import RemoteError, request_bytes
 
@@ -63,6 +66,41 @@ class MatchingTests(unittest.TestCase):
                 for v, g in [(good, "one"), (good, "one"), (bad, "two"), (bad, "three")]]
         self.assertIsNone(choose(good, [profile], refs, "car"))
 
+    def test_vehicle_scale_keeps_a_safety_gap_to_other_training_identities(self):
+        train = [unit([1, 0])] * 3
+        positive = [unit([.7, math.sqrt(1 - .7 ** 2)])] * 2
+        negative = [unit([0, 1])] * 3
+        self.assertFalse(calibration(train, positive, negative)["enabled"])
+        self.assertTrue(calibration(train, positive, negative, minimum_similarity=.60)["enabled"])
+        lookalike = unit([.68, math.sqrt(1 - .68 ** 2)])
+        result = calibration(train, positive, negative, minimum_similarity=.60,
+                             negative_train=[lookalike])
+        self.assertFalse(result["enabled"])
+        self.assertGreater(result["threshold"], .7)
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_car_rgb_and_cat_normalization_use_separate_models_and_dimensions(self):
+        import numpy as np
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGB", (80, 40), (10, 20, 30)).save(buffer, format="PNG")
+        encoder = Encoder("cat-model", "gpu", car_model="car-model")
+        with patch.object(encoder, "infer", side_effect=[np.ones(512), np.ones(384)]) as infer:
+            self.assertEqual(512, len(encoder.encode(buffer.getvalue(), "car")))
+            car_tensor = infer.call_args.args[0]
+            self.assertEqual((1, 3, 208, 208), car_tensor.shape)
+            self.assertEqual([10., 20., 30.], car_tensor[0, :, 0, 0].tolist())
+            self.assertEqual("car-model", encoder.model)
+            encoder.session = object()
+            self.assertEqual(384, len(encoder.encode(buffer.getvalue(), "cat")))
+            self.assertEqual((1, 3, 224, 224), infer.call_args.args[0].shape)
+            self.assertEqual("cat-model", encoder.model)
+            self.assertIsNone(encoder.session)
+        with patch.object(encoder, "infer", return_value=np.ones(384)):
+            with self.assertRaisesRegex(ValueError, "dimensions"):
+                encoder.encode(buffer.getvalue(), "car")
+
 
 
 class StorageTests(unittest.TestCase):
@@ -80,6 +118,43 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.add_reference("event-one", "cat-a", "cat", "validation", [1, 0])
         self.assertEqual(1, len(self.store.refs()))
+
+    def test_changed_car_weights_invalidate_only_car_references_and_keep_uncertain_writes(self):
+        self.store.profile("car-a", "car", "Car A")
+        self.store.bind_model("car", "a" * 64)
+        self.store.add_reference("cat-frame", "cat-a", "cat", "train", [1, 0], group_id="cat-visit")
+        self.store.add_reference("car-frame", "car-a", "car", "train", [1, 0], group_id="car-visit")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        self.store.remember("observed", "20", ["car-a"], "observing")
+        self.store.remember("uncertain", "21", ["car-a", "car-a"], "pending")
+        self.assertFalse(self.store.bind_model("car", "a" * 64))
+        self.assertEqual(2, len(self.store.refs()))
+        self.assertTrue(self.store.bind_model("car", "b" * 64))
+        self.assertEqual(["cat-frame"], [r["source"] for r in self.store.refs()])
+        profiles = {p["id"]: p for p in self.store.profiles()}
+        self.assertEqual({}, profiles["car-a"]["calibration"])
+        self.assertTrue(profiles["cat-a"]["calibration"]["enabled"])
+        self.assertEqual("[]", self.store.db.execute("SELECT votes FROM events WHERE id='observed'").fetchone()[0])
+        self.assertEqual("pending", self.store.db.execute("SELECT status FROM events WHERE id='uncertain'").fetchone()[0])
+        self.store.add_reference("car-frame", "car-a", "car", "train", [0, 1], group_id="car-visit")
+        self.assertEqual(2, len(self.store.refs()))
+
+    def test_replaced_car_model_is_rejected_before_inference_and_rebind_discards_old_gallery(self):
+        from pathlib import Path
+        model = Path(self.directory.name, "car.onnx")
+        model.write_bytes(b"old")
+        encoder = Encoder("cat.onnx", "gpu", car_model=str(model))
+        bind_car_model(self.store, encoder)
+        self.store.profile("car-a", "car", "Car A")
+        self.store.add_reference("car-frame", "car-a", "car", "train", [1, 0], group_id="car-visit")
+        model.write_bytes(b"new")
+        # The check precedes image parsing and any GPU session load.
+        if importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"):
+            with self.assertRaisesRegex(RuntimeError, "Car model changed"):
+                encoder.encode(b"unused", "car")
+        bind_car_model(self.store, encoder)
+        self.assertEqual([], self.store.refs())
 
     def test_stale_reference_reencoding_replaces_at_capacity_and_invalidates_policy(self):
         self.store.add_reference("old-frame", "cat-a", "cat", "validation", [1, 0], group_id="visit-a")
@@ -398,6 +473,58 @@ class IntegrationPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Frigate().event("../config")
 
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_car_snapshot_uses_native_recording_but_cat_keeps_verified_jpeg(self):
+        from PIL import Image
+        def jpeg(size):
+            output = io.BytesIO()
+            Image.new("RGB", size).save(output, format="JPEG")
+            return output.getvalue()
+        small, native = jpeg((352, 288)), jpeg((1920, 1080))
+        for kind in ("car", "cat"):
+            event = {"id": "1-a", "label": kind, "camera": "common_camera02",
+                     "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+            responses = [(small, {"x-frame-time": "20"})] + ([native] if kind == "car" else [])
+            with self.subTest(kind=kind), patch("ocr.frigate_object_worker.request_bytes", side_effect=responses) as request, \
+                    patch.object(Frigate, "json", return_value=[{"id": "segment", "start_time": 19, "end_time": 21}]):
+                crop = Frigate().snapshot(event)
+                with Image.open(io.BytesIO(crop)) as image:
+                    self.assertEqual(kind == "car", image.width > 1000)
+                self.assertEqual(2 if kind == "car" else 1, request.call_count)
+                if kind == "car":
+                    self.assertIn("/common_camera02/recordings/20.0/snapshot.jpg?height=1080", request.call_args.args[0])
+                    self.assertTrue(request.call_args.kwargs["bypass_cache"])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_car_recording_requires_matching_event_frame_and_missing_segment_is_retryable(self):
+        event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                 "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+        with patch("ocr.frigate_object_worker.request_bytes", return_value=(b"jpg", {"x-frame-time": "19"})) as request:
+            with self.assertRaises(ValueError):
+                Frigate().snapshot(event)
+            self.assertEqual(1, request.call_count)
+        with patch("ocr.frigate_object_worker.request_bytes", side_effect=[
+                (b"jpg", {"x-frame-time": "20"}), RemoteError(404)]) as request, \
+                patch.object(Frigate, "json", return_value=[{"id": "segment", "start_time": 19, "end_time": 21}]):
+            with self.assertRaises(RemoteError):
+                Frigate().snapshot(event)
+            self.assertEqual(2, request.call_count)
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_recording_gaps_and_retention_changes_cannot_supply_a_substituted_frame(self):
+        event = {"id": "1-a", "label": "car", "camera": "common_camera02",
+                 "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+        for segments in ([], [{"id": "rounded-up", "start_time": 20.1, "end_time": 21}]):
+            with self.subTest(segments=segments), patch.object(Frigate, "json", return_value=segments), \
+                    patch("ocr.frigate_object_worker.request_bytes", return_value=(b"jpg", {"x-frame-time": "20"})) as request:
+                with self.assertRaisesRegex(ValueError, "exact best-frame"):
+                    Frigate().snapshot(event)
+                self.assertEqual(1, request.call_count)
+        with patch.object(Frigate, "json", side_effect=[[{"id": "expired", "start_time": 19, "end_time": 21}], []]), \
+                patch("ocr.frigate_object_worker.request_bytes", side_effect=[(b"jpg", {"x-frame-time": "20"}), b"native"]):
+            with self.assertRaisesRegex(ValueError, "coverage changed"):
+                Frigate().snapshot(event)
+
     def test_concurrent_enrollment_stops_stale_gallery_write(self):
         with tempfile.TemporaryDirectory() as directory:
             store, other = Store(directory), Store(directory)
@@ -411,7 +538,8 @@ class IntegrationPolicyTests(unittest.TestCase):
                      "data": {"snapshot_frame_time": 2}}
             api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
 
-            def enroll(_):
+            def enroll(_, kind):
+                self.assertEqual("car", kind)
                 other.add_reference("another-car", None, "car", "validation", [0, 1])
                 return [1, 0]
 

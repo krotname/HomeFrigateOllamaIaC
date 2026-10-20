@@ -28,9 +28,11 @@ LOG = logging.getLogger("frigate-objects")
 KINDS = {"cat", "car"}
 CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
            "common_camera02", "common_camera03"}
-MODEL_REVISION = "dinov2-small-cls-v1"
+MODEL_REVISION = "dinov2-cat-vehicle-reid-car-v1"
 DEFAULT_MODEL = "/models/dinov2-small-cls.onnx"
+DEFAULT_CAR_MODEL = "/models/vehicle-reid-0001-static208.onnx"
 FEATURE_DIMENSIONS = 384
+CAR_FEATURE_DIMENSIONS = 512
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
@@ -61,6 +63,14 @@ def unit(vector):
     return [x / norm for x in values]
 
 
+def model_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def similarity(left, right):
     if len(left) != len(right):
         raise ValueError("Feature dimensions differ")
@@ -78,7 +88,8 @@ def reference_score(vector, references, groups=None):
     return sum(scores[:2]) / min(2, len(scores)) if scores else -1.0
 
 
-def calibration(positive_train, positive_test, negative_test, train_groups=None):
+def calibration(positive_train, positive_test, negative_test, train_groups=None,
+                *, minimum_similarity=.85, negative_train=()):
     """Threshold selection on separate events; these are small-sample checks."""
     counts = {"train": len(positive_train), "positive_test": len(positive_test),
               "negative_test": len(negative_test)}
@@ -86,13 +97,16 @@ def calibration(positive_train, positive_test, negative_test, train_groups=None)
         return {"enabled": False, "reason": "insufficient_separate_examples", **counts}
     low_positive = min(reference_score(x, positive_train, train_groups) for x in positive_test)
     high_negative = max(reference_score(x, positive_train, train_groups) for x in negative_test)
-    threshold = max(0.85, high_negative + 0.04)
+    high_training_negative = max((reference_score(x, positive_train, train_groups)
+                                  for x in negative_train), default=-1.0)
+    threshold = max(minimum_similarity, high_negative + 0.04, high_training_negative + 0.08)
     accepted = sum(reference_score(x, positive_train, train_groups) >= threshold for x in positive_test)
     coverage = accepted / len(positive_test)
     enabled = threshold <= .995 and accepted >= 2 and coverage >= MIN_VALIDATION_COVERAGE
     return {"enabled": enabled, "reason": "validated" if enabled else "overlapping_examples",
             "threshold": round(threshold, 6), "margin": 0.06,
             "lowest_positive": low_positive, "highest_negative": high_negative,
+            "highest_training_negative": high_training_negative,
             "accepted_positive": accepted, "positive_coverage": coverage, **counts}
 
 
@@ -151,6 +165,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY, updated REAL NOT NULL, frame TEXT NOT NULL,
                 votes TEXT NOT NULL, status TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS feature_models (
+                kind TEXT PRIMARY KEY, digest TEXT NOT NULL);
         """)
         self.db.execute("BEGIN IMMEDIATE")
         if "group_id" not in {row[1] for row in self.db.execute("PRAGMA table_info(refs)")}:
@@ -189,6 +205,23 @@ class Store:
 
     def reset_votes(self):
         self.db.execute("UPDATE events SET votes='[]',frame='' WHERE status='observing'")
+
+    @transaction
+    def bind_model(self, kind, digest):
+        if kind not in KINDS or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Invalid feature model binding")
+        previous = self.db.execute("SELECT digest FROM feature_models WHERE kind=?", (kind,)).fetchone()
+        if previous and previous[0] == digest:
+            return False
+        # An unbound gallery cannot establish which weights produced its vectors.
+        self.db.execute("UPDATE refs SET model='invalidated:'||model WHERE kind=? AND model=?",
+                        (kind, MODEL_REVISION))
+        self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        self.db.execute("UPDATE events SET status='observing' WHERE status='complete_unknown'")
+        self.reset_votes()
+        self.db.execute("INSERT INTO feature_models(kind,digest) VALUES(?,?) "
+                        "ON CONFLICT(kind) DO UPDATE SET digest=excluded.digest", (kind, digest))
+        return True
 
     @transaction
     def profile(self, identity, kind, label):
@@ -261,7 +294,13 @@ class Store:
         negative = [r["vector"] for r in refs if r["profile_id"] != identity
                     and r["kind"] == profile["kind"] and r["role"] == "validation"]
         train_groups = [r["group_id"] for r in refs if r["profile_id"] == identity and r["role"] == "train"]
-        policy = calibration(train, positive, negative, train_groups)
+        if profile["kind"] == "car":
+            other_train = [r["vector"] for r in refs if r["profile_id"] != identity
+                           and r["kind"] == "car" and r["role"] == "train"]
+            policy = calibration(train, positive, negative, train_groups,
+                                 minimum_similarity=.60, negative_train=other_train)
+        else:
+            policy = calibration(train, positive, negative, train_groups)
         groups = {
             "train": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "train"},
             "positive_test": {r["group_id"] for r in refs if r["group_id"] and r["profile_id"] == identity and r["role"] == "validation"},
@@ -324,6 +363,7 @@ class Store:
 
     def health(self, **value):
         value.update(updated=time.time(), model=MODEL_REVISION,
+                     feature_models=dict(self.db.execute("SELECT kind,digest FROM feature_models")),
                      events=dict(self.db.execute("SELECT status,count(*) FROM events GROUP BY status")))
         pending = self.directory / "health.tmp"
         pending.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
@@ -353,6 +393,17 @@ class Frigate:
         merged = {event["id"]: event for event in recent + active}
         return sorted(merged.values(), key=lambda event: event["start_time"], reverse=True)
 
+    def recording_coverage(self, camera, timestamp):
+        query = urllib.parse.urlencode({"after": timestamp, "before": timestamp})
+        segments = self.json("/" + camera + "/recordings?" + query)
+        if not isinstance(segments, list):
+            raise ValueError("Invalid recording coverage")
+        return {(row["id"], row["start_time"], row["end_time"]) for row in segments
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+                and all(isinstance(row.get(key), (int, float)) and math.isfinite(row[key])
+                        for key in ("start_time", "end_time"))
+                and row["start_time"] <= timestamp <= row["end_time"]}
+
     def snapshot(self, event):
         from PIL import Image
 
@@ -372,6 +423,20 @@ class Frigate:
         actual = float(headers.get("x-frame-time", 0))
         if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
+        if event["label"] == "car":
+            # Event JPEGs come from the small detection stream. Use the native
+            # recording at its verified best-frame time, preserving the same
+            # normalized box. An unfinished/missing recording remains retryable.
+            coverage = self.recording_coverage(event["camera"], expected)
+            if not coverage:
+                raise ValueError("No recording at the exact best-frame timestamp")
+            data = request_bytes(self.base + "/" + event["camera"] + "/recordings/"
+                + str(expected) + "/snapshot.jpg?height=1080",
+                limit=8 * 1024 * 1024, timeout=20, bypass_cache=True)
+            # Frigate rounds up across recording gaps. Verify the exact interval
+            # before and after extraction, including retention/deletion races.
+            if not coverage.intersection(self.recording_coverage(event["camera"], expected)):
+                raise ValueError("Recording coverage changed during extraction")
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if image.width * image.height > Image.MAX_IMAGE_PIXELS:
@@ -445,8 +510,10 @@ def wait_for_gpu(uuid, loaded=False, *, attempts=1):
 
 
 class Encoder:
-    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False):
+    def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False,
+                 car_model=DEFAULT_CAR_MODEL):
         self.model, self.gpu_uuid = model, gpu_uuid
+        self.base_model, self.car_model = model, car_model
         self.audit = audit
         self.wait_for_idle = wait_for_idle
         self.session = None
@@ -455,6 +522,16 @@ class Encoder:
         self.load_mib = 0
         self.current_load_mib = 0
         self.inference_ms = 0.0
+        self.bound_car_digest = None
+        self._car_stamp = self._car_digest = None
+
+    def car_model_digest(self):
+        info = Path(self.car_model).stat()
+        stamp = (self.car_model, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if stamp != self._car_stamp:
+            self._car_digest = model_digest(self.car_model)
+            self._car_stamp = stamp
+        return self._car_digest
 
     def unload(self):
         self.session = None
@@ -470,7 +547,7 @@ class Encoder:
             self.unload()
             raise
         if self.session is None:
-            self.current_load_mib = self.load_mib = 0
+            self.current_load_mib = 0
             ort.preload_dlls()
             options = ort.SessionOptions()
             options.intra_op_num_threads = 1
@@ -491,7 +568,8 @@ class Encoder:
                 self.unload()
                 raise RuntimeError("CUDA-only execution was not established")
             loaded = gpu_stats(self.gpu_uuid)
-            self.current_load_mib = self.load_mib = max(0, before["free_mib"] - loaded["free_mib"])
+            self.current_load_mib = max(0, before["free_mib"] - loaded["free_mib"])
+            self.load_mib = max(self.load_mib, self.current_load_mib)
             if self.load_mib > MODEL_BUDGET_MIB:
                 self.unload()
                 raise RuntimeError("GPU model memory budget exceeded")
@@ -512,23 +590,38 @@ class Encoder:
             raise RuntimeError("GPU headroom lost during inference")
         return output
 
-    def encode(self, data):
+    def encode(self, data, kind="cat"):
         import numpy as np
         from PIL import Image
 
+        if kind not in KINDS:
+            raise ValueError("Only cat/car feature models are available")
+        if (kind == "car" and self.bound_car_digest is not None
+                and self.car_model_digest() != self.bound_car_digest):
+            self.unload()
+            raise RuntimeError("Car model changed before inference; gallery must be rebound")
+        selected_model = self.car_model if kind == "car" else self.base_model
+        if self.model != selected_model:
+            self.unload()
+            self.model = selected_model
         Image.MAX_IMAGE_PIXELS = 8_000_000
         with Image.open(io.BytesIO(data)) as image:
             if min(image.size) < 40 or image.width * image.height > Image.MAX_IMAGE_PIXELS:
                 raise ValueError("Object crop dimensions outside limits")
             image = image.convert("RGB")
-            image.thumbnail((224, 224), Image.Resampling.BILINEAR)
-            canvas = Image.new("RGB", (224, 224), (124, 116, 104))
-            canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
-            array = np.asarray(canvas, dtype=np.float32) / 255.0
-        array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
+            if kind == "car":
+                # The original RGB OSNet graph includes input InstanceNormalization.
+                image = image.resize((208, 208), Image.Resampling.BILINEAR)
+                array = np.asarray(image, dtype=np.float32)
+            else:
+                image.thumbnail((224, 224), Image.Resampling.BILINEAR)
+                canvas = Image.new("RGB", (224, 224), (124, 116, 104))
+                canvas.paste(image, ((224 - image.width) // 2, (224 - image.height) // 2))
+                array = np.asarray(canvas, dtype=np.float32) / 255.0
+                array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
         vector = self.infer(tensor).reshape(-1)
-        if vector.size != FEATURE_DIMENSIONS:
+        if vector.size != (CAR_FEATURE_DIMENSIONS if kind == "car" else FEATURE_DIMENSIONS):
             self.unload()
             raise ValueError("Feature model revision/dimensions do not match")
         return unit(vector.tolist())
@@ -548,7 +641,15 @@ class Encoder:
             path.unlink(missing_ok=True)
 
 
-def run(store, encoder, api, once=False):
+def bind_car_model(store, encoder):
+    digest = encoder.car_model_digest()
+    if encoder.bound_car_digest != digest:
+        encoder.unload()
+    store.bind_model("car", digest)
+    encoder.bound_car_digest = digest
+
+
+def run(store, encoder, api, once=False, refresh_car_model=None):
     stopping = False
 
     def stop(*_):
@@ -559,6 +660,8 @@ def run(store, encoder, api, once=False):
     signal.signal(signal.SIGINT, stop)
     while not stopping:
         try:
+            if refresh_car_model is not None:
+                refresh_car_model()
             version = store.data_version()
             profiles, refs = store.profiles(), store.refs()
             active = [p for p in profiles if p["calibration"].get("enabled")]
@@ -597,7 +700,7 @@ def run(store, encoder, api, once=False):
                         image = api.snapshot(event)
                     except (ValueError, OSError, RemoteError):
                         continue  # Unaligned/low-quality samples remain unknown.
-                    vector = encoder.encode(image)
+                    vector = encoder.encode(image, event["label"])
                     match = choose(vector, profiles, refs, event["label"])
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
@@ -637,7 +740,8 @@ def run(store, encoder, api, once=False):
     encoder.unload()
 
 
-def import_archive(store, directory, image, profile_id, role, group_id, model):
+def import_archive(store, directory, image, profile_id, role, group_id, model,
+                   car_model=DEFAULT_CAR_MODEL):
     """Import one explicitly confirmed proposal without inference or label writes."""
     group_id = encounter_group(group_id, required=True)
     directory = Path(directory).resolve(strict=True)
@@ -653,6 +757,12 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
             digest.update(block)
     models = plan.get("models", {})
     if models.get("feature_revision") != MODEL_REVISION or models.get("model") != digest.hexdigest():
+        raise ValueError("Import requires the original feature model identity")
+    digest = hashlib.sha256()
+    with Path(car_model).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    if models.get("car_model") != digest.hexdigest():
         raise ValueError("Import requires the original feature model identity")
     selected = None
     with (directory / "results.jsonl").open(encoding="utf-8") as stream:
@@ -670,7 +780,8 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
     row, item = selected
     if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
             or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
-            or len(item["vector"]) != FEATURE_DIMENSIONS or len(item["box"]) != 4
+            or len(item["vector"]) != (CAR_FEATURE_DIMENSIONS if item.get("kind") == "car" else FEATURE_DIMENSIONS)
+            or len(item["box"]) != 4
             or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
         raise ValueError("Invalid archive proposal")
     # Stable across renamed directories and sampler frame numbering.
@@ -685,6 +796,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
     parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--car-model", default=os.getenv("FRIGATE_OBJECT_CAR_MODEL", DEFAULT_CAR_MODEL))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")
@@ -719,8 +831,10 @@ def main():
     manual.add_argument("--label", required=True)
     args = parser.parse_args()
     store, api = Store(args.state), Frigate()
-    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe")
+    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model)
     try:
+        if args.command in {"enroll", "probe", "import-archive", "calibrate"}:
+            bind_car_model(store, encoder)
         if args.command == "status":
             health = store.directory / "health.json"
             result = {"profiles": store.profiles(), "references": len(store.refs()),
@@ -730,7 +844,7 @@ def main():
                     ("source", "profile_id", "kind", "role", "group_id")} for row in store.refs()]
         elif args.command == "import-archive":
             result = import_archive(store, args.archive, args.image, args.profile,
-                                    args.role, args.group, args.model)
+                                    args.role, args.group, args.model, args.car_model)
         elif args.command == "curate":
             store.curate_reference(args.source, args.group, args.role)
             result = {"source": args.source, "group_id": encounter_group(args.group), "curated": True}
@@ -744,7 +858,7 @@ def main():
         elif args.command in {"enroll", "probe"}:
             event = api.event(args.event)
             image = api.snapshot(event)
-            vector = encoder.encode(image)
+            vector = encoder.encode(image, event["label"])
             if args.command == "enroll":
                 store.add_reference(args.event, args.profile, event["label"], args.role, vector,
                                     group_id=args.group)
@@ -754,11 +868,11 @@ def main():
             if args.command == "probe":
                 warm = []
                 for _ in range(3):
-                    encoder.encode(image)
+                    encoder.encode(image, event["label"])
                     warm.append(encoder.inference_ms)
                 result.update(executed_providers=encoder.audit_providers(), warm_inference_ms=warm)
         else:
-            run(store, encoder, api, args.once)
+            run(store, encoder, api, args.once, refresh_car_model=lambda: bind_car_model(store, encoder))
             result = {"stopped": True}
         print(json.dumps(result, ensure_ascii=False))
     finally:
