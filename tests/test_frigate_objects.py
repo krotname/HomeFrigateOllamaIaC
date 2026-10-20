@@ -205,6 +205,21 @@ class StorageTests(unittest.TestCase):
                 self.store.remember("another", "2", [], "pending")
         self.assertIsNone(self.store.db.execute("SELECT id FROM events WHERE id='another'").fetchone())
 
+    def test_one_good_frame_per_hard_visit_does_not_make_dense_validation_pass(self):
+        for i in range(3):
+            self.store.add_reference(f"train-{i}", "cat-a", "cat", "train", [1, 0], group_id=f"train-{i}")
+            self.store.add_reference(f"other-{i}", None, "cat", "validation", [0, 1], group_id=f"other-{i}")
+        for group, count, accepted in (("easy", 100, 100), ("hard-a", 10, 1),
+                                       ("hard-b", 10, 1), ("hard-c", 10, 1)):
+            for i in range(count):
+                self.store.add_reference(f"{group}-{i}", "cat-a", "cat", "validation",
+                                         [1, 0] if i < accepted else [0, 1], group_id=group)
+        policy = self.store.calibrate("cat-a")
+        self.assertFalse(policy["enabled"])
+        self.assertGreater(policy["positive_coverage"], .75)
+        self.assertEqual(4, policy["accepted_positive_groups"])
+        self.assertAlmostEqual(.325, policy["positive_group_coverage"])
+
     def test_stale_scan_cannot_restore_votes_cleared_by_another_connection(self):
         other = Store(self.directory.name)
         self.addCleanup(other.db.close)

@@ -273,9 +273,15 @@ class Store:
             accepted_groups = {r["group_id"] for r, match in zip(held_out, predictions)
                                if match and match["id"] == identity}
             accepted = sum(bool(match) and match["id"] == identity for match in predictions)
+            encounter_results = {}
+            for reference, match in zip(held_out, predictions):
+                results = encounter_results.setdefault(reference["group_id"], [])
+                results.append(bool(match) and match["id"] == identity)
+            # Each encounter has equal weight regardless of its frame count.
+            coverages = [sum(results) / len(results) for results in encounter_results.values()]
             policy.update(accepted_positive=accepted, positive_coverage=accepted / len(held_out),
                           accepted_positive_groups=len(accepted_groups),
-                          positive_group_coverage=len(accepted_groups) / len(groups["positive_test"]))
+                          positive_group_coverage=sum(coverages) / len(coverages))
             if (any(match and match["id"] != identity for match in predictions)
                     or len(accepted_groups) < 2
                     or policy["positive_coverage"] < MIN_VALIDATION_COVERAGE
