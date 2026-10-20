@@ -28,7 +28,9 @@ LOG = logging.getLogger("frigate-objects")
 KINDS = {"cat", "car"}
 CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
            "common_camera02", "common_camera03"}
-MODEL_REVISION = "mobilenetv2-12-gap-v1"
+MODEL_REVISION = "dinov2-small-cls-v1"
+DEFAULT_MODEL = "/models/dinov2-small-cls.onnx"
+FEATURE_DIMENSIONS = 384
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
@@ -162,7 +164,13 @@ class Store:
         for row in dirty:
             self.db.execute("UPDATE refs SET group_id='' WHERE source=?", (row["source"],))
             self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (row["kind"],))
-        if dirty:
+        # A new feature space cannot reuse thresholds or temporal votes from
+        # older vectors. Keep the sources for explicit re-encoding.
+        stale_kinds = {row[0] for row in self.db.execute(
+            "SELECT DISTINCT kind FROM refs WHERE model!=?", (MODEL_REVISION,))}
+        for kind in stale_kinds:
+            self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        if dirty or stale_kinds:
             self.reset_votes()
         self.db.commit()
 
@@ -505,7 +513,11 @@ class Encoder:
             array = np.asarray(canvas, dtype=np.float32) / 255.0
         array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
-        return unit(self.infer(tensor).reshape(-1).tolist())
+        vector = self.infer(tensor).reshape(-1)
+        if vector.size != FEATURE_DIMENSIONS:
+            self.unload()
+            raise ValueError("Feature model revision/dimensions do not match")
+        return unit(vector.tolist())
 
     def audit_providers(self):
         if not self.audit or self.session is None:
@@ -658,7 +670,7 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
-    parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", "/models/mobilenetv2-gap.onnx"))
+    parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", DEFAULT_MODEL))
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")

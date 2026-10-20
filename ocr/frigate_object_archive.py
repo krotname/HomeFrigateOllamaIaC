@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from ocr.frigate_caption_worker import RemoteError, request_bytes
-from ocr.frigate_object_worker import CAMERAS, MODEL_REVISION, Encoder, Frigate
+from ocr.frigate_object_worker import CAMERAS, DEFAULT_MODEL, MODEL_REVISION, Encoder, Frigate
 
 
 def get_json(path):
@@ -375,7 +375,7 @@ def main():
     parser.add_argument("--max-seconds", type=int, default=2400)
     parser.add_argument("--max-crops-per-kind", type=int, default=600)
     parser.add_argument("--detector", default="/models/yolov9-t-320.onnx")
-    parser.add_argument("--model", default="/models/mobilenetv2-gap.onnx")
+    parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     args = parser.parse_args()
     if not (all(math.isfinite(value) for value in (args.after, args.before, args.event_after))

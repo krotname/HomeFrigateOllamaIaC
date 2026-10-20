@@ -422,7 +422,7 @@ class ArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             db = sqlite3.connect(directory + "/objects.sqlite")
             db.execute("CREATE TABLE refs(source TEXT PRIMARY KEY,profile_id TEXT,kind TEXT,role TEXT,vector TEXT,model TEXT)")
-            db.execute("INSERT INTO refs VALUES('old',NULL,'car','validation','[1,0]','mobilenetv2-12-gap-v1')")
+            db.execute("INSERT INTO refs VALUES('old',NULL,'car','validation','[1,0]',?)", (MODEL_REVISION,))
             db.commit()
             db.close()
             store = Store(directory)

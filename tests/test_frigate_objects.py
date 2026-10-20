@@ -81,6 +81,23 @@ class StorageTests(unittest.TestCase):
             self.store.add_reference("event-one", "cat-a", "cat", "validation", [1, 0])
         self.assertEqual(1, len(self.store.refs()))
 
+    def test_feature_revision_change_invalidates_thresholds_and_temporal_votes(self):
+        self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
+        self.store.remember("event-one", "123", ["cat-a"], "observing")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        reopened = Store(self.directory.name)
+        try:
+            self.assertEqual([], reopened.refs())
+            self.assertEqual({}, reopened.profiles()[0]["calibration"])
+            event = reopened.db.execute("SELECT * FROM events WHERE id='event-one'").fetchone()
+            self.assertEqual("[]", event["votes"])
+            self.assertEqual("", event["frame"])
+            self.assertEqual(1, reopened.db.execute("SELECT count(*) FROM refs").fetchone()[0])
+        finally:
+            reopened.db.close()
+
     def test_people_and_wrong_kind_never_enter_gallery(self):
         with self.assertRaises(ValueError):
             self.store.profile("someone", "person", "Someone")
