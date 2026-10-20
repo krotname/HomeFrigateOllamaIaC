@@ -15,6 +15,27 @@ from ocr.frigate_object_worker import Encoder, Frigate, MODEL_REVISION, Store, i
 
 
 class ArchiveTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("fcntl"), "Linux advisory locks")
+    def test_archive_output_excludes_overlapping_scans_and_releases_on_exit(self):
+        import fcntl
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=directory)
+            journal = Path(directory, "results.jsonl")
+            journal.write_text('{"id":"saved"}\n')
+            with Path(directory, ".scan.lock").open("ab") as existing:
+                fcntl.flock(existing, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with patch("ocr.frigate_object_archive._scan") as execute:
+                    with self.assertRaisesRegex(RuntimeError, "already being scanned"):
+                        scan(args)
+                    execute.assert_not_called()
+            self.assertEqual('{"id":"saved"}\n', journal.read_text())
+            with patch("ocr.frigate_object_archive._scan", side_effect=ValueError("interrupted")):
+                with self.assertRaisesRegex(ValueError, "interrupted"):
+                    scan(args)
+            with patch("ocr.frigate_object_archive._scan", return_value="resumed"):
+                self.assertEqual("resumed", scan(args))
+
     def test_two_cuda_sessions_account_only_for_their_own_calls(self):
         session = SimpleNamespace(disable_fallback=lambda: None,
             get_providers=lambda: ["CUDAExecutionProvider"],
@@ -42,7 +63,11 @@ class ArchiveTests(unittest.TestCase):
                     store.add_reference("negative", None, "car", "train", [0, 1], group_id="visit")
                 self.assertEqual([], store.refs())
                 store.add_reference("negative", None, "car", "validation", [0, 1], group_id="visit")
+                with self.assertRaisesRegex(ValueError, "Negative references require validation"):
+                    store.curate_reference("negative", "new-visit", "train")
                 self.assertEqual(1, len(store.refs()))
+                self.assertEqual("validation", store.refs()[0]["role"])
+                self.assertEqual("visit", store.refs()[0]["group_id"])
             finally:
                 store.db.close()
 

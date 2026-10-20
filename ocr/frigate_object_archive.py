@@ -214,6 +214,22 @@ def model_identity(args):
 
 
 def scan(args):
+    import fcntl
+
+    os.umask(0o077)
+    directory = Path(args.output)
+    directory.mkdir(parents=True, exist_ok=True)
+    # Keep the inode after closing: unlinking a lock file permits a second lock
+    # while another process still holds the old inode. Kernel releases on exit.
+    with (directory / ".scan.lock").open("ab") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Archive output is already being scanned") from None
+        return _scan(args)
+
+
+def _scan(args):
     import numpy as np
     from PIL import Image
 

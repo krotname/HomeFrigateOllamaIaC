@@ -216,6 +216,8 @@ class Store:
         role = role or row["role"]
         if role not in {"train", "validation"}:
             raise ValueError("Invalid reference role")
+        if not row["profile_id"] and role != "validation":
+            raise ValueError("Negative references require validation")
         others = self.db.execute("SELECT profile_id,kind,role FROM refs WHERE group_id=? AND source!=?",
                                  (group_id, source)).fetchall()
         if any(tuple(other) != (row["profile_id"], row["kind"], role) for other in others):
