@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from ocr.frigate_object_archive import build_plan, detections, event_pages, read_results, recording_spans, sample_plan, scan
 from ocr.frigate_caption_worker import RemoteError
-from ocr.frigate_object_worker import Encoder, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
+from ocr.frigate_object_worker import Encoder, FEATURE_DIMENSIONS, Frigate, MODEL_REVISION, Store, import_archive, wait_for_gpu
 
 
 class ArchiveTests(unittest.TestCase):
@@ -126,12 +126,18 @@ class ArchiveTests(unittest.TestCase):
             (root / filename).write_bytes(b"crop")
             row = {"id": "frame-00001", "camera": "common_camera02", "time": 10,
                    "status": "sampled", "event": None, "crops": [{"image": filename,
-                   "kind": "car", "vector": [1.] + [0.] * 1279, "box": [.1, .1, .5, .5],
+                   "kind": "car", "vector": [1.] + [0.] * (FEATURE_DIMENSIONS - 1), "box": [.1, .1, .5, .5],
                    "confirmed_profile": None, "group_id": None}]}
             (root / "results.jsonl").write_text(json.dumps(row) + "\n")
             store = Store(root / "gallery")
             try:
                 store.profile("car-a", "car", "Car A")
+                row["crops"][0]["vector"] = [1.] + [0.] * 1279
+                (root / "results.jsonl").write_text(json.dumps(row) + "\n")
+                with self.assertRaisesRegex(ValueError, "Invalid archive proposal"):
+                    import_archive(store, root, filename, "car-a", "train", "visit-a", model)
+                row["crops"][0]["vector"] = [1.] + [0.] * (FEATURE_DIMENSIONS - 1)
+                (root / "results.jsonl").write_text(json.dumps(row) + "\n")
                 with self.assertRaisesRegex(ValueError, "Negative references require validation"):
                     import_archive(store, root, filename, None, "train", "visit-negative", model)
                 self.assertEqual([], store.refs())

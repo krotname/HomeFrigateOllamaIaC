@@ -213,15 +213,21 @@ class Store:
                                 (group_id,)).fetchall() if group_id else []
         if any(tuple(row) != (profile_id, kind, role) for row in group):
             raise ValueError("An encounter cannot cross identities or train/validation")
-        if self.db.execute("SELECT 1 FROM refs WHERE source=?", (source,)).fetchone():
-            raise ValueError("Source already enrolled; train/test reuse is forbidden")
-        if self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
+        existing = self.db.execute("SELECT * FROM refs WHERE source=?", (source,)).fetchone()
+        if existing:
+            if existing["model"] == MODEL_REVISION:
+                raise ValueError("Source already enrolled; train/test reuse is forbidden")
+            if tuple(existing[key] for key in ("profile_id", "kind", "role", "group_id")) != (
+                    profile_id, kind, role, group_id):
+                raise ValueError("Re-encoding must preserve identity, kind, role and encounter")
+        if not existing and self.db.execute("SELECT count(*) FROM refs").fetchone()[0] >= MAX_REFERENCES:
             raise ValueError("Reference gallery is full")
         if profile_id and not self.db.execute(
                 "SELECT 1 FROM profiles WHERE id=? AND kind=?", (profile_id, kind)).fetchone():
             raise ValueError("Unknown profile or wrong object kind")
         self.db.execute("INSERT INTO refs(source,profile_id,kind,role,vector,model,group_id) "
-                        "VALUES(?,?,?,?,?,?,?)", (source, profile_id, kind, role,
+                        "VALUES(?,?,?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET "
+                        "vector=excluded.vector,model=excluded.model", (source, profile_id, kind, role,
                         json.dumps(unit(vector)), MODEL_REVISION, group_id))
         # Changing any gallery entry invalidates thresholds of the same object kind.
         self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
@@ -664,7 +670,7 @@ def import_archive(store, directory, image, profile_id, role, group_id, model):
     row, item = selected
     if (row.get("status") != "sampled" or row.get("camera") not in CAMERAS
             or item.get("kind") not in KINDS or not math.isfinite(float(row["time"]))
-            or len(item["vector"]) != 1280 or len(item["box"]) != 4
+            or len(item["vector"]) != FEATURE_DIMENSIONS or len(item["box"]) != 4
             or not all(math.isfinite(float(x)) and 0 <= float(x) <= 1 for x in item["box"])):
         raise ValueError("Invalid archive proposal")
     # Stable across renamed directories and sampler frame numbering.

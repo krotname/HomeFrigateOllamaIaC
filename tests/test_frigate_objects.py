@@ -81,6 +81,37 @@ class StorageTests(unittest.TestCase):
             self.store.add_reference("event-one", "cat-a", "cat", "validation", [1, 0])
         self.assertEqual(1, len(self.store.refs()))
 
+    def test_stale_reference_reencoding_replaces_at_capacity_and_invalidates_policy(self):
+        self.store.add_reference("old-frame", "cat-a", "cat", "validation", [1, 0], group_id="visit-a")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+        self.store.db.commit()
+        self.store.remember("event-one", "123", ["cat-a"], "observing")
+        with patch("ocr.frigate_object_worker.MAX_REFERENCES", 1):
+            self.store.add_reference("old-frame", "cat-a", "cat", "validation", [0, 1], group_id="visit-a")
+        reference = self.store.refs()[0]
+        self.assertEqual(1, len(self.store.refs()))
+        self.assertEqual([0, 1], reference["vector"])
+        self.assertEqual(("cat-a", "validation", "visit-a"),
+                         (reference["profile_id"], reference["role"], reference["group_id"]))
+        self.assertEqual({}, self.store.profiles()[0]["calibration"])
+        self.assertEqual("[]", self.store.db.execute("SELECT votes FROM events").fetchone()[0])
+
+    def test_stale_reference_reencoding_cannot_change_identity_role_or_encounter(self):
+        self.store.profile("cat-b", "cat", "Cat B")
+        self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
+        self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
+        self.store.db.commit()
+        for profile, role, group in (("cat-b", "train", "visit-b"),
+                                     ("cat-a", "validation", "visit-b"),
+                                     ("cat-a", "train", "visit-b")):
+            with self.assertRaisesRegex(ValueError, "Re-encoding must preserve"):
+                self.store.add_reference("old-frame", profile, "cat", role, [0, 1], group_id=group)
+        row = self.store.db.execute("SELECT model,vector,role,group_id FROM refs").fetchone()
+        self.assertEqual("previous-feature-space", row["model"])
+        self.assertEqual([1, 0], json.loads(row["vector"]))
+        self.assertEqual(("train", "visit-a"), (row["role"], row["group_id"]))
+
     def test_feature_revision_change_invalidates_thresholds_and_temporal_votes(self):
         self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
         self.store.remember("event-one", "123", ["cat-a"], "observing")
