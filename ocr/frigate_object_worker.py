@@ -170,6 +170,8 @@ class Store:
             "SELECT DISTINCT kind FROM refs WHERE model!=?", (MODEL_REVISION,))}
         for kind in stale_kinds:
             self.db.execute("UPDATE profiles SET calibration='{}' WHERE kind=?", (kind,))
+        if stale_kinds:
+            self.db.execute("UPDATE events SET status='observing' WHERE status='complete_unknown'")
         if dirty or stale_kinds:
             self.reset_votes()
         self.db.commit()

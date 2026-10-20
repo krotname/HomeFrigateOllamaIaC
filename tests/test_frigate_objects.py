@@ -84,6 +84,7 @@ class StorageTests(unittest.TestCase):
     def test_feature_revision_change_invalidates_thresholds_and_temporal_votes(self):
         self.store.add_reference("old-frame", "cat-a", "cat", "train", [1, 0], group_id="visit-a")
         self.store.remember("event-one", "123", ["cat-a"], "observing")
+        self.store.remember("previous-unknown", "124", [], "complete_unknown")
         self.store.db.execute("UPDATE refs SET model='previous-feature-space'")
         self.store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
         self.store.db.commit()
@@ -94,6 +95,9 @@ class StorageTests(unittest.TestCase):
             event = reopened.db.execute("SELECT * FROM events WHERE id='event-one'").fetchone()
             self.assertEqual("[]", event["votes"])
             self.assertEqual("", event["frame"])
+            unknown = reopened.db.execute("SELECT * FROM events WHERE id='previous-unknown'").fetchone()
+            self.assertEqual("observing", unknown["status"])
+            self.assertEqual("", unknown["frame"])
             self.assertEqual(1, reopened.db.execute("SELECT count(*) FROM refs").fetchone()[0])
         finally:
             reopened.db.close()
