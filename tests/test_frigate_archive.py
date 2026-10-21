@@ -450,6 +450,9 @@ class ArchiveTests(unittest.TestCase):
                 self.kind = kind
                 return [1., 0.]
             def audit_providers(self):
+                if self.kind in ("cat", "two_wheeler") and any(
+                        kind in audited for kind in ("cat", "two_wheeler")):
+                    raise RuntimeError("Base-model profiling already ended")
                 audited.append(self.kind)
                 return ["CUDAExecutionProvider"]
             def unload(self):
@@ -461,7 +464,8 @@ class ArchiveTests(unittest.TestCase):
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
-            objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9} for kind in ("car", "cat", "car")]
+            objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9}
+                       for kind in ("car", "cat", "two_wheeler", "car")]
             # Legacy output does not prove either of the two feature models.
             Path(directory, "execution.json").write_text(json.dumps({"encoder": ["CUDAExecutionProvider"]}))
             with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64, "model": "b" * 64}), \
@@ -473,8 +477,10 @@ class ArchiveTests(unittest.TestCase):
                 scan(args)
             report = json.loads(Path(directory, "report.json").read_text())
             self.assertEqual(["detector", "car", "cat"], audited)
-            self.assertEqual({"car": ["CUDAExecutionProvider"], "cat": ["CUDAExecutionProvider"]},
+            self.assertEqual({"car": ["CUDAExecutionProvider"], "cat": ["CUDAExecutionProvider"],
+                              "two_wheeler": ["CUDAExecutionProvider"]},
                              report["executed_providers"]["encoders"])
+            self.assertEqual(3, sum(report["crops"].values()))
             self.assertNotIn("encoder", report["executed_providers"])
 
     @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),

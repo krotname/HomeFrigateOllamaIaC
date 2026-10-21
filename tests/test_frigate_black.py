@@ -13,6 +13,13 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_two_wheeler_update_preserves_implicit_person_tracking(self):
+        source = {"cameras": {"cam3_ds_i200": {}}}
+        converted = MODULE.configure_two_wheelers(source)
+        self.assertEqual(["person", "bicycle", "motorcycle"],
+                         converted["cameras"]["cam3_ds_i200"]["objects"]["track"])
+        self.assertEqual({"cameras": {"cam3_ds_i200": {}}}, source)
+
     def test_two_wheeler_update_preserves_thresholds_and_other_cameras(self):
         source = self.source()
         source["cameras"]["cam3_ds_i200"] = {"objects": {"track": ["car"],

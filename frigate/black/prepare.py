@@ -116,7 +116,7 @@ def configure_two_wheelers(source):
         if name not in names:
             continue
         objects = camera.setdefault("objects", {})
-        track = objects.get("track", config.get("objects", {}).get("track", []))
+        track = objects.get("track", config.get("objects", {}).get("track", ["person"]))
         objects["track"] = list(dict.fromkeys([*track, "bicycle", "motorcycle"]))
         review = camera.setdefault("review", {}).setdefault("detections", {})
         labels = review.get("labels", config.get("review", {}).get("detections", {}).get("labels"))

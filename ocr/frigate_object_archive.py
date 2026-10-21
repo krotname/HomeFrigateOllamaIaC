@@ -318,7 +318,12 @@ def _scan(args):
                             continue
                         buffer = io.BytesIO()
                         crop.save(buffer, format="JPEG", quality=92)
-                        encoder.audit = item["kind"] not in proof.setdefault("encoders", {})
+                        encoders = proof.setdefault("encoders", {})
+                        shared_kind = {"cat": "two_wheeler", "two_wheeler": "cat"}.get(item["kind"])
+                        if item["kind"] not in encoders and shared_kind in encoders:
+                            # Both kinds execute the same digest-bound DINO model.
+                            encoders[item["kind"]] = encoders[shared_kind]
+                        encoder.audit = item["kind"] not in encoders
                         vector = encoder.encode(buffer.getvalue(), item["kind"])
                         if encoder.audit:
                             proof["encoders"][item["kind"]] = encoder.audit_providers()
