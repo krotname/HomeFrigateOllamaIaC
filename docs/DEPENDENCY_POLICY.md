@@ -14,6 +14,7 @@
 | Ollama model | `huihui_ai/gpt-oss-abliterated:20b` | Local text model for LAN API usage |
 | ASR base image | `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` | CUDA runtime for faster-whisper |
 | ASR model | `Systran/faster-whisper-large-v3` | Local audio transcription |
+| ASR CUDA inference | `ctranslate2==4.7.0` | Avoid 4.8.x CUDA/Thrust invalid-device failures; upgrade only after GPU audio validation |
 | ASR Python runtime | `faster-whisper==1.2.1`, `fastapi==0.138.1` | ASR backend API |
 
 ## Update rules

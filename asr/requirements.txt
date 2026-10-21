@@ -1,5 +1,8 @@
 fastapi==0.142.2
 faster-whisper==1.2.1
+# 4.8.x can fail in CUDA/Thrust on the deployed Tesla GPUs; see
+# https://github.com/OpenNMT/CTranslate2/issues/2064
+ctranslate2==4.7.0
 python-multipart==0.0.32
 requests==2.34.2
 uvicorn[standard]==0.54.0
