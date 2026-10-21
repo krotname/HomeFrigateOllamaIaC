@@ -1,4 +1,4 @@
-"""GPU-only reference matching for cats and cars in Frigate events.
+"""GPU-only reference matching for cats, cars and two-wheelers in Frigate events.
 
 Private profiles/vectors stay in STATE_DIR. No person embeddings, plate OCR,
 continuous video inference, external inference service, or notification channel.
@@ -25,7 +25,10 @@ from ocr.frigate_caption_worker import RemoteError, request_bytes
 
 
 LOG = logging.getLogger("frigate-objects")
-KINDS = {"cat", "car"}
+KINDS = {"cat", "car", "two_wheeler"}
+# COCO has no scooter class. Both detector labels compete in one identity gallery.
+EVENT_KINDS = {"cat": "cat", "car": "car", "bicycle": "two_wheeler",
+               "motorcycle": "two_wheeler"}
 CAMERAS = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200", "common_camera01",
            "common_camera02", "common_camera03"}
 MODEL_REVISION = "dinov2-cat-vehicle-reid-car-v1"
@@ -227,7 +230,7 @@ class Store:
     def profile(self, identity, kind, label):
         if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", identity) or kind not in KINDS
                 or not 1 <= len(label.strip()) <= 80 or any(ord(x) < 32 for x in label)):
-            raise ValueError("Invalid cat/car profile")
+            raise ValueError("Invalid object profile")
         existing = self.db.execute("SELECT * FROM profiles WHERE id=?", (identity,)).fetchone()
         if existing and existing["kind"] != kind:
             raise ValueError("Cannot change profile object kind")
@@ -384,7 +387,7 @@ class Frigate:
         return self.json("/events/" + event_id)
 
     def candidates(self):
-        filters = {"labels": ",".join(sorted(KINDS)), "cameras": ",".join(sorted(CAMERAS)),
+        filters = {"labels": ",".join(sorted(EVENT_KINDS)), "cameras": ",".join(sorted(CAMERAS)),
                    "limit": 100, "has_snapshot": 1, "include_thumbnails": 0}
         recent = self.json("/events?" + urllib.parse.urlencode(
             {**filters, "after": int(time.time() - 300)}))
@@ -407,8 +410,8 @@ class Frigate:
     def snapshot(self, event):
         from PIL import Image
 
-        if event["label"] not in KINDS or event["camera"] not in CAMERAS:
-            raise ValueError("Only cats/cars on the configured property cameras")
+        if event["label"] not in EVENT_KINDS or event["camera"] not in CAMERAS:
+            raise ValueError("Unsupported object or property camera")
         expected = float(event.get("data", {}).get("snapshot_frame_time", 0))
         box = event.get("data", {}).get("box")
         if not math.isfinite(expected) or expected <= 0 or not isinstance(box, list) or len(box) != 4:
@@ -423,7 +426,7 @@ class Frigate:
         actual = float(headers.get("x-frame-time", 0))
         if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
-        if event["label"] == "car":
+        if EVENT_KINDS[event["label"]] in {"car", "two_wheeler"}:
             # Event JPEGs come from the small detection stream. Use the native
             # recording at its verified best-frame time, preserving the same
             # normalized box. An unfinished/missing recording remains retryable.
@@ -455,7 +458,7 @@ class Frigate:
 
     def apply(self, event_id, label, *, manual=False, before_write=None):
         current = self.event(event_id)
-        allowed = KINDS | ({"person"} if manual else set())
+        allowed = set(EVENT_KINDS) | ({"person"} if manual else set())
         if current["label"] not in allowed or current["camera"] not in CAMERAS:
             raise ValueError("Event kind/camera outside allowed scope")
         if not 1 <= len(label.strip()) <= 80 or any(ord(x) < 32 for x in label):
@@ -523,7 +526,17 @@ class Encoder:
         self.current_load_mib = 0
         self.inference_ms = 0.0
         self.bound_car_digest = None
+        self.bound_base_digest = None
+        self._base_stamp = self._base_digest = None
         self._car_stamp = self._car_digest = None
+
+    def base_model_digest(self):
+        info = Path(self.base_model).stat()
+        stamp = (self.base_model, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if stamp != self._base_stamp:
+            self._base_digest = model_digest(self.base_model)
+            self._base_stamp = stamp
+        return self._base_digest
 
     def car_model_digest(self):
         info = Path(self.car_model).stat()
@@ -595,7 +608,11 @@ class Encoder:
         from PIL import Image
 
         if kind not in KINDS:
-            raise ValueError("Only cat/car feature models are available")
+            raise ValueError("Unsupported object feature model")
+        if (kind == "two_wheeler" and self.bound_base_digest is not None
+                and self.base_model_digest() != self.bound_base_digest):
+            self.unload()
+            raise RuntimeError("Two-wheeler model changed; gallery must be rebound")
         if (kind == "car" and self.bound_car_digest is not None
                 and self.car_model_digest() != self.bound_car_digest):
             self.unload()
@@ -649,6 +666,15 @@ def bind_car_model(store, encoder):
     encoder.bound_car_digest = digest
 
 
+def bind_feature_models(store, encoder):
+    bind_car_model(store, encoder)
+    digest = encoder.base_model_digest()
+    if encoder.bound_base_digest != digest:
+        encoder.unload()
+    store.bind_model("two_wheeler", digest)
+    encoder.bound_base_digest = digest
+
+
 def run(store, encoder, api, once=False, refresh_car_model=None):
     stopping = False
 
@@ -672,8 +698,9 @@ def run(store, encoder, api, once=False, refresh_car_model=None):
                 for event in reversed(api.candidates()):
                     if stopping or store.data_version() != version:
                         break
-                    if (event.get("label") not in KINDS or event.get("camera") not in CAMERAS
-                            or not any(p["kind"] == event["label"] for p in active)):
+                    kind = EVENT_KINDS.get(event.get("label"))
+                    if (kind is None or event.get("camera") not in CAMERAS
+                            or not any(p["kind"] == kind for p in active)):
                         continue
                     frame = str(event.get("data", {}).get("snapshot_frame_time", ""))
                     previous = store.db.execute("SELECT * FROM events WHERE id=?", (event["id"],)).fetchone()
@@ -700,8 +727,8 @@ def run(store, encoder, api, once=False, refresh_car_model=None):
                         image = api.snapshot(event)
                     except (ValueError, OSError, RemoteError):
                         continue  # Unaligned/low-quality samples remain unknown.
-                    vector = encoder.encode(image, event["label"])
-                    match = choose(vector, profiles, refs, event["label"])
+                    vector = encoder.encode(image, kind)
+                    match = choose(vector, profiles, refs, kind)
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
                     # Require consecutive matches on strictly increasing best-frame timestamps.
@@ -745,7 +772,7 @@ def import_archive(store, directory, image, profile_id, role, group_id, model,
     """Import one explicitly confirmed proposal without inference or label writes."""
     group_id = encounter_group(group_id, required=True)
     directory = Path(directory).resolve(strict=True)
-    if Path(image).name != image or not re.fullmatch(r"frame-[0-9]+-[0-9]+-(cat|car)\.jpg", image):
+    if Path(image).name != image or not re.fullmatch(r"frame-[0-9]+-[0-9]+-(cat|car|two_wheeler)\.jpg", image):
         raise ValueError("Select one archive crop filename")
     crop = (directory / image).resolve(strict=True)
     if crop.parent != directory or not crop.is_file():
@@ -834,7 +861,7 @@ def main():
     encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model)
     try:
         if args.command in {"enroll", "probe", "import-archive", "calibrate"}:
-            bind_car_model(store, encoder)
+            bind_feature_models(store, encoder)
         if args.command == "status":
             health = store.directory / "health.json"
             result = {"profiles": store.profiles(), "references": len(store.refs()),
@@ -858,21 +885,22 @@ def main():
         elif args.command in {"enroll", "probe"}:
             event = api.event(args.event)
             image = api.snapshot(event)
-            vector = encoder.encode(image, event["label"])
+            kind = EVENT_KINDS[event["label"]]
+            vector = encoder.encode(image, kind)
             if args.command == "enroll":
-                store.add_reference(args.event, args.profile, event["label"], args.role, vector,
+                store.add_reference(args.event, args.profile, kind, args.role, vector,
                                     group_id=args.group)
             result = {"event": args.event, "dimensions": len(vector), "provider": "CUDAExecutionProvider",
                       "load_mib": encoder.load_mib, "inference_ms": encoder.inference_ms,
-                      "match": choose(vector, store.profiles(), store.refs(), event["label"])}
+                      "match": choose(vector, store.profiles(), store.refs(), kind)}
             if args.command == "probe":
                 warm = []
                 for _ in range(3):
-                    encoder.encode(image, event["label"])
+                    encoder.encode(image, kind)
                     warm.append(encoder.inference_ms)
                 result.update(executed_providers=encoder.audit_providers(), warm_inference_ms=warm)
         else:
-            run(store, encoder, api, args.once, refresh_car_model=lambda: bind_car_model(store, encoder))
+            run(store, encoder, api, args.once, refresh_car_model=lambda: bind_feature_models(store, encoder))
             result = {"stopped": True}
         print(json.dumps(result, ensure_ascii=False))
     finally:

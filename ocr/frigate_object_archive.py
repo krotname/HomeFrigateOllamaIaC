@@ -13,7 +13,9 @@ from collections import Counter
 from pathlib import Path
 
 from ocr.frigate_caption_worker import RemoteError, request_bytes
-from ocr.frigate_object_worker import CAMERAS, DEFAULT_CAR_MODEL, DEFAULT_MODEL, MODEL_REVISION, Encoder, Frigate
+from ocr.frigate_object_worker import (
+    CAMERAS, DEFAULT_CAR_MODEL, DEFAULT_MODEL, EVENT_KINDS, MODEL_REVISION, Encoder, Frigate,
+)
 
 
 def get_json(path):
@@ -23,7 +25,7 @@ def get_json(path):
 
 def event_pages(after, before, fetch=get_json):
     """Split saturated time ranges so equal timestamps cannot be lost at a cursor."""
-    filters = {"labels": "cat,car", "cameras": ",".join(sorted(CAMERAS)),
+    filters = {"labels": ",".join(sorted(EVENT_KINDS)), "cameras": ",".join(sorted(CAMERAS)),
                "include_thumbnails": 0, "limit": 200}
     pending, found = [(after, before)], {}
     requests = 0
@@ -94,9 +96,11 @@ def detections(output, threshold=.4):
         raise ValueError("Expected deployed 80-class YOLO model")
     result = []
     # Ignore all other classes, including people. This is not a person classifier.
-    for cls, kind in ((2, "car"), (15, "cat")):
-        selected = rows[(np.argmax(rows[:, 4:], axis=1) == cls) & (rows[:, 4 + cls] >= threshold)]
-        selected = selected[np.argsort(-selected[:, 4 + cls])]
+    classes = np.argmax(rows[:, 4:], axis=1)
+    scores = np.max(rows[:, 4:], axis=1)
+    for class_ids, kind in (((2,), "car"), ((15,), "cat"), ((1, 3), "two_wheeler")):
+        selected = rows[np.isin(classes, class_ids) & (scores >= threshold)]
+        selected = selected[np.argsort(-np.max(selected[:, 4:], axis=1))]
         kept = []
         for row in selected:
             x, y, width, height = (float(value) / 320 for value in row[:4])
@@ -104,7 +108,7 @@ def detections(output, threshold=.4):
             box[2:] = [min(1., x + width / 2) - box[0], min(1., y + height / 2) - box[1]]
             if min(box[2:]) <= 0 or any(overlap(box, item["box"]) > .4 for item in kept):
                 continue
-            kept.append({"kind": kind, "score": float(row[4 + cls]), "box": box})
+            kept.append({"kind": kind, "score": float(max(row[4:])), "box": box})
             if len(kept) >= 8:
                 break
         result.extend(kept)
@@ -148,14 +152,14 @@ def build_plan(after, before, interval, event_after, max_frames):
     minimal = []
     for event in events:
         if (not event.get("has_clip") or event["camera"] not in CAMERAS
-                or event["label"] not in {"cat", "car"}):
+                or event["label"] not in EVENT_KINDS):
             continue
         start = event["start_time"]
         end = min(event.get("end_time") or before, before)
         frame_time = event.get("data", {}).get("snapshot_frame_time")
         if frame_time is None:
             frame_time = start + .5
-        record = {"id": event["id"], "camera": event["camera"], "kind": event["label"],
+        record = {"id": event["id"], "camera": event["camera"], "kind": EVENT_KINDS[event["label"]],
                   "start": start, "end": end, "snapshot_time": frame_time,
                   "box": event.get("data", {}).get("box")}
         minimal.append(record)
@@ -268,6 +272,7 @@ def _scan(args):
     detector = Encoder(args.detector, args.gpu, audit=True, wait_for_idle=True)
     encoder = Encoder(args.model, args.gpu, audit=True, wait_for_idle=True, car_model=args.car_model)
     encoder.bound_car_digest = models["car_model"]
+    encoder.bound_base_digest = models["model"]
     proof_path = directory / "execution.json"
     proof = json.loads(proof_path.read_text(encoding="utf-8")) if proof_path.exists() else {}
     # A legacy generic result cannot establish which feature model ran.

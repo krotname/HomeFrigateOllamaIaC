@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 from ocr.frigate_object_worker import (
-    Encoder, Frigate, Store, bind_car_model, calibration, choose, gpu_available, reference_score, run, unit,
+    Encoder, Frigate, Store, bind_car_model, bind_feature_models, calibration, choose, gpu_available, reference_score, run, unit,
 )
 from ocr.frigate_caption_worker import RemoteError, request_bytes
 
@@ -104,6 +104,22 @@ class MatchingTests(unittest.TestCase):
 
 
 class StorageTests(unittest.TestCase):
+    def test_two_wheeler_model_change_invalidates_its_gallery_only(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            model, car = Path(directory, "base"), Path(directory, "car")
+            model.write_bytes(b"base-v1")
+            car.write_bytes(b"car-v1")
+            encoder = Encoder(str(model), "gpu", car_model=str(car))
+            bind_feature_models(self.store, encoder)
+            self.store.profile("bike", "two_wheeler", "Bike")
+            self.store.profile("cat", "cat", "Cat")
+            self.store.add_reference("bike-event", "bike", "two_wheeler", "train", [1, 0], group_id="bike-visit")
+            self.store.add_reference("cat-event", "cat", "cat", "train", [1, 0], group_id="cat-visit")
+            model.write_bytes(b"base-v2-different")
+            bind_feature_models(self.store, encoder)
+            self.assertEqual(["cat-event"], [row["source"] for row in self.store.refs()])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.store = Store(self.directory.name)
@@ -340,6 +356,29 @@ class StorageTests(unittest.TestCase):
 
 
 class IntegrationPolicyTests(unittest.TestCase):
+    def test_two_wheeler_class_flip_keeps_identity_and_confirmation_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            self.addCleanup(store.db.close)
+            store.profile("scooter-a", "two_wheeler", "Scooter A")
+            store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+            store.db.commit()
+            api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+            match = {"id": "scooter-a", "label": "Scooter A"}
+            with patch.object(api, "snapshot", return_value=b"jpg"), patch.object(
+                    encoder, "encode", return_value=[1, 0]) as encode, patch(
+                    "ocr.frigate_object_worker.choose", return_value=match) as choose_match, patch.object(
+                    api, "apply", return_value=True) as write:
+                for label, frame in (("bicycle", 1), ("motorcycle", 1), ("motorcycle", 2)):
+                    event = {"id": "1-a", "label": label, "camera": "common_camera02",
+                             "data": {"snapshot_frame_time": frame}}
+                    with patch.object(api, "candidates", return_value=[event]):
+                        run(store, encoder, api, once=True)
+                    self.assertEqual(int(frame == 2), write.call_count)
+                self.assertEqual(2, encode.call_count)
+                self.assertTrue(all(call.args[1] == "two_wheeler" for call in encode.call_args_list))
+                self.assertTrue(all(call.args[3] == "two_wheeler" for call in choose_match.call_args_list))
+
     def test_confirmation_requires_consecutive_matches_on_newer_frames(self):
         for votes, timestamp, expected in ((["car-a", "car-b"], 2, False),
                                            (["car-a", None], 2, False),
