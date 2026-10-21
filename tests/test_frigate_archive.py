@@ -15,6 +15,19 @@ from ocr.frigate_object_worker import CAR_FEATURE_DIMENSIONS, Encoder, FEATURE_D
 
 
 class ArchiveTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("numpy"), "numpy available on inference host")
+    def test_two_wheeler_cross_class_nms_excludes_people_and_low_scores(self):
+        import numpy as np
+        rows = np.zeros((84, 100), dtype=np.float32)
+        for index, (cls, score, x) in enumerate(((1, .8, 100), (3, .9, 100),
+                                                (0, .99, 220), (1, .39, 250))):
+            rows[:4, index] = [x, 100, 60, 60]
+            rows[4 + cls, index] = score
+        result = detections(rows)
+        self.assertEqual(1, len(result))
+        self.assertEqual("two_wheeler", result[0]["kind"])
+        self.assertAlmostEqual(.9, result[0]["score"], places=6)
+
     def test_null_best_snapshot_still_samples_the_recorded_clip(self):
         event = {"id": "recorded", "start_time": 10, "end_time": 50, "has_clip": True,
                  "camera": "common_camera02", "label": "car", "data": {"snapshot_frame_time": None}}
@@ -196,7 +209,7 @@ class ArchiveTests(unittest.TestCase):
             previous = json.dumps({"id": "f1", "camera": "common_camera01", "status": "sampled",
                                    "crops": [{"kind": "car"}, {"kind": "car"}]}) + "\n"
             Path(directory, "results.jsonl").write_text(previous)
-            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64}), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64, "model": "b" * 64}), \
                     patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.Encoder") as encoder:
                 with self.assertRaisesRegex(ValueError, "crop count exceeds"):
@@ -363,7 +376,7 @@ class ArchiveTests(unittest.TestCase):
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
-            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64}), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64, "model": "b" * 64}), \
                     patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.request_bytes", side_effect=RemoteError(404, "absent")):
                 scan(args)
@@ -404,7 +417,7 @@ class ArchiveTests(unittest.TestCase):
                 "status": "sampled", "crops": [{"kind": "car", "fingerprint": 0}]}) + "\n", encoding="utf-8")
             plan["jobs"].insert(0, {"id": "old", "camera": "common_camera01", "time": 0, "event": None})
             objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9} for kind in ("car", "cat")]
-            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64}), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64, "model": "b" * 64}), \
                     patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.Encoder", FakeEncoder), \
                     patch("ocr.frigate_object_archive.request_bytes", return_value=data.getvalue()), \
@@ -437,6 +450,9 @@ class ArchiveTests(unittest.TestCase):
                 self.kind = kind
                 return [1., 0.]
             def audit_providers(self):
+                if self.kind in ("cat", "two_wheeler") and any(
+                        kind in audited for kind in ("cat", "two_wheeler")):
+                    raise RuntimeError("Base-model profiling already ended")
                 audited.append(self.kind)
                 return ["CUDAExecutionProvider"]
             def unload(self):
@@ -448,10 +464,11 @@ class ArchiveTests(unittest.TestCase):
             plan = {"after": 0, "before": 1, "event_after": 0, "interval": 1,
                 "events": [], "coverage": {}, "jobs": [{"id": "f1", "camera": "common_camera01",
                                                        "time": 0, "event": None}]}
-            objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9} for kind in ("car", "cat", "car")]
+            objects = [{"kind": kind, "box": [0, 0, 1, 1], "score": .9}
+                       for kind in ("car", "cat", "two_wheeler", "car")]
             # Legacy output does not prove either of the two feature models.
             Path(directory, "execution.json").write_text(json.dumps({"encoder": ["CUDAExecutionProvider"]}))
-            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64}), \
+            with patch("ocr.frigate_object_archive.model_identity", return_value={"car_model": "a" * 64, "model": "b" * 64}), \
                     patch("ocr.frigate_object_archive.build_plan", return_value=plan), \
                     patch("ocr.frigate_object_archive.Encoder", FakeEncoder), \
                     patch("ocr.frigate_object_archive.request_bytes", return_value=data.getvalue()), \
@@ -460,8 +477,10 @@ class ArchiveTests(unittest.TestCase):
                 scan(args)
             report = json.loads(Path(directory, "report.json").read_text())
             self.assertEqual(["detector", "car", "cat"], audited)
-            self.assertEqual({"car": ["CUDAExecutionProvider"], "cat": ["CUDAExecutionProvider"]},
+            self.assertEqual({"car": ["CUDAExecutionProvider"], "cat": ["CUDAExecutionProvider"],
+                              "two_wheeler": ["CUDAExecutionProvider"]},
                              report["executed_providers"]["encoders"])
+            self.assertEqual(3, sum(report["crops"].values()))
             self.assertNotIn("encoder", report["executed_providers"])
 
     @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),

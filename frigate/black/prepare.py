@@ -66,7 +66,7 @@ def black_config(source: dict, *, staging: bool = False, cpu: bool = False) -> d
         config["ffmpeg"]["hwaccel_args"] = "preset-nvidia"
     config["detect"] = {"enabled": True, "fps": 3}
     config["motion"] = {"enabled": True}
-    config["objects"] = {"track": ["person", "cat", "dog", "car"]}
+    config["objects"] = {"track": ["person", "cat", "dog", "car", "bicycle", "motorcycle"]}
     config["review"] = {"alerts": {"enabled": True, "labels": ["person"]}, "detections": {"enabled": True, "labels": ["cat", "dog"]}}
     config["snapshots"] = {"enabled": True, "retain": {"default": 3}}
     config["record"] = {
@@ -107,6 +107,24 @@ def write_atomic(path: Path, data: str) -> None:
             os.unlink(temporary)
 
 
+def configure_two_wheelers(source):
+    """Add tracking/review only on property cameras; preserve runtime overrides."""
+    config = copy.deepcopy(source)
+    names = {"cam1_ds_i202", "cam2_ds_i551", "cam3_ds_i200",
+             "common_camera01", "common_camera02", "common_camera03"}
+    for name, camera in config.get("cameras", {}).items():
+        if name not in names:
+            continue
+        objects = camera.setdefault("objects", {})
+        track = objects.get("track", config.get("objects", {}).get("track", ["person"]))
+        objects["track"] = list(dict.fromkeys([*track, "bicycle", "motorcycle"]))
+        review = camera.setdefault("review", {}).setdefault("detections", {})
+        labels = review.get("labels", config.get("review", {}).get("detections", {}).get("labels"))
+        if labels is not None:
+            review["labels"] = list(dict.fromkeys([*labels, "bicycle", "motorcycle"]))
+    return config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
@@ -115,14 +133,23 @@ def main() -> None:
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--courtyard-only", action="store_true",
                         help="Change only courtyard review alerts/detections in an existing config")
+    parser.add_argument("--two-wheelers-only", action="store_true",
+                        help="Add two-wheeler tracking/review without regenerating runtime config")
     options = parser.parse_args()
     source = yaml.safe_load(options.source.read_text())
-    if options.courtyard_only and (options.cpu or options.staging):
-        parser.error("--courtyard-only cannot be combined with --cpu or --staging")
-    converted = configure_courtyard_review(source) if options.courtyard_only else black_config(
-        source, staging=options.staging, cpu=options.cpu)
+    if ((options.courtyard_only or options.two_wheelers_only) and (options.cpu or options.staging)
+            or options.courtyard_only and options.two_wheelers_only):
+        parser.error("Choose one configuration mode")
+    if options.two_wheelers_only:
+        converted = configure_two_wheelers(source)
+    elif options.courtyard_only:
+        converted = configure_courtyard_review(source)
+    else:
+        converted = configure_two_wheelers(black_config(source, staging=options.staging, cpu=options.cpu))
     write_atomic(options.destination, yaml.safe_dump(converted, sort_keys=False, allow_unicode=True))
-    if options.courtyard_only:
+    if options.two_wheelers_only:
+        print("Configured property two-wheeler tracking/review")
+    elif options.courtyard_only:
         print("Configured one courtyard alert camera; recording and other cameras unchanged")
     else:
         print(f"Prepared {len(converted['cameras'])} cameras; archive={'disabled' if options.staging else 'White NFS'}")

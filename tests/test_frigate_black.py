@@ -13,6 +13,25 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_two_wheeler_update_preserves_implicit_person_tracking(self):
+        source = {"cameras": {"cam3_ds_i200": {}}}
+        converted = MODULE.configure_two_wheelers(source)
+        self.assertEqual(["person", "bicycle", "motorcycle"],
+                         converted["cameras"]["cam3_ds_i200"]["objects"]["track"])
+        self.assertEqual({"cameras": {"cam3_ds_i200": {}}}, source)
+
+    def test_two_wheeler_update_preserves_thresholds_and_other_cameras(self):
+        source = self.source()
+        source["cameras"]["cam3_ds_i200"] = {"objects": {"track": ["car"],
+            "filters": {"car": {"threshold": .8}}}, "review": {"alerts": {"labels": ["person"]}}}
+        converted = MODULE.configure_two_wheelers(source)
+        self.assertEqual(source["cameras"]["living"], converted["cameras"]["living"])
+        camera = converted["cameras"]["cam3_ds_i200"]
+        self.assertEqual(["car", "bicycle", "motorcycle"], camera["objects"]["track"])
+        self.assertEqual(source["cameras"]["cam3_ds_i200"]["objects"]["filters"], camera["objects"]["filters"])
+        self.assertEqual({"labels": ["person"]}, camera["review"]["alerts"])
+        self.assertEqual(converted, MODULE.configure_two_wheelers(converted))
+
     def source(self):
         return {
             "auth": {"enabled": False}, "mqtt": {"enabled": False},
