@@ -456,11 +456,14 @@ class Frigate:
             crop.convert("RGB").save(output, format="JPEG", quality=90)
             return output.getvalue()
 
-    def apply(self, event_id, label, *, manual=False, before_write=None):
+    def apply(self, event_id, label, *, manual=False, expected_kind=None, before_write=None):
         current = self.event(event_id)
         allowed = set(EVENT_KINDS) | ({"person"} if manual else set())
         if current["label"] not in allowed or current["camera"] not in CAMERAS:
             raise ValueError("Event kind/camera outside allowed scope")
+        if not manual and (expected_kind not in KINDS
+                           or EVENT_KINDS[current["label"]] != expected_kind):
+            raise ValueError("Event gallery changed before label write")
         if not 1 <= len(label.strip()) <= 80 or any(ord(x) < 32 for x in label):
             raise ValueError("Invalid label")
         existing = current.get("sub_label")
@@ -742,7 +745,8 @@ def run(store, encoder, api, once=False, refresh_car_model=None):
                             if not store.remember_current(version, event["id"], frame, votes, "pending"):
                                 raise RuntimeError("Gallery changed before label POST")
 
-                        success = api.apply(event["id"], match["label"], before_write=before_write)
+                        success = api.apply(event["id"], match["label"], expected_kind=kind,
+                                            before_write=before_write)
                         status = "applied" if success else "protected"
                         store.remember(event["id"], frame, votes, status)
                     else:

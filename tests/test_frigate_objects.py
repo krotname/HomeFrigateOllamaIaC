@@ -457,7 +457,7 @@ class IntegrationPolicyTests(unittest.TestCase):
         api = Frigate()
         with patch.object(api, "json", return_value={"id": "1-a", "label": "car",
                           "camera": "common_camera02", "sub_label": "Human label"}) as request:
-            self.assertFalse(api.apply("1-a", "Other label"))
+            self.assertFalse(api.apply("1-a", "Other label", expected_kind="car"))
             self.assertEqual(1, request.call_count)
 
     def test_auto_path_rejects_people_even_without_an_existing_label(self):
@@ -468,12 +468,28 @@ class IntegrationPolicyTests(unittest.TestCase):
                 api.apply("1-a", "Someone")
             self.assertEqual(1, request.call_count)
 
+    def test_auto_write_rechecks_gallery_but_accepts_two_wheeler_class_flip(self):
+        api = Frigate()
+        for current, accepted in (("car", False), ("cat", False),
+                                  ("bicycle", True), ("motorcycle", True)):
+            with self.subTest(current=current):
+                event = {"id": "1-a", "label": current, "camera": "common_camera02",
+                         "sub_label": "Scooter A"}
+                with patch.object(api, "json", return_value=event) as request:
+                    if accepted:
+                        self.assertTrue(api.apply("1-a", "Scooter A", expected_kind="two_wheeler"))
+                    else:
+                        with self.assertRaises(ValueError):
+                            api.apply("1-a", "Scooter A", expected_kind="two_wheeler")
+                    self.assertFalse(any(call.args[0].endswith("/sub_label")
+                                         for call in request.call_args_list))
+
     def test_label_write_requires_authoritative_readback(self):
         api = Frigate()
         empty = {"id": "1-a", "label": "car", "camera": "common_camera02", "sub_label": None}
         with patch.object(api, "json", return_value=empty), patch("ocr.frigate_object_worker.time.sleep"):
             with self.assertRaises(RuntimeError):
-                api.apply("1-a", "Blue car")
+                api.apply("1-a", "Blue car", expected_kind="car")
 
     def test_async_label_update_is_confirmed_without_repeating_post(self):
         api = Frigate()
@@ -481,7 +497,7 @@ class IntegrationPolicyTests(unittest.TestCase):
         saved = {**empty, "sub_label": "Blue car"}
         with patch.object(api, "json", side_effect=[empty, {"success": True}, empty, empty, saved]) as request:
             with patch("ocr.frigate_object_worker.time.sleep"):
-                self.assertTrue(api.apply("1-a", "Blue car"))
+                self.assertTrue(api.apply("1-a", "Blue car", expected_kind="car"))
             self.assertEqual(1, sum(call.args[0].endswith("/sub_label") for call in request.call_args_list))
 
     def test_uncertain_write_is_not_sent_again_on_next_worker_poll(self):
@@ -498,7 +514,8 @@ class IntegrationPolicyTests(unittest.TestCase):
             with patch.object(api, "candidates", return_value=[event]), patch.object(api, "snapshot", return_value=b"jpg"):
                 with patch.object(encoder, "encode", return_value=[1, 0]), patch(
                         "ocr.frigate_object_worker.choose", return_value={"id": "car-a", "label": "Car A"}):
-                    def uncertain(*_, before_write=None):
+                    def uncertain(*_, expected_kind=None, before_write=None):
+                        self.assertEqual("car", expected_kind)
                         before_write()
                         raise RuntimeError("Uncertain write")
 
