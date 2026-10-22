@@ -36,6 +36,7 @@ DEFAULT_MODEL = "/models/dinov2-small-cls.onnx"
 DEFAULT_CAR_MODEL = "/models/vehicle-reid-0001-static208.onnx"
 FEATURE_DIMENSIONS = 384
 CAR_FEATURE_DIMENSIONS = 512
+TWO_WHEELER_CLASSES = ("kugoo-g2-pro-max", "kugoo-v6", None)
 MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
@@ -91,19 +92,31 @@ def reference_score(vector, references, groups=None):
     return sum(scores[:2]) / min(2, len(scores)) if scores else -1.0
 
 
+def class_probabilities(vector):
+    if (len(vector) != len(TWO_WHEELER_CLASSES)
+            or any(not math.isfinite(x) or x < 0 for x in vector) or sum(vector) <= 0):
+        raise ValueError("Invalid two-wheeler classifier probabilities")
+    total = sum(vector)
+    return [x / total for x in vector]
+
+
 def calibration(positive_train, positive_test, negative_test, train_groups=None,
-                *, minimum_similarity=.85, negative_train=()):
+                *, minimum_similarity=.85, negative_train=(), probability_index=None):
     """Threshold selection on separate events; these are small-sample checks."""
     counts = {"train": len(positive_train), "positive_test": len(positive_test),
               "negative_test": len(negative_test)}
     if counts["train"] < 3 or counts["positive_test"] < 2 or counts["negative_test"] < 3:
         return {"enabled": False, "reason": "insufficient_separate_examples", **counts}
-    low_positive = min(reference_score(x, positive_train, train_groups) for x in positive_test)
-    high_negative = max(reference_score(x, positive_train, train_groups) for x in negative_test)
-    high_training_negative = max((reference_score(x, positive_train, train_groups)
-                                  for x in negative_train), default=-1.0)
+    def score(vector):
+        if probability_index is not None:
+            return class_probabilities(vector)[probability_index]
+        return reference_score(vector, positive_train, train_groups)
+
+    low_positive = min(score(x) for x in positive_test)
+    high_negative = max(score(x) for x in negative_test)
+    high_training_negative = max((score(x) for x in negative_train), default=-1.0)
     threshold = max(minimum_similarity, high_negative + 0.04, high_training_negative + 0.08)
-    accepted = sum(reference_score(x, positive_train, train_groups) >= threshold for x in positive_test)
+    accepted = sum(score(x) >= threshold for x in positive_test)
     coverage = accepted / len(positive_test)
     enabled = threshold <= .995 and accepted >= 2 and coverage >= MIN_VALIDATION_COVERAGE
     return {"enabled": enabled, "reason": "validated" if enabled else "overlapping_examples",
@@ -114,9 +127,19 @@ def calibration(positive_train, positive_test, negative_test, train_groups=None,
 
 
 def choose(vector, profiles, references, kind):
+    probabilistic = kind == "two_wheeler" and any(
+        p["kind"] == kind and p["calibration"].get("score_type") == "class_probability"
+        for p in profiles)
+    probabilities = class_probabilities(vector) if probabilistic else None
     ranked = []
     for p in profiles:
         if p["kind"] != kind:
+            continue
+        if probabilistic:
+            if (p["id"] not in TWO_WHEELER_CLASSES[:-1]
+                    or p["calibration"].get("score_type") != "class_probability"):
+                continue
+            ranked.append((probabilities[TWO_WHEELER_CLASSES.index(p["id"])], p))
             continue
         train = [r for r in references if r["profile_id"] == p["id"] and r["role"] == "train"]
         ranked.append((reference_score(vector, [r["vector"] for r in train],
@@ -128,7 +151,10 @@ def choose(vector, profiles, references, kind):
     policy = profile["calibration"]
     runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
     unknowns = [r for r in references if r["kind"] == kind and not r["profile_id"]]
-    if unknowns:
+    if probabilistic:
+        runner_up = max(probabilities[i] for i, identity in enumerate(TWO_WHEELER_CLASSES)
+                        if identity != profile["id"])
+    elif unknowns:
         runner_up = max(runner_up, reference_score(vector, [r["vector"] for r in unknowns],
                                                   [r.get("group_id", str(i)) for i, r in enumerate(unknowns)]))
     if (not policy.get("enabled") or score < policy["threshold"]
@@ -153,6 +179,7 @@ def transaction(method):
 
 class Store:
     def __init__(self, directory):
+        self.two_wheeler_classifier = False
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.directory / "objects.sqlite", timeout=10)
@@ -240,6 +267,8 @@ class Store:
 
     @transaction
     def add_reference(self, source, profile_id, kind, role, vector, *, group_id=None):
+        if kind == "two_wheeler" and self.two_wheeler_classifier:
+            class_probabilities(vector)
         if kind not in KINDS or role not in {"train", "validation"}:
             raise ValueError("Only cat/car train/validation references are accepted")
         if not profile_id and role != "validation":
@@ -302,6 +331,12 @@ class Store:
                            and r["kind"] == "car" and r["role"] == "train"]
             policy = calibration(train, positive, negative, train_groups,
                                  minimum_similarity=.60, negative_train=other_train)
+        elif profile["kind"] == "two_wheeler" and self.two_wheeler_classifier:
+            if identity not in TWO_WHEELER_CLASSES[:-1]:
+                raise ValueError("Profile is absent from the fitted two-wheeler classifier")
+            policy = calibration(train, positive, negative, train_groups,
+                                 probability_index=TWO_WHEELER_CLASSES.index(identity))
+            policy["score_type"] = "class_probability"
         else:
             policy = calibration(train, positive, negative, train_groups)
         groups = {
@@ -517,9 +552,10 @@ def wait_for_gpu(uuid, loaded=False, *, attempts=1):
 
 class Encoder:
     def __init__(self, model, gpu_uuid, audit=False, wait_for_idle=False,
-                 car_model=DEFAULT_CAR_MODEL):
+                 car_model=DEFAULT_CAR_MODEL, two_wheeler_model=None):
         self.model, self.gpu_uuid = model, gpu_uuid
         self.base_model, self.car_model = model, car_model
+        self.two_wheeler_model = two_wheeler_model
         self.audit = audit
         self.wait_for_idle = wait_for_idle
         self.session = None
@@ -534,10 +570,11 @@ class Encoder:
         self._car_stamp = self._car_digest = None
 
     def base_model_digest(self):
-        info = Path(self.base_model).stat()
-        stamp = (self.base_model, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        path = self.two_wheeler_model or self.base_model
+        info = Path(path).stat()
+        stamp = (path, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
         if stamp != self._base_stamp:
-            self._base_digest = model_digest(self.base_model)
+            self._base_digest = model_digest(path)
             self._base_stamp = stamp
         return self._base_digest
 
@@ -579,6 +616,11 @@ class Encoder:
                     "arena_extend_strategy": "kSameAsRequested", "cudnn_conv_algo_search": "HEURISTIC",
                     "cudnn_conv_use_max_workspace": "0"})])
             self.session.disable_fallback()
+            if self.two_wheeler_model and self.model == self.two_wheeler_model:
+                metadata = self.session.get_modelmeta().custom_metadata_map
+                if metadata.get("two_wheeler_classes") != json.dumps(TWO_WHEELER_CLASSES):
+                    self.unload()
+                    raise ValueError("Two-wheeler classifier class order is not verified")
             # ORT can register CPU EP even when assigning nodes to it is disabled.
             if "CUDAExecutionProvider" not in self.session.get_providers():
                 self.unload()
@@ -621,6 +663,8 @@ class Encoder:
             self.unload()
             raise RuntimeError("Car model changed before inference; gallery must be rebound")
         selected_model = self.car_model if kind == "car" else self.base_model
+        if kind == "two_wheeler" and self.two_wheeler_model:
+            selected_model = self.two_wheeler_model
         if self.model != selected_model:
             self.unload()
             self.model = selected_model
@@ -633,6 +677,9 @@ class Encoder:
                 # The original RGB OSNet graph includes input InstanceNormalization.
                 image = image.resize((208, 208), Image.Resampling.BILINEAR)
                 array = np.asarray(image, dtype=np.float32)
+            elif kind == "two_wheeler" and self.two_wheeler_model:
+                image = image.resize((224, 224), Image.Resampling.BICUBIC)
+                array = (np.asarray(image, dtype=np.float32) / 255.0 - .5) / .5
             else:
                 image.thumbnail((224, 224), Image.Resampling.BILINEAR)
                 canvas = Image.new("RGB", (224, 224), (124, 116, 104))
@@ -641,7 +688,10 @@ class Encoder:
                 array = (array - np.array([.485, .456, .406], dtype=np.float32)) / np.array([.229, .224, .225], dtype=np.float32)
         tensor = np.ascontiguousarray(array.transpose(2, 0, 1)[None])
         vector = self.infer(tensor).reshape(-1)
-        if vector.size != (CAR_FEATURE_DIMENSIONS if kind == "car" else FEATURE_DIMENSIONS):
+        dimensions = (CAR_FEATURE_DIMENSIONS if kind == "car" else
+                      len(TWO_WHEELER_CLASSES) if kind == "two_wheeler" and self.two_wheeler_model
+                      else FEATURE_DIMENSIONS)
+        if vector.size != dimensions:
             self.unload()
             raise ValueError("Feature model revision/dimensions do not match")
         return unit(vector.tolist())
@@ -676,6 +726,7 @@ def bind_feature_models(store, encoder):
         encoder.unload()
     store.bind_model("two_wheeler", digest)
     encoder.bound_base_digest = digest
+    store.two_wheeler_classifier = bool(encoder.two_wheeler_model)
 
 
 def run(store, encoder, api, once=False, refresh_car_model=None):
@@ -755,6 +806,7 @@ def run(store, encoder, api, once=False, refresh_car_model=None):
                             break
                 store.health(state="watching", gpu_loaded=encoder.session is not None,
                              gpu_uuid=encoder.gpu_uuid, load_mib=encoder.load_mib,
+                             two_wheeler_classifier=bool(encoder.two_wheeler_model),
                              last_inference_ms=encoder.inference_ms)
         except Exception as exc:
             encoder.unload()
@@ -828,6 +880,8 @@ def main():
     parser.add_argument("--state", default=os.getenv("FRIGATE_OBJECT_STATE", "/state"))
     parser.add_argument("--model", default=os.getenv("FRIGATE_OBJECT_MODEL", DEFAULT_MODEL))
     parser.add_argument("--car-model", default=os.getenv("FRIGATE_OBJECT_CAR_MODEL", DEFAULT_CAR_MODEL))
+    parser.add_argument("--two-wheeler-model", default=os.getenv("FRIGATE_OBJECT_TWO_WHEELER_MODEL") or None,
+                        help="Optional SigLIP 2 ONNX with fitted G2/V6/other probability output")
     parser.add_argument("--gpu", default=os.getenv("FRIGATE_OBJECT_GPU", ""))
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status")
@@ -862,7 +916,8 @@ def main():
     manual.add_argument("--label", required=True)
     args = parser.parse_args()
     store, api = Store(args.state), Frigate()
-    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model)
+    encoder = Encoder(args.model, args.gpu, audit=args.command == "probe", car_model=args.car_model,
+                      two_wheeler_model=args.two_wheeler_model)
     try:
         if args.command in {"enroll", "probe", "import-archive", "calibrate"}:
             bind_feature_models(store, encoder)

@@ -103,6 +103,62 @@ class MatchingTests(unittest.TestCase):
 
 
 
+class ProbabilityClassifierTests(unittest.TestCase):
+    def test_unknown_and_disabled_classes_still_compete(self):
+        policy = {"enabled": True, "threshold": .85, "margin": .06,
+                  "score_type": "class_probability"}
+        profiles = [{"id": identity, "kind": "two_wheeler", "label": identity,
+                     "calibration": dict(policy)}
+                    for identity in ("kugoo-g2-pro-max", "kugoo-v6")]
+        self.assertEqual("kugoo-v6", choose(unit([.01, .96, .03]), profiles, [], "two_wheeler")["id"])
+        self.assertIsNone(choose(unit([.03, .12, .85]), profiles, [], "two_wheeler"))
+        self.assertIsNone(choose(unit([.47, .50, .03]), profiles, [], "two_wheeler"))
+        profiles[1]["calibration"]["enabled"] = False
+        self.assertIsNone(choose(unit([.01, .96, .03]), profiles, [], "two_wheeler"))
+
+    def test_probability_calibration_rejects_a_foreign_positive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            self.addCleanup(store.db.close)
+            store.two_wheeler_classifier = True
+            for identity, vector in (("kugoo-g2-pro-max", [.96, .02, .02]),
+                                     ("kugoo-v6", [.02, .96, .02])):
+                store.profile(identity, "two_wheeler", identity)
+                for role, count in (("train", 3), ("validation", 2)):
+                    for i in range(count):
+                        source = f"{identity}-{role}-{i}"
+                        store.add_reference(source, identity, "two_wheeler", role, vector, group_id=source)
+            for i in range(3):
+                store.add_reference(f"unknown-{i}", None, "two_wheeler", "validation",
+                                    [.1, .15, .75], group_id=f"unknown-{i}")
+            for identity in ("kugoo-g2-pro-max", "kugoo-v6"):
+                policy = store.calibrate(identity)
+                self.assertTrue(policy["enabled"])
+                self.assertEqual(1., policy["positive_group_coverage"])
+            with self.assertRaisesRegex(ValueError, "probabilities"):
+                store.add_reference("old-dino", None, "two_wheeler", "validation", [1, 0], group_id="old")
+            store.add_reference("hard-negative", None, "two_wheeler", "validation",
+                                [.01, .98, .01], group_id="hard-negative")
+            self.assertFalse(store.calibrate("kugoo-v6")["enabled"])
+
+    @unittest.skipUnless(importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL"),
+                         "image libraries available in GPU runtime")
+    def test_siglip_preprocessing_and_class_dimension_are_separate_from_cats(self):
+        import numpy as np
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new("RGB", (80, 40), (10, 20, 30)).save(buffer, format="PNG")
+        encoder = Encoder("cat", "gpu", two_wheeler_model="siglip")
+        with patch.object(encoder, "infer", return_value=np.array([[.01, .96, .03]])) as infer:
+            self.assertEqual(3, len(encoder.encode(buffer.getvalue(), "two_wheeler")))
+            np.testing.assert_allclose(infer.call_args.args[0][0, :, 0, 0],
+                                       (np.array([10, 20, 30])/255-.5)/.5, atol=1e-6)
+            self.assertEqual("siglip", encoder.model)
+        with patch.object(encoder, "infer", return_value=np.ones(384)):
+            self.assertEqual(384, len(encoder.encode(buffer.getvalue(), "cat")))
+            self.assertEqual("cat", encoder.model)
+
+
 class StorageTests(unittest.TestCase):
     def test_two_wheeler_model_change_invalidates_its_gallery_only(self):
         from pathlib import Path
