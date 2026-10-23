@@ -152,6 +152,18 @@ def configure_kugoo_detector(source: dict) -> dict:
     for camera, (width, height) in measured.items():
         if camera not in config.get("cameras", {}):
             raise ValueError(f"Measured Kugoo camera is missing: {camera}")
+        inputs = config["cameras"][camera].get("ffmpeg", {}).get("inputs", [])
+        sub_path = f"rtsp://127.0.0.1:8554/{camera}_sub"
+        if any(item.get("path") == sub_path and "detect" in item.get("roles", [])
+               for item in inputs):
+            main_path = f"rtsp://127.0.0.1:8554/{camera}_main"
+            main = next((item for item in inputs if item.get("path") == main_path), None)
+            if main is None:
+                raise ValueError(f"Measured full-resolution stream is missing: {camera}")
+            for item in inputs:
+                item["roles"] = [role for role in item.get("roles", []) if role != "detect"]
+            main["roles"].append("detect")
+            inputs[:] = [item for item in inputs if item["roles"]]
         config["cameras"][camera].setdefault("detect", {}).update(
             width=width, height=height, fps=1)
     return config

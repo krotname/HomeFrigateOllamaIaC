@@ -13,6 +13,27 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_native_kugoo_uses_main_stream_without_changing_recording(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {
+                      "ffmpeg": {"inputs": [
+                          {"path": "rtsp://127.0.0.1:8554/common_camera03_main",
+                           "input_args": ["-rtsp_transport", "tcp"], "roles": ["record"]},
+                          {"path": "rtsp://127.0.0.1:8554/common_camera03_sub",
+                           "roles": ["detect"]}]},
+                      "record": {"enabled": True}}}}
+        before = copy.deepcopy(source)
+        result = MODULE.configure_kugoo_detector(source)
+        inputs = result["cameras"]["common_camera03"]["ffmpeg"]["inputs"]
+        self.assertEqual(1, len(inputs))
+        self.assertEqual({**before["cameras"]["common_camera03"]["ffmpeg"]["inputs"][0],
+                          "roles": ["record", "detect"]}, inputs[0])
+        self.assertEqual(before["cameras"]["common_camera03"]["record"],
+                         result["cameras"]["common_camera03"]["record"])
+        self.assertEqual(before, source)
+        self.assertEqual(result, MODULE.configure_kugoo_detector(result))
+
     def test_native_kugoo_limits_two_wheeler_tracking_to_measured_views(self):
         source = {"model": {"path": "yolov9-t-320.onnx"},
                   "detectors": {"objects": {"type": "onnx"}},
