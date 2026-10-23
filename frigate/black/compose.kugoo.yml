@@ -6,3 +6,13 @@ services:
         target: /opt/frigate/frigate/detectors/plugins/kugoo.py
         read_only: true
         bind: {create_host_path: false}
+      - type: bind
+        source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/kugoo_snapshots.py
+        target: /opt/frigate/frigate/track/kugoo_snapshots.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/tracked_object.py
+        target: /opt/frigate/frigate/track/tracked_object.py
+        read_only: true
+        bind: {create_host_path: false}
