@@ -59,7 +59,7 @@ class DetectorContextTest(unittest.TestCase):
         context=(100,((10,20,330,340),),((30,40,60,70),))
         detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03',(10,20,330,340),context) or frame
         remote=namespace['RemoteObjectDetector']();remote.name='camera03';remote.detection_queue=__import__('queue').Queue()
-        remote.set_region((10,20,330,340));remote.set_frame(100,[(10,20,330,340)],[(30,40,60,70)]);remote.send()
+        remote.set_region((10,20,330,340));remote.set_frame(100,[(10,20,330,340)],[(30,40,60,70)],(720,1280));remote.send()
         process=namespace['ObjectDetectProcess']();process.detection_queue=remote.detection_queue
         self.assertEqual(process.run(detector, 'frame'), 'frame')
         self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03',(10,20,330,340),context))
@@ -74,7 +74,7 @@ class DetectorContextTest(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('adapter',Path(__file__).with_name('prepare_snapshot_patch.py'))
         adapter=importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
         source='def run(object_detector,tensor_input,region):\n    region_detections = object_detector.detect(tensor_input)\n    return region_detections\n'
-        source+=('def process(object_detector,frame_time,regions,object_tracker):\n'
+        source+=('def process(object_detector,frame_time,regions,object_tracker,frame_shape):\n'
                  '    detections=[]\n'
                  '    if True:\n'
                  '        if True:\n'
@@ -88,9 +88,28 @@ class DetectorContextTest(unittest.TestCase):
         self.assertEqual(detector.mock_calls,[call.set_region((1,2,3,4)),call.detect('frame')])
         from types import SimpleNamespace
         tracker=SimpleNamespace(untracked_object_boxes=[(3,4,5,6)],tracked_objects={'bike':{'label':'bicycle','box':(2,3,4,5)},'car':{'label':'car','box':(1,1,2,2)}})
-        namespace['process'](detector,123,[(1,2,3,4)],tracker)
-        detector.set_frame.assert_called_once_with(123,[(1,2,3,4)],[(3,4,5,6),(2,3,4,5)])
+        namespace['process'](detector,123,[(1,2,3,4)],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(123,[(1,2,3,4)],[(2,3,4,5)],(720,1280))
         with self.assertRaises(ValueError):adapter.patch_video_context('changed')
+
+
+class ContextRegionTest(unittest.TestCase):
+    def test_full_view_scan_covers_native_frame_without_losing_motion_regions(self):
+        small=(850,300,1170,620)
+        for camera,height,width in [('cam1_ds_i202',720,1280),('common_camera03',1080,1920)]:
+            views=[module.native_context_regions(camera,n,[small],[],(height,width)) for n in range(6)]
+            self.assertTrue(all(small in regions and len(regions)<=2 for regions in views))
+            self.assertEqual(0,min(regions[-1][0] for regions in views))
+            self.assertEqual(width,max(regions[-1][2] for regions in views))
+            self.assertEqual(height,max(regions[-1][3] for regions in views))
+        self.assertEqual([small],module.native_context_regions('other',0,[small],[],(720,1280)))
+
+    def test_tracked_scooter_gets_full_context_between_scan_turns(self):
+        box=(730,300,1080,620)
+        regions=module.native_context_regions('cam1_ds_i202',0,[(850,300,1170,620)],[box],(720,1280))
+        left,top,right,bottom=regions[-1]
+        self.assertLessEqual(left,box[0]);self.assertGreaterEqual(right,box[2])
+        self.assertLessEqual(top,box[1]);self.assertGreaterEqual(bottom,box[3])
 
 
 if __name__ == "__main__":

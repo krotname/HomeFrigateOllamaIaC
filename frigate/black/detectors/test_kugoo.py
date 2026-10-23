@@ -122,25 +122,25 @@ class PreservationTests(unittest.TestCase):
 
     def test_later_regions_of_same_camera_get_supplemental_turns(self):
         det=self.detector();first=(0,0,320,320);second=(320,0,640,320)
-        det.set_camera('a',first,(1,[first,second],[]));self.assertTrue(det.supplement_turn(1))
-        det.set_camera('a',second,(1,[first,second],[]));self.assertFalse(det.supplement_turn(1.1))
+        det.set_camera('a',first,(1,[first,second],[]));self.assertFalse(det.supplement_turn(1))
+        det.set_camera('a',second,(1,[first,second],[]));self.assertTrue(det.supplement_turn(1.1))
         det.set_camera('a',first,(2,[first,second],[]));self.assertFalse(det.supplement_turn(2))
         det.set_camera('a',second,(2,[first,second],[]));self.assertTrue(det.supplement_turn(2.1))
         det.set_camera('a',first,(3,[first],[]));self.assertTrue(det.supplement_turn(3))
 
-    def test_native_tracked_box_gets_three_frames_then_scan_turn(self):
+    def test_only_selected_native_context_can_run_supplement(self):
         det=self.detector();first=(0,0,320,320);second=(320,0,640,320)
         box=(400,100,500,200)
         for frame_time in range(1,5):
-            expected=first if frame_time==4 else second
+            expected=first
             for region in (first,second):
                 det.set_camera('a',region,(frame_time,[second,first],[box]))
                 self.assertEqual(det.supplement_turn(frame_time),region==expected)
 
-    def test_focus_rotates_native_context_sizes_instead_of_locking_partial_crop(self):
+    def test_small_native_crop_cannot_consume_large_context_turn(self):
         det=self.detector();small=(0,0,320,320);large=(0,0,640,640)
         for frame_time in range(1,8):
-            expected=small if frame_time<=3 else large
+            expected=large
             for region in (small,large):
                 det.set_camera('a',region,(frame_time,[small,large],[(100,100,200,200)]))
                 self.assertEqual(det.supplement_turn(frame_time),region==expected)

@@ -5,6 +5,24 @@ from frigate.util.image import is_better_thumbnail as original_is_better_thumbna
 from frigate.util.image import on_edge
 
 
+def native_context_regions(camera, turn, regions, tracked_boxes, frame_shape):
+    """Add one bounded, native-resolution view without cutting a scooter in half."""
+    if camera not in {"cam1_ds_i202", "common_camera03"} or not regions:
+        return regions
+    height, width = frame_shape[:2]
+    side = min(960, width, height)
+    tiles = [(x, y, x + side, y + side)
+             for x in sorted({0, (width - side) // 2, width - side})
+             for y in sorted({0, height - side})]
+    selected = tiles[turn % len(tiles)]
+    if tracked_boxes and turn % 4 != 3:
+        box = max(tracked_boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        selected = min(tiles, key=lambda r: ((r[0] + r[2]) / 2 - cx) ** 2
+                       + ((r[1] + r[3]) / 2 - cy) ** 2)
+    return [tuple(region) for region in regions if tuple(region) != selected] + [selected]
+
+
 def is_better_thumbnail(label_attributes, current_thumb, new_obj, frame_shape):
     if original_is_better_thumbnail(label_attributes, current_thumb, new_obj, frame_shape):
         return True

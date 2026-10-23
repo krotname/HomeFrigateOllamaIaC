@@ -186,16 +186,7 @@ class KugooDetector(DetectionApi):
             return False
         plan = self.plans.get(self.camera)
         if plan is None or plan['time'] != frame_time:
-            turn = 0 if plan is None else plan['turn']+1
-            selected = regions[turn % len(regions)]
-            if tracked_boxes and turn % 4 != 3:
-                box = tracked_boxes[turn % len(tracked_boxes)]
-                cx, cy = (box[0]+box[2])/2, (box[1]+box[3])/2
-                covering = [region for region in regions if region[0] <= cx <= region[2] and region[1] <= cy <= region[3]]
-                if covering:
-                    covering.sort(key=lambda region: (region[2]-region[0])*(region[3]-region[1]))
-                    selected = covering[(turn // 4) % len(covering)]
-            plan = {'time':frame_time, 'turn':turn, 'region':selected, 'done':False}
+            plan = {'time':frame_time, 'region':regions[-1], 'done':False}
             self.plans[self.camera] = plan
         if plan['done'] or self.region != plan['region']:
             return False

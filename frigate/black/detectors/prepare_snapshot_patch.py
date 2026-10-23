@@ -30,7 +30,12 @@ def patch_detector_context(source):
         raise ValueError("Pinned Frigate remote queue contract changed")
     after = after.replace(send, "        self.detection_queue.put((self.name, getattr(self, \"kugoo_region\", None), getattr(self, \"kugoo_frame\", None)))", 1)
     method = ('\n    def set_region(self, region):\n        self.kugoo_region = tuple(region)\n'
-              '\n    def set_frame(self, frame_time, regions, tracked_boxes):\n        self.kugoo_frame = (frame_time, tuple(regions), tuple(tracked_boxes))\n')
+              '\n    def set_frame(self, frame_time, regions, tracked_boxes, frame_shape):\n'
+              '        if self.name in ("cam1_ds_i202", "common_camera03"):\n'
+              '            from frigate.track.kugoo_snapshots import native_context_regions\n'
+              '            self.kugoo_turn = getattr(self, "kugoo_turn", -1) + 1\n'
+              '            regions[:] = native_context_regions(self.name, self.kugoo_turn, regions, tracked_boxes, frame_shape)\n'
+              '        self.kugoo_frame = (frame_time, tuple(regions), tuple(tracked_boxes))\n')
     before = before.replace(queue_marker, queue_marker + '\n                region = None\n                frame_context = None\n                if isinstance(connection_id, tuple):\n                    connection_id, region, frame_context = connection_id', 1)
     before = before.replace(marker, addition + marker, 1)
     return before + remote_marker + method + after
@@ -44,7 +49,7 @@ def patch_video_context(source):
     frame_marker = '            for region in regions:\n                detections.extend('
     frame_addition = ('            frame_hook = getattr(object_detector, "set_frame", None)\n'
                       '            if frame_hook is not None:\n'
-                      '                frame_hook(frame_time, regions, object_tracker.untracked_object_boxes + [obj["box"] for obj in object_tracker.tracked_objects.values() if obj["label"] in ("bicycle", "motorcycle")])\n')
+                      '                frame_hook(frame_time, regions, [obj["box"] for obj in object_tracker.tracked_objects.values() if obj["label"] in ("bicycle", "motorcycle")], frame_shape)\n')
     if addition + marker in source and frame_addition + frame_marker in source:
         return source
     if source.count(marker) != 1 or source.count(frame_marker) != 1:
