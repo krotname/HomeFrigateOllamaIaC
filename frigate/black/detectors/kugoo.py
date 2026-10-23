@@ -93,7 +93,8 @@ def append_proposals(base, output, threshold, size=320):
         box = np.clip(np.array([y, x, y+height, x+width])/size, 0, 1)
         if box[2] <= box[0] or box[3] <= box[1]:
             continue
-        if any(row[1] > 0 and int(row[0]) in (1, 3) and overlap(box, row[2:]) > .5 for row in result):
+        if any(row[1] >= predictions[index, 4] and int(row[0]) in (1, 3)
+               and overlap(box, row[2:]) > .5 for row in result):
             continue
         slot = next(empty, None)
         if slot is None:

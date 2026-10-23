@@ -27,7 +27,16 @@ class PreservationTests(unittest.TestCase):
 
     def test_existing_two_wheeler_is_not_duplicated(self):
         self.base[0,0]=1
+        self.base[0,1]=.995
         np.testing.assert_array_equal(module.append_proposals(self.base,self.output,.7),self.base)
+
+    def test_weaker_base_two_wheeler_does_not_hide_stronger_proposal(self):
+        for score in (.2,.75):
+            with self.subTest(score=score):
+                self.base[0,:2]=[3,score]
+                result=module.append_proposals(self.base,self.output,.7)
+                np.testing.assert_array_equal(result[:3],self.base[:3])
+                np.testing.assert_allclose(result[3],[1,.99,.1,.1,.9,.9],atol=1e-6)
 
     def test_coco_bicycle_channel_and_640_coordinates(self):
         output=np.zeros((1,84,2),dtype=np.float32)
