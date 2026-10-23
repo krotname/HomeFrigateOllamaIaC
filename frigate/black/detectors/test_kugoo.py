@@ -29,6 +29,20 @@ class PreservationTests(unittest.TestCase):
         self.base[0,0]=1
         np.testing.assert_array_equal(module.append_proposals(self.base,self.output,.7),self.base)
 
+    def test_partial_two_wheeler_uses_complete_box_without_inflating_score(self):
+        self.base[0]=[3,.995,.2,.2,.6,.6]
+        result=module.append_proposals(self.base,self.output,.7)
+        np.testing.assert_allclose(result[0],[3,.99,.1,.1,.9,.9],atol=1e-6)
+        np.testing.assert_array_equal(result[1:3],self.base[1:3])
+        self.assertEqual(np.count_nonzero(result[:,1]),3)
+        self.assertEqual(float(self.base[0,1]),float(np.float32(.995)))
+
+    def test_proposal_containing_multiple_two_wheelers_does_not_replace_them(self):
+        self.base[0]=[1,.9,.2,.2,.6,.6]
+        self.base[1]=[3,.9,.3,.3,.7,.7]
+        result=module.append_proposals(self.base,self.output,.7)
+        np.testing.assert_array_equal(result[:3],self.base[:3])
+
     def test_coco_bicycle_channel_and_640_coordinates(self):
         output=np.zeros((1,84,2),dtype=np.float32)
         output[0,:4,:]=np.array([[320,100],[320,100],[512,80],[512,80]])
