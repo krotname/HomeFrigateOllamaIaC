@@ -58,7 +58,7 @@ class PreservationTests(unittest.TestCase):
         result.camera_counts={}
         result.status=Mock();result.load=Mock(side_effect=RuntimeError('load failure'))
         result.camera='a';result.region=(0,0,320,320)
-        result.frame=(1,[result.region],[]);result.plans={};result.last_attempts={}
+        result.frame=(1,[result.region],[]);result.plans={};result.last_attempts={};result.last_seen={}
         return result
 
     def test_busy_or_low_memory_skips_supplement(self):
@@ -109,15 +109,16 @@ class PreservationTests(unittest.TestCase):
         state.assert_called_once()
 
     def test_busy_stream_does_not_starve_another_camera(self):
-        det=self.detector();region=det.region;frame=det.frame
-        self.assertTrue(det.supplement_turn(1))
-        det.set_camera('b',region,frame);self.assertTrue(det.supplement_turn(1.1))
-        self.assertFalse(det.supplement_turn(3))
-        det.set_camera('a',region,(2,[region],[]));self.assertFalse(det.supplement_turn(1.4))
-        self.assertTrue(det.supplement_turn(1.6))
+        det=self.detector();region=det.region;turns={'a':[],'b':[]}
+        for second in range(1,12):
+            for camera in ('a','b'):
+                det.set_camera(camera,region,(second,[region],[]))
+                if det.supplement_turn(second):turns[camera].append(second)
+        self.assertEqual(turns,{'a':[1,2,3,8,9,10,11],'b':[4,5,6,7]})
 
     def test_offline_camera_cannot_hold_queue_and_unmeasured_camera_is_skipped(self):
         det=self.detector();region=det.region;frame=det.frame
+        det.last_seen['b']=1
         det.set_camera('b');self.assertFalse(det.supplement_turn(1))
         det.set_camera('other',region,frame);self.assertFalse(det.supplement_turn(4.1))
         det.set_camera('a',region,frame);self.assertTrue(det.supplement_turn(4.1))

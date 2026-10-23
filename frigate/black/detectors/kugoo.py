@@ -126,6 +126,7 @@ class KugooDetector(DetectionApi):
         self.frame = None
         self.plans = {}
         self.last_attempts = {}
+        self.last_seen = {}
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
         self.camera_counts = {}
 
@@ -185,6 +186,13 @@ class KugooDetector(DetectionApi):
         frame_time, regions, tracked_boxes = self.frame
         regions = [tuple(region) for region in regions]
         if not regions:
+            return False
+        self.last_seen[self.camera] = now
+        active = [camera for camera in self.config.supplement_cameras
+                  if now - self.last_seen.get(camera, float('-inf')) < 3]
+        # Give a stream consecutive opportunities without sleeping in the shared
+        # detector. A missing stream ages out instead of holding another one.
+        if len(active) > 1 and active[int(now // 4) % len(active)] != self.camera:
             return False
         plan = self.plans.get(self.camera)
         if plan is None or plan['time'] != frame_time:
