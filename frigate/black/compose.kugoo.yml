@@ -2,6 +2,11 @@ services:
   frigate:
     volumes:
       - type: bind
+        source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/detection_base.py
+        target: /opt/frigate/frigate/object_detection/base.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
         source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/kugoo.py
         target: /opt/frigate/frigate/detectors/plugins/kugoo.py
         read_only: true

@@ -32,6 +32,7 @@ class KugooDetectorConfig(BaseDetectorConfig):
     supplement_threshold: float = Field(default=0.7, ge=0.7, le=1)
     supplement_pyramid: bool = False
     supplement_warmup_seconds: float = Field(default=30, ge=0, le=60)
+    supplement_cameras: list[str] = Field(default_factory=list)
 
 
 def gpu_state():
@@ -74,7 +75,7 @@ def overlap(first, second):
 
 
 def append_proposals(base, output, threshold, size=320):
-    """Keep every base row in place; NMS applies only to supplemental proposals."""
+    """Preserve base detections and sort for Frigate's first-low-score cutoff."""
     predictions = output[0].T
     if predictions.shape[1] == 84:
         predictions = predictions[:, [0, 1, 2, 3, 5]]
@@ -100,7 +101,7 @@ def append_proposals(base, output, threshold, size=320):
         if slot is None:
             break
         result[slot] = [1, float(predictions[index, 4]), *box]
-    return result
+    return result[np.argsort(-result[:, 1], kind="stable")]
 
 
 class KugooDetector(DetectionApi):
@@ -121,7 +122,8 @@ class KugooDetector(DetectionApi):
         self.retry_after = 0.0
         self.last_status = 0.0
         self.last_reason = None
-        self.deferrals = 0
+        self.camera = None
+        self.pending = {}
         self.warmup_until = time.monotonic() + detector_config.supplement_warmup_seconds
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
 
@@ -165,6 +167,21 @@ class KugooDetector(DetectionApi):
         self.session = session
         self.cuda_audited = False
 
+    def set_camera(self, camera):
+        self.camera = camera
+
+    def supplement_turn(self, now):
+        if self.camera not in self.config.supplement_cameras:
+            return False
+        self.pending = {camera: seen for camera, seen in self.pending.items() if now-seen <= 3}
+        self.pending[self.camera] = now
+        if now-self.last_attempt < self.config.supplement_interval:
+            return False
+        if next(iter(self.pending)) != self.camera:
+            return False
+        del self.pending[self.camera]
+        return True
+
     def detect_raw(self, tensor_input):
         base_input = tensor_input
         if tensor_input.shape[2:] != (320, 320):
@@ -172,17 +189,9 @@ class KugooDetector(DetectionApi):
             base_input = cv2.resize(pixels, (320, 320), interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)[None]
         base = self.base.detect_raw(np.ascontiguousarray(base_input))
         now = time.monotonic()
-        if now < self.retry_after:
+        if now < self.retry_after or now < self.warmup_until or not self.supplement_turn(now):
             return base
-        delay = self.config.supplement_interval - (now-self.last_attempt)
-        if delay > 0:
-            if now >= getattr(self, "warmup_until", 0):
-                self.deferrals = getattr(self, "deferrals", 0) + 1
-                if self.deferrals < 3:
-                    return base
-                self.deferrals = 0
-            time.sleep(delay)
-        self.last_attempt = time.monotonic()
+        self.last_attempt = now
         try:
             state = gpu_state()
             required = HEADROOM_MIB + (BUDGET_MIB if self.session is None else 0)

@@ -140,7 +140,8 @@ def configure_kugoo_detector(source: dict) -> dict:
     model.update(width=960, height=960)
     detectors[name] = {**detector, "type": "kugoo_onnx", "device": "GPU",
                        "supplement_model": "/config/model_cache/kugoo-yolo11n-pyramid.onnx",
-                       "supplement_threshold": .7, "supplement_interval": .55}
+                       "supplement_threshold": .7, "supplement_interval": .55,
+                       "supplement_cameras": ["cam1_ds_i202", "common_camera03"]}
     measured = {"cam1_ds_i202": (1280, 720), "common_camera03": (1920, 1080)}
     for camera, values in config.get("cameras", {}).items():
         if camera not in measured:

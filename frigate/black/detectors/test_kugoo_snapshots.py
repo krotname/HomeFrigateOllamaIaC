@@ -38,5 +38,25 @@ class SnapshotRefreshTest(unittest.TestCase):
             self.assertTrue(self.refresh(label="cat"))
 
 
+class DetectorContextTest(unittest.TestCase):
+    def test_exact_queue_camera_reaches_detector_before_inference(self):
+        spec = importlib.util.spec_from_file_location("adapter", Path(__file__).with_name("prepare_snapshot_patch.py"))
+        adapter = importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
+        source = ('class ObjectDetectProcess:\n'
+                  '    def run(self, object_detector, connection_id, input_frame):\n'
+                  '        if True:\n'
+                  '            detections = object_detector.detect_raw(input_frame)\n'
+                  '            return detections\n')
+        patched = adapter.patch_detector_context(source)
+        self.assertEqual(patched, adapter.patch_detector_context(patched))
+        namespace = {};exec(patched, namespace)
+        from unittest.mock import Mock, call
+        detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03') or frame
+        self.assertEqual(namespace['ObjectDetectProcess']().run(detector, 'camera03', 'frame'), 'frame')
+        self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03'))
+        with self.assertRaises(ValueError):
+            adapter.patch_detector_context(source.replace('input_frame)', 'other_frame)'))
+
+
 if __name__ == "__main__":
     unittest.main()
