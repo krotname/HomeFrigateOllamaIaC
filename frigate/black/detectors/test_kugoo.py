@@ -110,11 +110,11 @@ class PreservationTests(unittest.TestCase):
 
     def test_busy_stream_does_not_starve_another_camera(self):
         det=self.detector();region=det.region;turns={'a':[],'b':[]}
-        for second in range(1,12):
+        for second in range(1,24):
             for camera in ('a','b'):
                 det.set_camera(camera,region,(second,[region],[]))
                 if det.supplement_turn(second):turns[camera].append(second)
-        self.assertEqual(turns,{'a':[1,2,3,8,9,10,11],'b':[4,5,6,7]})
+        self.assertEqual(turns,{'a':[*range(1,8),*range(16,24)],'b':[*range(8,16)]})
 
     def test_offline_camera_cannot_hold_queue_and_unmeasured_camera_is_skipped(self):
         det=self.detector();region=det.region;frame=det.frame

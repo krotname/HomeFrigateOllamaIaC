@@ -192,7 +192,7 @@ class KugooDetector(DetectionApi):
                   if now - self.last_seen.get(camera, float('-inf')) < 3]
         # Give a stream consecutive opportunities without sleeping in the shared
         # detector. A missing stream ages out instead of holding another one.
-        if len(active) > 1 and active[int(now // 4) % len(active)] != self.camera:
+        if len(active) > 1 and active[int(now // 8) % len(active)] != self.camera:
             return False
         plan = self.plans.get(self.camera)
         if plan is None or plan['time'] != frame_time:

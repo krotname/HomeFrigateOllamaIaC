@@ -49,7 +49,7 @@ def patch_video_context(source):
     frame_marker = '            for region in regions:\n                detections.extend('
     frame_addition = ('            frame_hook = getattr(object_detector, "set_frame", None)\n'
                       '            if frame_hook is not None:\n'
-                      '                if frame_time - getattr(object_detector, "kugoo_candidates_time", float("-inf")) >= 8:\n'
+                '                if frame_time - getattr(object_detector, "kugoo_candidates_time", float("-inf")) >= 16:\n'
                       '                    object_detector.kugoo_candidates = []\n'
                       '                frame_hook(frame_time, regions, [obj["box"] for obj in object_tracker.tracked_objects.values() if obj["label"] in ("bicycle", "motorcycle")] + getattr(object_detector, "kugoo_candidates", []), frame_shape)\n')
     candidates_marker = '            consolidated_detections = reduce_detections(frame_shape, detections)'

@@ -99,11 +99,11 @@ class DetectorContextTest(unittest.TestCase):
         namespace['reduce_detections']=lambda shape,detections:[]
         namespace['process'](detector,125,[],tracker,(720,1280))
         detector.set_frame.reset_mock()
-        namespace['process'](detector,131,[],tracker,(720,1280))
-        detector.set_frame.assert_called_once_with(131,[],[(700,300,1100,650)],(720,1280))
+        namespace['process'](detector,139,[],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(139,[],[(700,300,1100,650)],(720,1280))
         detector.set_frame.reset_mock()
-        namespace['process'](detector,132,[],tracker,(720,1280))
-        detector.set_frame.assert_called_once_with(132,[],[],(720,1280))
+        namespace['process'](detector,140,[],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(140,[],[],(720,1280))
         with self.assertRaises(ValueError):adapter.patch_video_context('changed')
 
 
