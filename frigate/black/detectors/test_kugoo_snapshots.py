@@ -14,7 +14,7 @@ class SnapshotRefreshTest(unittest.TestCase):
         self.original.start()
         self.addCleanup(self.original.stop)
         self.current = {"frame_time": 100, "score": .9, "area": 10000, "box": (100, 100, 200, 200)}
-        self.new = {**self.current, "frame_time": 106, "score": .8, "label": "bicycle"}
+        self.new = {**self.current, "frame_time": 120, "score": .8, "label": "bicycle"}
 
     def refresh(self, **values):
         return module.is_better_thumbnail([], self.current, {**self.new, **values}, (720, 1280))
@@ -28,7 +28,7 @@ class SnapshotRefreshTest(unittest.TestCase):
             self.assertFalse(self.refresh(label=label))
 
     def test_low_quality_stale_and_nonfinite_frames_do_not_refresh(self):
-        for values in ({"frame_time": 100}, {"frame_time": 99}, {"frame_time": 104.9},
+        for values in ({"frame_time": 100}, {"frame_time": 99}, {"frame_time": 119.9},
                        {"score": .69}, {"score": float("nan")}, {"area": 8999},
                        {"box": (0, 100, 200, 200)}):
             self.assertFalse(self.refresh(**values), values)
