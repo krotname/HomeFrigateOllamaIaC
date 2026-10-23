@@ -101,7 +101,7 @@ class DetectorContextTest(unittest.TestCase):
 
 class ContextRegionTest(unittest.TestCase):
     def test_idle_camera_still_scans_without_motion_or_confirmed_tracks(self):
-        views=[module.native_context_regions('cam1_ds_i202',n,[],[],(720,1280)) for n in range(3)]
+        views=[module.native_context_regions('cam1_ds_i202',n,[],[],(720,1280)) for n in range(12)]
         self.assertTrue(all(len(view)==1 for view in views))
         self.assertEqual({0,280,560},{view[0][0] for view in views})
         self.assertEqual([],module.native_context_regions('other',0,[],[],(720,1280)))
@@ -109,7 +109,7 @@ class ContextRegionTest(unittest.TestCase):
     def test_full_view_scan_covers_native_frame_without_losing_motion_regions(self):
         small=(850,300,1170,620)
         for camera,height,width in [('cam1_ds_i202',720,1280),('common_camera03',1080,1920)]:
-            views=[module.native_context_regions(camera,n,[small],[],(height,width)) for n in range(6)]
+            views=[module.native_context_regions(camera,n,[small],[],(height,width)) for n in range(24)]
             self.assertTrue(all(small in regions and len(regions)<=2 for regions in views))
             self.assertEqual(0,min(regions[-1][0] for regions in views))
             self.assertEqual(width,max(regions[-1][2] for regions in views))
@@ -122,6 +122,14 @@ class ContextRegionTest(unittest.TestCase):
         left,top,right,bottom=regions[-1]
         self.assertLessEqual(left,box[0]);self.assertGreaterEqual(right,box[2])
         self.assertLessEqual(top,box[1]);self.assertGreaterEqual(bottom,box[3])
+
+    def test_persistent_bottom_track_does_not_hide_top_scan_tiles(self):
+        box=(1100,900,1400,1060)
+        scans=[module.native_context_regions('common_camera03',turn,[],[box],(1080,1920))[-1]
+               for turn in range(3,24,4)]
+        self.assertEqual(6,len(set(scans)))
+        self.assertEqual({0,120},{view[1] for view in scans})
+        self.assertEqual({0,480,960},{view[0] for view in scans})
 
 
 if __name__ == "__main__":
