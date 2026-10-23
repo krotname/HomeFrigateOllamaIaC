@@ -7,7 +7,7 @@ from frigate.util.image import on_edge
 
 def native_context_regions(camera, turn, regions, tracked_boxes, frame_shape):
     """Add one bounded, native-resolution view without cutting a scooter in half."""
-    if camera not in {"cam1_ds_i202", "common_camera03"} or not regions:
+    if camera not in {"cam1_ds_i202", "common_camera03"}:
         return regions
     height, width = frame_shape[:2]
     side = min(960, width, height)

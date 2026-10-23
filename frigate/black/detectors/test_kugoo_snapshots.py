@@ -100,6 +100,12 @@ class DetectorContextTest(unittest.TestCase):
 
 
 class ContextRegionTest(unittest.TestCase):
+    def test_idle_camera_still_scans_without_motion_or_confirmed_tracks(self):
+        views=[module.native_context_regions('cam1_ds_i202',n,[],[],(720,1280)) for n in range(3)]
+        self.assertTrue(all(len(view)==1 for view in views))
+        self.assertEqual({0,280,560},{view[0][0] for view in views})
+        self.assertEqual([],module.native_context_regions('other',0,[],[],(720,1280)))
+
     def test_full_view_scan_covers_native_frame_without_losing_motion_regions(self):
         small=(850,300,1170,620)
         for camera,height,width in [('cam1_ds_i202',720,1280),('common_camera03',1080,1920)]:
