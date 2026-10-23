@@ -41,7 +41,9 @@ MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
 EVENT_TTL = 3 * 86400
-POLL_SECONDS = 15
+POLL_SECONDS = int(os.environ.get("FRIGATE_OBJECT_POLL_SECONDS", "15"))
+if not 1 <= POLL_SECONDS <= 60:
+    raise ValueError("Object polling interval must be between 1 and 60 seconds")
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048

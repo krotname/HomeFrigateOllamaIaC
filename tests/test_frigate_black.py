@@ -13,6 +13,31 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_native_kugoo_keeps_connections_recording_and_filter_thresholds(self):
+        source = self.source()
+        source.update(model={"path": "/config/model_cache/yolov9-t-320.onnx",
+                             "width": 320, "height": 320},
+                      detectors={"objects": {"type": "onnx", "device": "GPU"}})
+        for name in ("cam1_ds_i202", "common_camera03"):
+            source["cameras"][name] = {
+                "ffmpeg": {"inputs": [{"path": "rtsp://private/stream", "roles": ["record", "detect"]}]},
+                "record": {"enabled": True},
+                "objects": {"track": ["car", "cat", "bicycle"], "filters": {
+                    "bicycle": {"threshold": .7, "min_score": .5},
+                    "cat": {"threshold": .8}}}}
+        before = copy.deepcopy(source)
+        converted = MODULE.configure_kugoo_detector(source)
+        self.assertEqual(source, before)
+        self.assertEqual(converted, MODULE.configure_kugoo_detector(converted))
+        self.assertEqual(source["cameras"]["living"], converted["cameras"]["living"])
+        for name in ("cam1_ds_i202", "common_camera03"):
+            for field in ("ffmpeg", "record"):
+                self.assertEqual(source["cameras"][name][field], converted["cameras"][name][field])
+            self.assertEqual(source["cameras"][name]["objects"]["filters"],
+                             converted["cameras"][name]["objects"]["filters"])
+        self.assertEqual(converted["model"]["width"], 960)
+        self.assertEqual(converted["detectors"]["objects"]["supplement_threshold"], .7)
+
     def test_two_wheeler_update_preserves_implicit_person_tracking(self):
         source = {"cameras": {"cam3_ds_i200": {}}}
         converted = MODULE.configure_two_wheelers(source)
