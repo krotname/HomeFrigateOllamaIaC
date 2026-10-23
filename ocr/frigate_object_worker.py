@@ -444,7 +444,7 @@ class Frigate:
                         for key in ("start_time", "end_time"))
                 and row["start_time"] <= timestamp <= row["end_time"]}
 
-    def snapshot(self, event):
+    def snapshot(self, event, *, wide_context=False):
         from PIL import Image
 
         if event["label"] not in EVENT_KINDS or event["camera"] not in CAMERAS:
@@ -482,7 +482,8 @@ class Frigate:
             if image.width * image.height > Image.MAX_IMAGE_PIXELS:
                 raise ValueError("Snapshot exceeds pixel limit")
             x, y, width, height = box
-            margin = .04 * max(width, height)
+            margin = (.5 if wide_context and EVENT_KINDS[event["label"]] == "two_wheeler"
+                      else .04) * max(width, height)
             crop = image.crop((max(0, int((x - margin) * image.width)),
                                max(0, int((y - margin) * image.height)),
                                min(image.width, math.ceil((x + width + margin) * image.width)),
@@ -785,6 +786,14 @@ def run(store, encoder, api, once=False, refresh_car_model=None):
                         continue  # Unaligned/low-quality samples remain unknown.
                     vector = encoder.encode(image, kind)
                     match = choose(vector, profiles, refs, kind)
+                    if not match and kind == "two_wheeler":
+                        # Native bicycle boxes can include only a scooter's handlebars.
+                        # Both crops belong to one verified frame and cast one vote.
+                        try:
+                            context = api.snapshot(event, wide_context=True)
+                            match = choose(encoder.encode(context, kind), profiles, refs, kind)
+                        except (ValueError, OSError, RemoteError):
+                            pass
                     votes = (json.loads(previous["votes"]) if previous else [])[-2:]
                     votes.append(match["id"] if match else None)
                     # Require consecutive matches on strictly increasing best-frame timestamps.

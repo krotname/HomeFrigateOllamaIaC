@@ -412,6 +412,47 @@ class StorageTests(unittest.TestCase):
 
 
 class IntegrationPolicyTests(unittest.TestCase):
+    def test_context_retry_cannot_confirm_a_single_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            self.addCleanup(store.db.close)
+            store.profile("scooter-a", "two_wheeler", "Scooter A")
+            store.db.execute("UPDATE profiles SET calibration=?", (json.dumps({"enabled": True}),))
+            store.db.commit()
+            api, encoder = Frigate(), Encoder("/unused", "GPU-unused")
+            match = {"id": "scooter-a", "label": "Scooter A"}
+            with patch.object(api, "snapshot", return_value=b"jpg") as snapshot, patch.object(
+                    encoder, "encode", return_value=[1, 0]), patch(
+                    "ocr.frigate_object_worker.choose", side_effect=[None, match, None, match]), patch.object(
+                    api, "apply", return_value=True) as write:
+                for frame in (1, 1, 2):
+                    event = {"id": "1-a", "label": "bicycle", "camera": "common_camera02",
+                             "data": {"snapshot_frame_time": frame}}
+                    with patch.object(api, "candidates", return_value=[event]):
+                        run(store, encoder, api, once=True)
+                    self.assertEqual(int(frame == 2), write.call_count)
+                self.assertEqual(4, snapshot.call_count)
+                self.assertEqual([{}, {"wide_context": True}] * 2,
+                                 [call.kwargs for call in snapshot.call_args_list])
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_context_expands_only_two_wheeler_crops(self):
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new("RGB", (1280, 720)).save(output, format="JPEG")
+        native = output.getvalue()
+        for label in ("bicycle", "motorcycle", "car", "cat"):
+            sizes = []
+            for wide in (False, True):
+                event = {"id": "1-a", "label": label, "camera": "common_camera02",
+                         "data": {"snapshot_frame_time": 20, "box": [.3, .3, .2, .2]}}
+                responses = [(native, {"x-frame-time": "20"})] + ([native] if label != "cat" else [])
+                with patch("ocr.frigate_object_worker.request_bytes", side_effect=responses), patch.object(
+                        Frigate, "json", return_value=[{"id": "segment", "start_time": 19, "end_time": 21}]):
+                    with Image.open(io.BytesIO(Frigate().snapshot(event, wide_context=wide))) as crop:
+                        sizes.append(crop.size)
+            self.assertEqual(label in ("bicycle", "motorcycle"), sizes[1][0] > sizes[0][0])
+
     def test_two_wheeler_class_flip_keeps_identity_and_confirmation_guards(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)

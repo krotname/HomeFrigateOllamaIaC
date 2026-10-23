@@ -74,7 +74,7 @@ def overlap(first, second):
 
 
 def append_proposals(base, output, threshold, size=320):
-    """Preserve other classes; complete a partial two-wheeler or append a box."""
+    """Keep every base row in place; NMS applies only to supplemental proposals."""
     predictions = output[0].T
     if predictions.shape[1] == 84:
         predictions = predictions[:, [0, 1, 2, 3, 5]]
@@ -92,22 +92,6 @@ def append_proposals(base, output, threshold, size=320):
         x, y, width, height = boxes[index]
         box = np.clip(np.array([y, x, y+height, x+width])/size, 0, 1)
         if box[2] <= box[0] or box[3] <= box[1]:
-            continue
-        area = (box[2]-box[0])*(box[3]-box[1])
-        contained = []
-        for slot, row in enumerate(result):
-            if row[1] <= 0 or int(row[0]) not in (1, 3):
-                continue
-            old_area = (row[4]-row[2])*(row[5]-row[3])
-            intersection = max(0, min(box[2], row[4])-max(box[0], row[2])) * max(0, min(box[3], row[5])-max(box[1], row[3]))
-            if old_area > 0 and intersection/old_area >= .9:
-                contained.append((slot, area/old_area))
-        # A handlebar-only base box can suppress the complete scooter at native
-        # NMS. Refine only one contained two-wheeler, never a group or a car/cat.
-        if len(contained) == 1 and 1.5 <= contained[0][1] <= 4:
-            slot = contained[0][0]
-            result[slot, 1] = min(float(result[slot, 1]), float(predictions[index, 4]))
-            result[slot, 2:] = box
             continue
         if any(row[1] > 0 and int(row[0]) in (1, 3) and overlap(box, row[2:]) > .5 for row in result):
             continue
