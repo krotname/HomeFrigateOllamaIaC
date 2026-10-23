@@ -424,7 +424,7 @@ class IntegrationPolicyTests(unittest.TestCase):
                 Frigate, "recording_coverage", side_effect=AssertionError("Recording not required")):
             self.assertTrue(Frigate().snapshot(event))
             self.assertEqual(1, request.call_count)
-            self.assertNotIn("height=", request.call_args.args[0])
+            self.assertIn("height=0", request.call_args.args[0])
 
 
 

@@ -145,6 +145,11 @@ def configure_kugoo_detector(source: dict) -> dict:
     measured = {"cam1_ds_i202": (1280, 720), "common_camera03": (1920, 1080)}
     for camera, values in config.get("cameras", {}).items():
         if camera not in measured:
+            for zone, settings in values.get("zones", {}).items():
+                if {"bicycle", "motorcycle"}.intersection(settings.get("objects", [])):
+                    raise ValueError(
+                        f"Kugoo conversion cannot remove two-wheeler tracking from {camera}: "
+                        f"zone {zone} requires it")
             objects = values.get("objects", {})
             tracked = objects.get("track", config.get("objects", {}).get("track", ["person"]))
             retained = [label for label in tracked if label not in {"bicycle", "motorcycle"}]

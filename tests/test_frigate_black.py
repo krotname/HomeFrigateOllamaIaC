@@ -47,6 +47,17 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(["person", "bicycle", "motorcycle"],
                          result["cameras"]["cam1_ds_i202"]["objects"]["track"])
 
+    def test_native_kugoo_rejects_unmeasured_two_wheeler_zones_without_mutation(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {},
+                              "other": {"objects": {"track": ["car", "bicycle"]},
+                                        "zones": {"entrance": {"objects": ["bicycle"]}}}}}
+        before = copy.deepcopy(source)
+        with self.assertRaisesRegex(ValueError, "other: zone entrance requires it"):
+            MODULE.configure_kugoo_detector(source)
+        self.assertEqual(before, source)
+
     def test_native_kugoo_keeps_connections_recording_and_filter_thresholds(self):
         source = self.source()
         source.update(model={"path": "/config/model_cache/yolov9-t-320.onnx",

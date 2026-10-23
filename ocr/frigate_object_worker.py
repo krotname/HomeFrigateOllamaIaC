@@ -457,7 +457,7 @@ class Frigate:
                 or min(box) < 0 or max(box) > 1 or min(box[2:]) <= 0):
             raise ValueError("Invalid relative object box")
         kind = EVENT_KINDS[event["label"]]
-        height = "" if kind == "two_wheeler" else "&height=512"
+        height = "&height=0" if kind == "two_wheeler" else "&height=512"
         data, headers = request_bytes(
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
             + "/snapshot.jpg?crop=0&bbox=0&timestamp=0" + height + "&quality=90",
