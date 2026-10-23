@@ -43,19 +43,43 @@ class DetectorContextTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("adapter", Path(__file__).with_name("prepare_snapshot_patch.py"))
         adapter = importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
         source = ('class ObjectDetectProcess:\n'
-                  '    def run(self, object_detector, connection_id, input_frame):\n'
+                  '    def run(self, object_detector, input_frame):\n'
                   '        if True:\n'
+                  '            if True:\n'
+                  '                connection_id = self.detection_queue.get(timeout=1)\n'
                   '            detections = object_detector.detect_raw(input_frame)\n'
-                  '            return detections\n')
+                  '            return detections\n'
+                  'class RemoteObjectDetector:\n'
+                  '    def send(self):\n'
+                  '        self.detection_queue.put(self.name)\n')
         patched = adapter.patch_detector_context(source)
         self.assertEqual(patched, adapter.patch_detector_context(patched))
         namespace = {};exec(patched, namespace)
         from unittest.mock import Mock, call
-        detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03') or frame
-        self.assertEqual(namespace['ObjectDetectProcess']().run(detector, 'camera03', 'frame'), 'frame')
-        self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03'))
+        detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03',(10,20,330,340)) or frame
+        remote=namespace['RemoteObjectDetector']();remote.name='camera03';remote.detection_queue=__import__('queue').Queue()
+        remote.set_region((10,20,330,340));remote.send()
+        process=namespace['ObjectDetectProcess']();process.detection_queue=remote.detection_queue
+        self.assertEqual(process.run(detector, 'frame'), 'frame')
+        self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03',(10,20,330,340)))
+        process.detection_queue.put('other')
+        detector.reset_mock();detector.detect_raw.side_effect=lambda frame:frame
+        process.run(detector,'frame')
+        detector.detect_api.set_camera.assert_called_once_with('other',None)
         with self.assertRaises(ValueError):
             adapter.patch_detector_context(source.replace('input_frame)', 'other_frame)'))
+
+    def test_video_supplies_actual_region_and_rejects_contract_drift(self):
+        spec=importlib.util.spec_from_file_location('adapter',Path(__file__).with_name('prepare_snapshot_patch.py'))
+        adapter=importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
+        source='def run(object_detector,tensor_input,region):\n    region_detections = object_detector.detect(tensor_input)\n    return region_detections\n'
+        result=adapter.patch_video_context(source)
+        self.assertEqual(result,adapter.patch_video_context(result))
+        namespace={};exec(result,namespace)
+        from unittest.mock import Mock,call
+        detector=Mock();namespace['run'](detector,'frame',(1,2,3,4))
+        self.assertEqual(detector.mock_calls,[call.set_region((1,2,3,4)),call.detect('frame')])
+        with self.assertRaises(ValueError):adapter.patch_video_context('changed')
 
 
 if __name__ == "__main__":

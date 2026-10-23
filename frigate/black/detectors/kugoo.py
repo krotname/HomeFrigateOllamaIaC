@@ -122,6 +122,7 @@ class KugooDetector(DetectionApi):
         self.last_status = 0.0
         self.last_reason = None
         self.camera = None
+        self.region = None
         self.pending = {}
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
 
@@ -167,19 +168,21 @@ class KugooDetector(DetectionApi):
         self.session = session
         self.cuda_audited = False
 
-    def set_camera(self, camera):
+    def set_camera(self, camera, region=None):
         self.camera = camera
+        self.region = None if region is None else tuple(round(value/64) for value in region)
 
     def supplement_turn(self, now):
         if self.camera not in self.config.supplement_cameras:
             return False
         self.pending = {camera: seen for camera, seen in self.pending.items() if now-seen <= 3}
-        self.pending[self.camera] = now
+        key = (self.camera, self.region)
+        self.pending[key] = now
         if now-self.last_attempt < self.config.supplement_interval:
             return False
-        if next(iter(self.pending)) != self.camera:
+        if next(iter(self.pending)) != key:
             return False
-        del self.pending[self.camera]
+        del self.pending[key]
         return True
 
     def detect_raw(self, tensor_input):

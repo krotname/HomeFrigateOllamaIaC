@@ -56,7 +56,7 @@ class PreservationTests(unittest.TestCase):
         result.session=None;result.last_attempt=0;result.retry_after=0;result.last_status=0
         result.counts={'inferences':0,'proposals':0,'busy':0,'errors':0}
         result.status=Mock();result.load=Mock(side_effect=RuntimeError('load failure'))
-        result.camera='a';result.pending={}
+        result.camera='a';result.region=None;result.pending={}
         return result
 
     def test_busy_or_low_memory_skips_supplement(self):
@@ -110,6 +110,14 @@ class PreservationTests(unittest.TestCase):
         det.set_camera('b');self.assertFalse(det.supplement_turn(1))
         det.set_camera('other');self.assertFalse(det.supplement_turn(4.1))
         det.set_camera('a');self.assertTrue(det.supplement_turn(4.1))
+
+    def test_later_regions_of_same_camera_get_supplemental_turns(self):
+        det=self.detector();first=(0,0,320,320);second=(320,0,640,320)
+        det.set_camera('a',first);self.assertTrue(det.supplement_turn(1));det.last_attempt=1
+        det.set_camera('a',second);self.assertFalse(det.supplement_turn(1.1))
+        det.set_camera('a',first);self.assertFalse(det.supplement_turn(2))
+        det.set_camera('a',second);self.assertTrue(det.supplement_turn(2.1));det.last_attempt=2.1
+        det.set_camera('a',(2,1,321,319));self.assertTrue(det.supplement_turn(3))
 
     def test_native_score_cutoff_sees_strong_proposal_before_weak_base_row(self):
         self.base[0,1]=.2
