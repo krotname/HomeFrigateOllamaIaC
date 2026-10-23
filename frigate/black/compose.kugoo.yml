@@ -2,6 +2,11 @@ services:
   frigate:
     volumes:
       - type: bind
+        source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/object_processing.py
+        target: /opt/frigate/frigate/track/object_processing.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
         source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/video_detect.py
         target: /opt/frigate/frigate/video/detect.py
         read_only: true

@@ -1,4 +1,6 @@
 import importlib.util
+import ast
+from types import SimpleNamespace
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -6,6 +8,53 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("snapshots", Path(__file__).with_name("kugoo_snapshots.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+
+
+class StationarySnapshotTest(unittest.TestCase):
+    def test_stationary_admission_preserves_native_quality_and_zone_guards(self):
+        native = Path("/opt/frigate/frigate/track/object_processing.py")
+        if not native.exists():
+            self.skipTest("Requires the pinned Frigate image")
+        patch_spec = importlib.util.spec_from_file_location("adapter", Path(__file__).with_name("prepare_snapshot_patch.py"))
+        adapter = importlib.util.module_from_spec(patch_spec)
+        patch_spec.loader.exec_module(adapter)
+        source = native.read_text()
+        transformed = adapter.patch_object_processing(source)
+        self.assertEqual(transformed, adapter.patch_object_processing(transformed))
+        tree = ast.parse(transformed)
+        cls = next(v for v in tree.body if isinstance(v, ast.ClassDef) and v.name == "TrackedObjectProcessor")
+        function = next(v for v in cls.body if isinstance(v, ast.FunctionDef) and v.name == "should_save_snapshot")
+        namespace = {"allow_stationary_snapshot": module.allow_stationary_snapshot,
+                     "logger": SimpleNamespace(debug=lambda *args: None)}
+        exec("from __future__ import annotations\n" + ast.unparse(function), namespace)
+        save = namespace["should_save_snapshot"]
+        snapshot = SimpleNamespace(enabled=True, required_zones=[])
+        owner = SimpleNamespace(config=SimpleNamespace(cameras={n: SimpleNamespace(snapshots=snapshot)
+                                        for n in ("cam1_ds_i202", "common_camera03", "other")}))
+        obj = SimpleNamespace(false_positive=False, entered_zones=[],
+                              obj_data={"id": "native-track", "position_changes": 0, "label": "bicycle"})
+        for camera in owner.config.cameras:
+            for label in ("bicycle", "motorcycle", "car", "cat", "person"):
+                obj.obj_data["label"] = label
+                self.assertEqual(camera != "other" and label in ("bicycle", "motorcycle"), save(owner, camera, obj))
+                obj.obj_data["position_changes"] = 1
+                self.assertTrue(save(owner, camera, obj))
+                obj.obj_data["position_changes"] = 0
+        obj.obj_data["label"] = "motorcycle"
+        obj.false_positive = True
+        self.assertFalse(save(owner, "cam1_ds_i202", obj))
+        obj.false_positive = False
+        snapshot.enabled = False
+        self.assertFalse(save(owner, "cam1_ds_i202", obj))
+        snapshot.enabled = True
+        snapshot.required_zones = ["parking"]
+        self.assertFalse(save(owner, "cam1_ds_i202", obj))
+        obj.entered_zones = ["parking"]
+        self.assertTrue(save(owner, "cam1_ds_i202", obj))
+        original_tree = ast.parse(source)
+        original_cls = next(v for v in original_tree.body if isinstance(v, ast.ClassDef) and v.name == cls.name)
+        retain = lambda node: ast.dump(next(v for v in node.body if isinstance(v, ast.FunctionDef) and v.name == "should_retain_recording"))
+        self.assertEqual(retain(original_cls), retain(cls))
 
 
 class SnapshotRefreshTest(unittest.TestCase):

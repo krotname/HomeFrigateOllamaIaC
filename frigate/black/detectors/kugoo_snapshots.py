@@ -5,6 +5,10 @@ from frigate.util.image import is_better_thumbnail as original_is_better_thumbna
 from frigate.util.image import on_edge
 
 
+def allow_stationary_snapshot(camera, label):
+    return camera in ("cam1_ds_i202", "common_camera03") and label in ("bicycle", "motorcycle")
+
+
 def native_context_regions(camera, turn, regions, tracked_boxes, frame_shape):
     """Add one bounded, native-resolution view without cutting a scooter in half."""
     if camera not in {"cam1_ds_i202", "common_camera03"}:

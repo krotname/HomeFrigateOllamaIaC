@@ -13,6 +13,25 @@ def patch(source):
     return source.replace(marker, addition + marker, 1)
 
 
+def patch_object_processing(source):
+    addition = "from frigate.track.kugoo_snapshots import allow_stationary_snapshot\n\n\n"
+    marker = "class TrackedObjectProcessor(threading.Thread):"
+    original = '        if obj.obj_data["position_changes"] == 0:'
+    replacement = ('        if (obj.obj_data["position_changes"] == 0\n'
+                   '                and not allow_stationary_snapshot(camera, obj.obj_data["label"])):')
+    start = source.find("    def should_save_snapshot(")
+    end = source.find("    def should_retain_recording(", start)
+    if start < 0 or end < 0 or source.count(marker) != 1:
+        raise ValueError("Pinned Frigate snapshot-admission contract changed")
+    function = source[start:end]
+    if addition in source and replacement in function:
+        return source
+    if addition in source or function.count(original) != 1:
+        raise ValueError("Pinned Frigate stationary-snapshot contract changed")
+    result = source[:start] + function.replace(original, replacement, 1) + source[end:]
+    return result.replace(marker, addition + marker, 1)
+
+
 def patch_detector_context(source):
     marker = "            detections = object_detector.detect_raw(input_frame)"
     addition = ("            camera_hook = getattr(object_detector.detect_api, \"set_camera\", None)\n"
@@ -71,6 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("destination", type=Path)
     parser.add_argument("--detector-context", action="store_true")
     parser.add_argument("--video-context", action="store_true")
+    parser.add_argument("--object-processing", action="store_true")
     args = parser.parse_args()
-    transform = patch_video_context if args.video_context else patch_detector_context if args.detector_context else patch
+    transform = patch_object_processing if args.object_processing else patch_video_context if args.video_context else patch_detector_context if args.detector_context else patch
     args.destination.write_text(transform(args.source.read_text()), encoding="utf-8")
