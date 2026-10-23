@@ -14,9 +14,9 @@ def native_context_regions(camera, turn, regions, tracked_boxes, frame_shape):
     tiles = [(x, y, x + side, y + side)
              for x in sorted({0, (width - side) // 2, width - side})
              for y in sorted({0, height - side})]
-    # Advance once per four-frame cycle so focused frames cannot make the scan
-    # cadence repeatedly skip the same tiles on a six-tile camera.
-    selected = tiles[(turn // 4) % len(tiles)]
+    # Search every frame while idle. With a track, advance the scan once per
+    # four-frame cycle so focused frames cannot hide tiles on a six-tile camera.
+    selected = tiles[(turn // 4 if tracked_boxes else turn) % len(tiles)]
     if tracked_boxes and turn % 4 != 3:
         box = max(tracked_boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
