@@ -31,7 +31,6 @@ class KugooDetectorConfig(BaseDetectorConfig):
     supplement_interval: float = Field(default=0.55, ge=0.5)
     supplement_threshold: float = Field(default=0.7, ge=0.7, le=1)
     supplement_pyramid: bool = False
-    supplement_warmup_seconds: float = Field(default=30, ge=0, le=60)
     supplement_cameras: list[str] = Field(default_factory=list)
 
 
@@ -124,7 +123,6 @@ class KugooDetector(DetectionApi):
         self.last_reason = None
         self.camera = None
         self.pending = {}
-        self.warmup_until = time.monotonic() + detector_config.supplement_warmup_seconds
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
 
     def status(self, reason, gpu=None):
@@ -161,6 +159,8 @@ class KugooDetector(DetectionApi):
         shape = session.get_inputs()[0].shape
         if shape not in ([1, 3, 320, 320], [1, 3, 640, 640], [2, 3, 640, 640]):
             raise ValueError("Unexpected supplemental input")
+        if self.config.supplement_pyramid and shape[0] != 2:
+            raise ValueError("Pyramid inference requires a single batch-two model")
         self.supplement_size = shape[2]
         self.supplement_batch = shape[0]
         self.input_name = session.get_inputs()[0].name
@@ -189,7 +189,7 @@ class KugooDetector(DetectionApi):
             base_input = cv2.resize(pixels, (320, 320), interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)[None]
         base = self.base.detect_raw(np.ascontiguousarray(base_input))
         now = time.monotonic()
-        if now < self.retry_after or now < self.warmup_until or not self.supplement_turn(now):
+        if now < self.retry_after or not self.supplement_turn(now):
             return base
         self.last_attempt = now
         try:
@@ -227,19 +227,6 @@ class KugooDetector(DetectionApi):
                 finally:
                     profile.unlink(missing_ok=True)
             self.counts["inferences"] += 1
-            if getattr(self.config, "supplement_pyramid", False) and self.supplement_batch == 1:
-                # Two measured scales of the same current region; no cached boxes.
-                time.sleep(self.config.supplement_interval)
-                second_state = gpu_state()
-                if second_state["free_mib"] >= HEADROOM_MIB and second_state["util_percent"] < 25:
-                    from PIL import Image
-                    pixels = np.clip(supplement_input[0].transpose(1, 2, 0)*255, 0, 255).astype(np.uint8)
-                    low = Image.fromarray(pixels).resize((320,320),Image.Resampling.BILINEAR).resize((self.supplement_size,self.supplement_size),Image.Resampling.BILINEAR)
-                    low_input = np.asarray(low,dtype=np.float32).transpose(2,0,1)[None]/255
-                    other = self.session.run(None, {self.input_name: np.ascontiguousarray(low_input)})[0]
-                    output = np.concatenate((output,other),axis=2)
-                    self.counts["inferences"] += 1
-                self.last_attempt = time.monotonic()
             result = append_proposals(base, output, self.config.supplement_threshold, self.supplement_size)
             self.counts["proposals"] += int(np.count_nonzero(result[:, 1])-np.count_nonzero(base[:, 1]))
             if gpu_state()["free_mib"] < HEADROOM_MIB:

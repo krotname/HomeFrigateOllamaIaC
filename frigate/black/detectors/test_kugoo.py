@@ -56,7 +56,7 @@ class PreservationTests(unittest.TestCase):
         result.session=None;result.last_attempt=0;result.retry_after=0;result.last_status=0
         result.counts={'inferences':0,'proposals':0,'busy':0,'errors':0}
         result.status=Mock();result.load=Mock(side_effect=RuntimeError('load failure'))
-        result.camera='a';result.pending={};result.warmup_until=0
+        result.camera='a';result.pending={}
         return result
 
     def test_busy_or_low_memory_skips_supplement(self):
@@ -83,13 +83,19 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(original.shape,(1,3,320,320))
         np.testing.assert_array_equal(original,np.full((1,3,320,320),.25,dtype=np.float32))
 
-    def test_rate_limit_and_warmup_never_sleep_or_delay_base(self):
-        for warmup in (0,10):
-            det=self.detector();det.last_attempt=.8;det.warmup_until=warmup
-            with patch.object(module.time,'monotonic',return_value=1), \
-                    patch.object(module.time,'sleep') as sleep, patch.object(module,'gpu_state') as state:
-                self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
-            sleep.assert_not_called();state.assert_not_called()
+    def test_rate_limit_never_delays_base(self):
+        det=self.detector();det.last_attempt=.8
+        with patch.object(module.time,'monotonic',return_value=1), \
+                patch.object(module.time,'sleep') as sleep, patch.object(module,'gpu_state') as state:
+            self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
+        sleep.assert_not_called();state.assert_not_called()
+
+    def test_first_eligible_frame_uses_supplement_without_startup_blackout(self):
+        det=self.detector()
+        with patch.object(module.time,'monotonic',return_value=1), \
+                patch.object(module,'gpu_state',return_value={'free_mib':5000,'util_percent':25}) as state:
+            self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
+        state.assert_called_once()
 
     def test_busy_stream_does_not_starve_another_camera(self):
         det=self.detector();det.last_attempt=.8
