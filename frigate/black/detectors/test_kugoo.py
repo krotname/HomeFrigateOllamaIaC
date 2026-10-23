@@ -67,6 +67,14 @@ class PreservationTests(unittest.TestCase):
             det.load.assert_not_called()
             self.assertEqual(det.counts['busy'],1)
 
+    def test_loaded_session_releases_lost_headroom_but_not_utilization_contention(self):
+        for state,keep in (({'free_mib':2047,'util_percent':0},False),({'free_mib':5000,'util_percent':25},True)):
+            det=self.detector();session=Mock();det.session=session
+            with patch.object(module,'gpu_state',return_value=state):
+                self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
+            self.assertIs(det.session,session if keep else None)
+            session.run.assert_not_called()
+
     def test_supplement_error_retains_base_and_backs_off(self):
         det=self.detector()
         with patch.object(module,'gpu_state',return_value={'free_mib':5000,'util_percent':0}):

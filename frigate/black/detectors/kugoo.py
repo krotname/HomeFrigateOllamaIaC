@@ -199,6 +199,9 @@ class KugooDetector(DetectionApi):
             state = gpu_state()
             required = HEADROOM_MIB + (BUDGET_MIB if self.session is None else 0)
             if state["free_mib"] < required or state["util_percent"] >= 25:
+                if self.session is not None and state["free_mib"] < HEADROOM_MIB:
+                    self.session = None
+                    gc.collect()
                 self.counts["busy"] += 1
                 self.status("waiting_for_gpu", state)
                 return base
