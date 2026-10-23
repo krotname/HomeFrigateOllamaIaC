@@ -31,7 +31,7 @@ class KugooDetectorConfig(BaseDetectorConfig):
     supplement_interval: float = Field(default=0.55, ge=0.5)
     supplement_threshold: float = Field(default=0.7, ge=0.7, le=1)
     supplement_pyramid: bool = False
-    supplement_warmup_seconds: float = Field(default=5, ge=0, le=60)
+    supplement_warmup_seconds: float = Field(default=30, ge=0, le=60)
 
 
 def gpu_state():
