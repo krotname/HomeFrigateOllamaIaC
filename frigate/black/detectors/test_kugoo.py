@@ -137,6 +137,14 @@ class PreservationTests(unittest.TestCase):
                 det.set_camera('a',region,(frame_time,[second,first],[box]))
                 self.assertEqual(det.supplement_turn(frame_time),region==expected)
 
+    def test_focus_rotates_native_context_sizes_instead_of_locking_partial_crop(self):
+        det=self.detector();small=(0,0,320,320);large=(0,0,640,640)
+        for frame_time in range(1,8):
+            expected=small if frame_time<=3 else large
+            for region in (small,large):
+                det.set_camera('a',region,(frame_time,[small,large],[(100,100,200,200)]))
+                self.assertEqual(det.supplement_turn(frame_time),region==expected)
+
     def test_native_score_cutoff_sees_strong_proposal_before_weak_base_row(self):
         self.base[0,1]=.2
         result=module.append_proposals(self.base,self.output,.7)

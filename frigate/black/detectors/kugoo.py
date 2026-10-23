@@ -193,7 +193,8 @@ class KugooDetector(DetectionApi):
                 cx, cy = (box[0]+box[2])/2, (box[1]+box[3])/2
                 covering = [region for region in regions if region[0] <= cx <= region[2] and region[1] <= cy <= region[3]]
                 if covering:
-                    selected = min(covering, key=lambda region: (region[2]-region[0])*(region[3]-region[1]))
+                    covering.sort(key=lambda region: (region[2]-region[0])*(region[3]-region[1]))
+                    selected = covering[(turn // 4) % len(covering)]
             plan = {'time':frame_time, 'turn':turn, 'region':selected, 'done':False}
             self.plans[self.camera] = plan
         if plan['done'] or self.region != plan['region']:
