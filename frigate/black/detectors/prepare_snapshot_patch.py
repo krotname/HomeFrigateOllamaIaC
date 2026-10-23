@@ -49,12 +49,15 @@ def patch_video_context(source):
     frame_marker = '            for region in regions:\n                detections.extend('
     frame_addition = ('            frame_hook = getattr(object_detector, "set_frame", None)\n'
                       '            if frame_hook is not None:\n'
-                      '                frame_hook(frame_time, regions, [obj["box"] for obj in object_tracker.tracked_objects.values() if obj["label"] in ("bicycle", "motorcycle")], frame_shape)\n')
-    if addition + marker in source and frame_addition + frame_marker in source:
+                      '                frame_hook(frame_time, regions, [obj["box"] for obj in object_tracker.tracked_objects.values() if obj["label"] in ("bicycle", "motorcycle")] + getattr(object_detector, "kugoo_candidates", []), frame_shape)\n')
+    candidates_marker = '            consolidated_detections = reduce_detections(frame_shape, detections)'
+    candidates_addition = ('\n            if frame_hook is not None:\n'
+                          '                object_detector.kugoo_candidates = [d[2] for d in consolidated_detections if d[0] in ("bicycle", "motorcycle") and d[1] >= 0.7]\n')
+    if addition + marker in source and frame_addition + frame_marker in source and candidates_marker + candidates_addition in source:
         return source
-    if source.count(marker) != 1 or source.count(frame_marker) != 1:
+    if source.count(marker) != 1 or source.count(frame_marker) != 1 or source.count(candidates_marker) != 1:
         raise ValueError("Pinned Frigate video-region contract changed")
-    return source.replace(marker, addition + marker, 1).replace(frame_marker, frame_addition + frame_marker, 1)
+    return source.replace(marker, addition + marker, 1).replace(frame_marker, frame_addition + frame_marker, 1).replace(candidates_marker, candidates_marker + candidates_addition, 1)
 
 
 if __name__ == "__main__":

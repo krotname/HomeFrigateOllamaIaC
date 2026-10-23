@@ -79,17 +79,23 @@ class DetectorContextTest(unittest.TestCase):
                  '    if True:\n'
                  '        if True:\n'
                  '            for region in regions:\n'
-                 '                detections.extend([])\n')
+                 '                detections.extend([])\n'
+                 '            consolidated_detections = reduce_detections(frame_shape, detections)\n')
         result=adapter.patch_video_context(source)
         self.assertEqual(result,adapter.patch_video_context(result))
-        namespace={};exec(result,namespace)
+        namespace={'reduce_detections':lambda shape, detections:[('bicycle',.85,(700,300,1100,650),0),('car',.99,(1,2,3,4),0)]};exec(result,namespace)
         from unittest.mock import Mock,call
-        detector=Mock();namespace['run'](detector,'frame',(1,2,3,4))
+        detector=Mock();detector.kugoo_candidates=[];namespace['run'](detector,'frame',(1,2,3,4))
         self.assertEqual(detector.mock_calls,[call.set_region((1,2,3,4)),call.detect('frame')])
         from types import SimpleNamespace
         tracker=SimpleNamespace(untracked_object_boxes=[(3,4,5,6)],tracked_objects={'bike':{'label':'bicycle','box':(2,3,4,5)},'car':{'label':'car','box':(1,1,2,2)}})
         namespace['process'](detector,123,[(1,2,3,4)],tracker,(720,1280))
         detector.set_frame.assert_called_once_with(123,[(1,2,3,4)],[(2,3,4,5)],(720,1280))
+        self.assertEqual(detector.kugoo_candidates,[(700,300,1100,650)])
+        detector.set_frame.reset_mock()
+        tracker.tracked_objects={}
+        namespace['process'](detector,124,[(1,2,3,4)],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(124,[(1,2,3,4)],[(700,300,1100,650)],(720,1280))
         with self.assertRaises(ValueError):adapter.patch_video_context('changed')
 
 
