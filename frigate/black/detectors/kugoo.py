@@ -127,6 +127,7 @@ class KugooDetector(DetectionApi):
         self.plans = {}
         self.last_attempts = {}
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
+        self.camera_counts = {}
 
     def status(self, reason, gpu=None):
         now = time.monotonic()
@@ -135,6 +136,7 @@ class KugooDetector(DetectionApi):
         self.last_status = now
         self.last_reason = reason
         state = dict(time=time.time(), reason=reason, gpu=gpu, counts=self.counts,
+                     camera=self.camera, camera_counts=self.camera_counts,
                      gpu_uuid=GPU_UUID, cuda_only=True, loaded=self.session is not None,
                      budget_mib=BUDGET_MIB, headroom_mib=HEADROOM_MIB,
                      interval=self.config.supplement_interval)
@@ -206,6 +208,7 @@ class KugooDetector(DetectionApi):
         if now < self.retry_after or not self.supplement_turn(now):
             return base
         self.last_attempt = now
+        camera_counts = self.camera_counts.setdefault(self.camera, {"inferences": 0, "proposals": 0, "busy": 0})
         try:
             state = gpu_state()
             required = HEADROOM_MIB + (BUDGET_MIB if self.session is None else 0)
@@ -214,6 +217,7 @@ class KugooDetector(DetectionApi):
                     self.session = None
                     gc.collect()
                 self.counts["busy"] += 1
+                camera_counts["busy"] += 1
                 self.status("waiting_for_gpu", state)
                 return base
             if self.session is None:
@@ -244,8 +248,11 @@ class KugooDetector(DetectionApi):
                 finally:
                     profile.unlink(missing_ok=True)
             self.counts["inferences"] += 1
+            camera_counts["inferences"] += 1
             result = append_proposals(base, output, self.config.supplement_threshold, self.supplement_size)
-            self.counts["proposals"] += int(np.count_nonzero(result[:, 1])-np.count_nonzero(base[:, 1]))
+            proposals = int(np.count_nonzero(result[:, 1])-np.count_nonzero(base[:, 1]))
+            self.counts["proposals"] += proposals
+            camera_counts["proposals"] += proposals
             if gpu_state()["free_mib"] < HEADROOM_MIB:
                 raise RuntimeError("Supplement exhausted GPU headroom")
             self.status("watching", state)

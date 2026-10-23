@@ -85,7 +85,7 @@ class DetectorContextTest(unittest.TestCase):
         self.assertEqual(result,adapter.patch_video_context(result))
         namespace={'reduce_detections':lambda shape, detections:[('bicycle',.85,(700,300,1100,650),0),('car',.99,(1,2,3,4),0)]};exec(result,namespace)
         from unittest.mock import Mock,call
-        detector=Mock();detector.kugoo_candidates=[];namespace['run'](detector,'frame',(1,2,3,4))
+        detector=Mock();detector.kugoo_candidates=[];detector.kugoo_candidates_time=0;namespace['run'](detector,'frame',(1,2,3,4))
         self.assertEqual(detector.mock_calls,[call.set_region((1,2,3,4)),call.detect('frame')])
         from types import SimpleNamespace
         tracker=SimpleNamespace(untracked_object_boxes=[(3,4,5,6)],tracked_objects={'bike':{'label':'bicycle','box':(2,3,4,5)},'car':{'label':'car','box':(1,1,2,2)}})
@@ -96,6 +96,14 @@ class DetectorContextTest(unittest.TestCase):
         tracker.tracked_objects={}
         namespace['process'](detector,124,[(1,2,3,4)],tracker,(720,1280))
         detector.set_frame.assert_called_once_with(124,[(1,2,3,4)],[(700,300,1100,650)],(720,1280))
+        namespace['reduce_detections']=lambda shape,detections:[]
+        namespace['process'](detector,125,[],tracker,(720,1280))
+        detector.set_frame.reset_mock()
+        namespace['process'](detector,131,[],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(131,[],[(700,300,1100,650)],(720,1280))
+        detector.set_frame.reset_mock()
+        namespace['process'](detector,132,[],tracker,(720,1280))
+        detector.set_frame.assert_called_once_with(132,[],[],(720,1280))
         with self.assertRaises(ValueError):adapter.patch_video_context('changed')
 
 

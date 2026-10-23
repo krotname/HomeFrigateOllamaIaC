@@ -55,6 +55,7 @@ class PreservationTests(unittest.TestCase):
         result.config=SimpleNamespace(supplement_interval=.55,supplement_threshold=.7,supplement_cameras=["a","b"])
         result.session=None;result.last_attempt=0;result.retry_after=0;result.last_status=0
         result.counts={'inferences':0,'proposals':0,'busy':0,'errors':0}
+        result.camera_counts={}
         result.status=Mock();result.load=Mock(side_effect=RuntimeError('load failure'))
         result.camera='a';result.region=(0,0,320,320)
         result.frame=(1,[result.region],[]);result.plans={};result.last_attempts={}
@@ -67,6 +68,7 @@ class PreservationTests(unittest.TestCase):
                 self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
             det.load.assert_not_called()
             self.assertEqual(det.counts['busy'],1)
+            self.assertEqual(det.camera_counts['a'],{'busy':1,'inferences':0,'proposals':0})
 
     def test_loaded_session_releases_lost_headroom_but_not_utilization_contention(self):
         for state,keep in (({'free_mib':2047,'util_percent':0},False),({'free_mib':5000,'util_percent':25},True)):
