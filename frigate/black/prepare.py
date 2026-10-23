@@ -141,8 +141,15 @@ def configure_kugoo_detector(source: dict) -> dict:
     detectors[name] = {**detector, "type": "kugoo_onnx", "device": "GPU",
                        "supplement_model": "/config/model_cache/kugoo-yolo11n-pyramid.onnx",
                        "supplement_threshold": .7, "supplement_interval": .55}
-    for camera, (width, height) in {
-            "cam1_ds_i202": (1280, 720), "common_camera03": (1920, 1080)}.items():
+    measured = {"cam1_ds_i202": (1280, 720), "common_camera03": (1920, 1080)}
+    for camera, values in config.get("cameras", {}).items():
+        if camera not in measured:
+            objects = values.get("objects", {})
+            tracked = objects.get("track", config.get("objects", {}).get("track", ["person"]))
+            retained = [label for label in tracked if label not in {"bicycle", "motorcycle"}]
+            if retained != tracked:
+                values.setdefault("objects", {})["track"] = retained
+    for camera, (width, height) in measured.items():
         if camera not in config.get("cameras", {}):
             raise ValueError(f"Measured Kugoo camera is missing: {camera}")
         config["cameras"][camera].setdefault("detect", {}).update(

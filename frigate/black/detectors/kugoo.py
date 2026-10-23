@@ -119,14 +119,17 @@ class KugooDetector(DetectionApi):
         self.last_attempt = 0.0
         self.retry_after = 0.0
         self.last_status = 0.0
+        self.last_reason = None
+        self.deferrals = 0
         self.warmup_until = time.monotonic() + detector_config.supplement_warmup_seconds
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
 
     def status(self, reason, gpu=None):
         now = time.monotonic()
-        if now-self.last_status < 10:
+        if now-self.last_status < 10 and reason == getattr(self, "last_reason", None):
             return
         self.last_status = now
+        self.last_reason = reason
         state = dict(time=time.time(), reason=reason, gpu=gpu, counts=self.counts,
                      gpu_uuid=GPU_UUID, cuda_only=True, loaded=self.session is not None,
                      budget_mib=BUDGET_MIB, headroom_mib=HEADROOM_MIB,
@@ -173,7 +176,10 @@ class KugooDetector(DetectionApi):
         delay = self.config.supplement_interval - (now-self.last_attempt)
         if delay > 0:
             if now >= getattr(self, "warmup_until", 0):
-                return base
+                self.deferrals = getattr(self, "deferrals", 0) + 1
+                if self.deferrals < 3:
+                    return base
+                self.deferrals = 0
             time.sleep(delay)
         self.last_attempt = time.monotonic()
         try:
@@ -202,12 +208,14 @@ class KugooDetector(DetectionApi):
             output = np.concatenate([raw[i:i+1] for i in range(self.supplement_batch)],axis=2)
             if not self.cuda_audited:
                 profile = Path(self.session.end_profiling())
-                providers = {entry['args']['provider'] for entry in json.loads(profile.read_text())
-                             if entry.get('args',{}).get('provider')}
-                if providers != {'CUDAExecutionProvider'}:
-                    raise RuntimeError('Supplement contains non-CUDA execution kernels')
-                self.cuda_audited = True
-                profile.unlink()
+                try:
+                    providers = {entry['args']['provider'] for entry in json.loads(profile.read_text())
+                                 if entry.get('args',{}).get('provider')}
+                    if providers != {'CUDAExecutionProvider'}:
+                        raise RuntimeError('Supplement contains non-CUDA execution kernels')
+                    self.cuda_audited = True
+                finally:
+                    profile.unlink(missing_ok=True)
             self.counts["inferences"] += 1
             if getattr(self.config, "supplement_pyramid", False) and self.supplement_batch == 1:
                 # Two measured scales of the same current region; no cached boxes.

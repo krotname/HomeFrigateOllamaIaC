@@ -13,6 +13,19 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_native_kugoo_limits_two_wheeler_tracking_to_measured_views(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "objects": {"track": ["person", "bicycle"]},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {},
+                              "other": {"objects": {"track": ["car", "cat", "bicycle", "motorcycle"]}},
+                              "inherited": {}}}
+        result = MODULE.configure_kugoo_detector(source)
+        self.assertEqual(["car", "cat"], result["cameras"]["other"]["objects"]["track"])
+        self.assertEqual(["person"], result["cameras"]["inherited"]["objects"]["track"])
+        self.assertEqual(["person", "bicycle", "motorcycle"],
+                         result["cameras"]["cam1_ds_i202"]["objects"]["track"])
+
     def test_native_kugoo_keeps_connections_recording_and_filter_thresholds(self):
         source = self.source()
         source.update(model={"path": "/config/model_cache/yolov9-t-320.onnx",

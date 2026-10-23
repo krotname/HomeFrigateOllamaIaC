@@ -93,4 +93,44 @@ class PreservationTests(unittest.TestCase):
         sleep.assert_not_called()
         state.assert_not_called()
 
+    def test_repeated_deferred_stream_gets_a_bounded_turn(self):
+        det=self.detector();det.warmup_until=0
+        tensor=np.zeros((1,3,320,320),dtype=np.float32)
+        with patch.object(module.time,'monotonic',return_value=1), patch.object(
+                module.time,'sleep') as sleep, patch.object(module,'gpu_state',
+                return_value={'free_mib':5000,'util_percent':25}) as state:
+            for _ in range(3):
+                det.last_attempt=.8
+                det.detect_raw(tensor)
+                # A normal request from the other stream must not reset deferrals.
+                det.last_attempt=0
+                det.detect_raw(tensor)
+        self.assertEqual(1,sleep.call_count)
+        self.assertAlmostEqual(.35,sleep.call_args.args[0])
+        self.assertEqual(4,state.call_count)
+
+    def test_status_transition_bypasses_periodic_throttle(self):
+        import json
+        det=self.detector();det.last_status=99
+        det.last_reason='watching';det.session=None
+        with patch.object(module.time,'monotonic',return_value=100), patch.object(module,'Path') as path:
+            module.KugooDetector.status(det,'paused')
+            result=json.loads(path.return_value.write_text.call_args.args[0])
+        self.assertEqual('paused',result['reason'])
+        self.assertFalse(result['loaded'])
+
+    def test_failed_cuda_audit_removes_profile_and_preserves_base(self):
+        import json,tempfile
+        det=self.detector();det.session=Mock()
+        det.session.run.return_value=[self.output]
+        det.input_name='images';det.supplement_size=320;det.supplement_batch=1;det.cuda_audited=False
+        with tempfile.TemporaryDirectory() as directory:
+            profile=Path(directory)/'profile.json'
+            profile.write_text(json.dumps([{'args':{'provider':'CPUExecutionProvider'}}]))
+            det.session.end_profiling.return_value=str(profile)
+            with patch.object(module,'gpu_state',return_value={'free_mib':5000,'util_percent':0}):
+                self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
+            self.assertFalse(profile.exists())
+        self.assertEqual(1,det.counts['errors'])
+
 if __name__=='__main__': unittest.main()
