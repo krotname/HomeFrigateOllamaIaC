@@ -123,7 +123,9 @@ class KugooDetector(DetectionApi):
         self.last_reason = None
         self.camera = None
         self.region = None
-        self.pending = {}
+        self.frame = None
+        self.plans = {}
+        self.last_attempts = {}
         self.counts = {"inferences": 0, "proposals": 0, "busy": 0, "errors": 0}
 
     def status(self, reason, gpu=None):
@@ -168,21 +170,38 @@ class KugooDetector(DetectionApi):
         self.session = session
         self.cuda_audited = False
 
-    def set_camera(self, camera, region=None):
+    def set_camera(self, camera, region=None, frame=None):
         self.camera = camera
-        self.region = None if region is None else tuple(round(value/64) for value in region)
+        self.region = None if region is None else tuple(region)
+        self.frame = frame
 
     def supplement_turn(self, now):
         if self.camera not in self.config.supplement_cameras:
             return False
-        self.pending = {camera: seen for camera, seen in self.pending.items() if now-seen <= 3}
-        key = (self.camera, self.region)
-        self.pending[key] = now
-        if now-self.last_attempt < self.config.supplement_interval:
+        if self.frame is None or self.region is None:
             return False
-        if next(iter(self.pending)) != key:
+        frame_time, regions, tracked_boxes = self.frame
+        regions = [tuple(region) for region in regions]
+        if not regions:
             return False
-        del self.pending[key]
+        plan = self.plans.get(self.camera)
+        if plan is None or plan['time'] != frame_time:
+            turn = 0 if plan is None else plan['turn']+1
+            selected = regions[turn % len(regions)]
+            if tracked_boxes and turn % 4 != 3:
+                box = tracked_boxes[turn % len(tracked_boxes)]
+                cx, cy = (box[0]+box[2])/2, (box[1]+box[3])/2
+                covering = [region for region in regions if region[0] <= cx <= region[2] and region[1] <= cy <= region[3]]
+                if covering:
+                    selected = min(covering, key=lambda region: (region[2]-region[0])*(region[3]-region[1]))
+            plan = {'time':frame_time, 'turn':turn, 'region':selected, 'done':False}
+            self.plans[self.camera] = plan
+        if plan['done'] or self.region != plan['region']:
+            return False
+        if now-self.last_attempts.get(self.camera, float('-inf')) < self.config.supplement_interval:
+            return False
+        plan['done'] = True
+        self.last_attempts[self.camera] = now
         return True
 
     def detect_raw(self, tensor_input):

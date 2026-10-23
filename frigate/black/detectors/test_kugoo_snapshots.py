@@ -56,16 +56,17 @@ class DetectorContextTest(unittest.TestCase):
         self.assertEqual(patched, adapter.patch_detector_context(patched))
         namespace = {};exec(patched, namespace)
         from unittest.mock import Mock, call
-        detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03',(10,20,330,340)) or frame
+        context=(100,((10,20,330,340),),((30,40,60,70),))
+        detector = Mock();detector.detect_raw.side_effect = lambda frame: detector.detect_api.set_camera.assert_called_once_with('camera03',(10,20,330,340),context) or frame
         remote=namespace['RemoteObjectDetector']();remote.name='camera03';remote.detection_queue=__import__('queue').Queue()
-        remote.set_region((10,20,330,340));remote.send()
+        remote.set_region((10,20,330,340));remote.set_frame(100,[(10,20,330,340)],[(30,40,60,70)]);remote.send()
         process=namespace['ObjectDetectProcess']();process.detection_queue=remote.detection_queue
         self.assertEqual(process.run(detector, 'frame'), 'frame')
-        self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03',(10,20,330,340)))
+        self.assertEqual(detector.mock_calls[0], call.detect_api.set_camera('camera03',(10,20,330,340),context))
         process.detection_queue.put('other')
         detector.reset_mock();detector.detect_raw.side_effect=lambda frame:frame
         process.run(detector,'frame')
-        detector.detect_api.set_camera.assert_called_once_with('other',None)
+        detector.detect_api.set_camera.assert_called_once_with('other',None,None)
         with self.assertRaises(ValueError):
             adapter.patch_detector_context(source.replace('input_frame)', 'other_frame)'))
 
@@ -73,12 +74,22 @@ class DetectorContextTest(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('adapter',Path(__file__).with_name('prepare_snapshot_patch.py'))
         adapter=importlib.util.module_from_spec(spec);spec.loader.exec_module(adapter)
         source='def run(object_detector,tensor_input,region):\n    region_detections = object_detector.detect(tensor_input)\n    return region_detections\n'
+        source+=('def process(object_detector,frame_time,regions,object_tracker):\n'
+                 '    detections=[]\n'
+                 '    if True:\n'
+                 '        if True:\n'
+                 '            for region in regions:\n'
+                 '                detections.extend([])\n')
         result=adapter.patch_video_context(source)
         self.assertEqual(result,adapter.patch_video_context(result))
         namespace={};exec(result,namespace)
         from unittest.mock import Mock,call
         detector=Mock();namespace['run'](detector,'frame',(1,2,3,4))
         self.assertEqual(detector.mock_calls,[call.set_region((1,2,3,4)),call.detect('frame')])
+        from types import SimpleNamespace
+        tracker=SimpleNamespace(untracked_object_boxes=[(3,4,5,6)],tracked_objects={'bike':{'label':'bicycle','box':(2,3,4,5)},'car':{'label':'car','box':(1,1,2,2)}})
+        namespace['process'](detector,123,[(1,2,3,4)],tracker)
+        detector.set_frame.assert_called_once_with(123,[(1,2,3,4)],[(3,4,5,6),(2,3,4,5)])
         with self.assertRaises(ValueError):adapter.patch_video_context('changed')
 
 

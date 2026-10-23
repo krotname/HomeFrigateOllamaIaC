@@ -56,7 +56,8 @@ class PreservationTests(unittest.TestCase):
         result.session=None;result.last_attempt=0;result.retry_after=0;result.last_status=0
         result.counts={'inferences':0,'proposals':0,'busy':0,'errors':0}
         result.status=Mock();result.load=Mock(side_effect=RuntimeError('load failure'))
-        result.camera='a';result.region=None;result.pending={}
+        result.camera='a';result.region=(0,0,320,320)
+        result.frame=(1,[result.region],[]);result.plans={};result.last_attempts={}
         return result
 
     def test_busy_or_low_memory_skips_supplement(self):
@@ -92,7 +93,7 @@ class PreservationTests(unittest.TestCase):
         np.testing.assert_array_equal(original,np.full((1,3,320,320),.25,dtype=np.float32))
 
     def test_rate_limit_never_delays_base(self):
-        det=self.detector();det.last_attempt=.8
+        det=self.detector();det.last_attempts['a']=.8
         with patch.object(module.time,'monotonic',return_value=1), \
                 patch.object(module.time,'sleep') as sleep, patch.object(module,'gpu_state') as state:
             self.assertIs(det.detect_raw(np.zeros((1,3,320,320),dtype=np.float32)),self.base)
@@ -106,26 +107,35 @@ class PreservationTests(unittest.TestCase):
         state.assert_called_once()
 
     def test_busy_stream_does_not_starve_another_camera(self):
-        det=self.detector();det.last_attempt=.8
-        det.set_camera('b');self.assertFalse(det.supplement_turn(1))
-        det.set_camera('a');self.assertFalse(det.supplement_turn(1.4))
-        det.set_camera('b');self.assertTrue(det.supplement_turn(1.5));det.last_attempt=1.5
-        det.set_camera('b');self.assertFalse(det.supplement_turn(2.1))
-        det.set_camera('a');self.assertTrue(det.supplement_turn(2.2))
+        det=self.detector();region=det.region;frame=det.frame
+        self.assertTrue(det.supplement_turn(1))
+        det.set_camera('b',region,frame);self.assertTrue(det.supplement_turn(1.1))
+        self.assertFalse(det.supplement_turn(3))
+        det.set_camera('a',region,(2,[region],[]));self.assertFalse(det.supplement_turn(1.4))
+        self.assertTrue(det.supplement_turn(1.6))
 
     def test_offline_camera_cannot_hold_queue_and_unmeasured_camera_is_skipped(self):
-        det=self.detector();det.last_attempt=.8
+        det=self.detector();region=det.region;frame=det.frame
         det.set_camera('b');self.assertFalse(det.supplement_turn(1))
-        det.set_camera('other');self.assertFalse(det.supplement_turn(4.1))
-        det.set_camera('a');self.assertTrue(det.supplement_turn(4.1))
+        det.set_camera('other',region,frame);self.assertFalse(det.supplement_turn(4.1))
+        det.set_camera('a',region,frame);self.assertTrue(det.supplement_turn(4.1))
 
     def test_later_regions_of_same_camera_get_supplemental_turns(self):
         det=self.detector();first=(0,0,320,320);second=(320,0,640,320)
-        det.set_camera('a',first);self.assertTrue(det.supplement_turn(1));det.last_attempt=1
-        det.set_camera('a',second);self.assertFalse(det.supplement_turn(1.1))
-        det.set_camera('a',first);self.assertFalse(det.supplement_turn(2))
-        det.set_camera('a',second);self.assertTrue(det.supplement_turn(2.1));det.last_attempt=2.1
-        det.set_camera('a',(2,1,321,319));self.assertTrue(det.supplement_turn(3))
+        det.set_camera('a',first,(1,[first,second],[]));self.assertTrue(det.supplement_turn(1))
+        det.set_camera('a',second,(1,[first,second],[]));self.assertFalse(det.supplement_turn(1.1))
+        det.set_camera('a',first,(2,[first,second],[]));self.assertFalse(det.supplement_turn(2))
+        det.set_camera('a',second,(2,[first,second],[]));self.assertTrue(det.supplement_turn(2.1))
+        det.set_camera('a',first,(3,[first],[]));self.assertTrue(det.supplement_turn(3))
+
+    def test_native_tracked_box_gets_three_frames_then_scan_turn(self):
+        det=self.detector();first=(0,0,320,320);second=(320,0,640,320)
+        box=(400,100,500,200)
+        for frame_time in range(1,5):
+            expected=first if frame_time==4 else second
+            for region in (first,second):
+                det.set_camera('a',region,(frame_time,[second,first],[box]))
+                self.assertEqual(det.supplement_turn(frame_time),region==expected)
 
     def test_native_score_cutoff_sees_strong_proposal_before_weak_base_row(self):
         self.base[0,1]=.2
