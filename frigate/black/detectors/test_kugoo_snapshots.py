@@ -20,7 +20,7 @@ class SnapshotRefreshTest(unittest.TestCase):
         return module.is_better_thumbnail([], self.current, {**self.new, **values}, (720, 1280))
 
     def test_fresh_confident_native_track_can_supply_another_snapshot(self):
-        self.assertTrue(self.refresh())
+        self.assertTrue(self.refresh(frame_time=103, area=10080))
         self.assertTrue(self.refresh(label="motorcycle"))
 
     def test_other_native_labels_keep_original_policy(self):
@@ -28,7 +28,7 @@ class SnapshotRefreshTest(unittest.TestCase):
             self.assertFalse(self.refresh(label=label))
 
     def test_low_quality_stale_and_nonfinite_frames_do_not_refresh(self):
-        for values in ({"frame_time": 100}, {"frame_time": 99}, {"frame_time": 104.9},
+        for values in ({"frame_time": 100}, {"frame_time": 99}, {"frame_time": 101.9},
                        {"score": .69}, {"score": float("nan")}, {"area": 8999},
                        {"box": (0, 100, 200, 200)}):
             self.assertFalse(self.refresh(**values), values)
