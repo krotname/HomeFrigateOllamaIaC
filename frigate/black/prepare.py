@@ -125,6 +125,56 @@ def configure_two_wheelers(source):
     return config
 
 
+def configure_kugoo_detector(source: dict) -> dict:
+    """Enable measured native proposals without changing identity/filter thresholds."""
+    config = configure_two_wheelers(source)
+    detectors = config.get("detectors", {})
+    if len(detectors) != 1:
+        raise ValueError("Kugoo supplement requires exactly one existing ONNX detector")
+    name, detector = next(iter(detectors.items()))
+    if detector.get("type") not in {"onnx", "kugoo_onnx"}:
+        raise ValueError("Kugoo supplement requires an existing ONNX detector")
+    model = config.setdefault("model", {})
+    if not str(model.get("path", "")).endswith("yolov9-t-320.onnx"):
+        raise ValueError("The measured base detector must remain yolov9-t-320.onnx")
+    model.update(width=960, height=960)
+    detectors[name] = {**detector, "type": "kugoo_onnx", "device": "GPU",
+                       "supplement_model": "/config/model_cache/kugoo-yolo11n-pyramid.onnx",
+                       "supplement_threshold": .7, "supplement_interval": .55,
+                       "supplement_cameras": ["cam1_ds_i202", "common_camera03"]}
+    measured = {"cam1_ds_i202": (1280, 720), "common_camera03": (1920, 1080)}
+    for camera, values in config.get("cameras", {}).items():
+        if camera not in measured:
+            for zone, settings in values.get("zones", {}).items():
+                if {"bicycle", "motorcycle"}.intersection(settings.get("objects", [])):
+                    raise ValueError(
+                        f"Kugoo conversion cannot remove two-wheeler tracking from {camera}: "
+                        f"zone {zone} requires it")
+            objects = values.get("objects", {})
+            tracked = objects.get("track", config.get("objects", {}).get("track", ["person"]))
+            retained = [label for label in tracked if label not in {"bicycle", "motorcycle"}]
+            if retained != tracked:
+                values.setdefault("objects", {})["track"] = retained
+    for camera, (width, height) in measured.items():
+        if camera not in config.get("cameras", {}):
+            raise ValueError(f"Measured Kugoo camera is missing: {camera}")
+        inputs = config["cameras"][camera].get("ffmpeg", {}).get("inputs", [])
+        sub_path = f"rtsp://127.0.0.1:8554/{camera}_sub"
+        if any(item.get("path") == sub_path and "detect" in item.get("roles", [])
+               for item in inputs):
+            main_path = f"rtsp://127.0.0.1:8554/{camera}_main"
+            main = next((item for item in inputs if item.get("path") == main_path), None)
+            if main is None:
+                raise ValueError(f"Measured full-resolution stream is missing: {camera}")
+            for item in inputs:
+                item["roles"] = [role for role in item.get("roles", []) if role != "detect"]
+            main["roles"].append("detect")
+            inputs[:] = [item for item in inputs if item["roles"]]
+        config["cameras"][camera].setdefault("detect", {}).update(
+            width=width, height=height, fps=1)
+    return config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
@@ -135,19 +185,25 @@ def main() -> None:
                         help="Change only courtyard review alerts/detections in an existing config")
     parser.add_argument("--two-wheelers-only", action="store_true",
                         help="Add two-wheeler tracking/review without regenerating runtime config")
+    parser.add_argument("--kugoo-only", action="store_true",
+                        help="Enable the native CUDA two-wheeler supplement in an existing config")
     options = parser.parse_args()
     source = yaml.safe_load(options.source.read_text())
-    if ((options.courtyard_only or options.two_wheelers_only) and (options.cpu or options.staging)
-            or options.courtyard_only and options.two_wheelers_only):
+    modes = sum((options.courtyard_only, options.two_wheelers_only, options.kugoo_only))
+    if modes > 1 or modes and (options.cpu or options.staging):
         parser.error("Choose one configuration mode")
-    if options.two_wheelers_only:
+    if options.kugoo_only:
+        converted = configure_kugoo_detector(source)
+    elif options.two_wheelers_only:
         converted = configure_two_wheelers(source)
     elif options.courtyard_only:
         converted = configure_courtyard_review(source)
     else:
         converted = configure_two_wheelers(black_config(source, staging=options.staging, cpu=options.cpu))
     write_atomic(options.destination, yaml.safe_dump(converted, sort_keys=False, allow_unicode=True))
-    if options.two_wheelers_only:
+    if options.kugoo_only:
+        print("Configured native CUDA two-wheeler supplement; identity thresholds retained")
+    elif options.two_wheelers_only:
         print("Configured property two-wheeler tracking/review")
     elif options.courtyard_only:
         print("Configured one courtyard alert camera; recording and other cameras unchanged")

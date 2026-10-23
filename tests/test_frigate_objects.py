@@ -412,6 +412,22 @@ class StorageTests(unittest.TestCase):
 
 
 class IntegrationPolicyTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "image library available in GPU runtime")
+    def test_native_two_wheeler_snapshot_does_not_wait_for_recording(self):
+        from PIL import Image
+        output = io.BytesIO()
+        Image.new("RGB", (1280, 720)).save(output, format="JPEG")
+        event = {"id": "1-a", "label": "bicycle", "camera": "common_camera02",
+                 "data": {"snapshot_frame_time": 20, "box": [.25, .25, .5, .5]}}
+        with patch("ocr.frigate_object_worker.request_bytes", return_value=(
+                output.getvalue(), {"x-frame-time": "20"})) as request, patch.object(
+                Frigate, "recording_coverage", side_effect=AssertionError("Recording not required")):
+            self.assertTrue(Frigate().snapshot(event))
+            self.assertEqual(1, request.call_count)
+            self.assertIn("height=0", request.call_args.args[0])
+
+
+
     def test_two_wheeler_class_flip_keeps_identity_and_confirmation_guards(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)

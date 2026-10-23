@@ -41,7 +41,9 @@ MAX_REFERENCES = 500
 MAX_EVENTS = 512
 MAX_PENDING = 512
 EVENT_TTL = 3 * 86400
-POLL_SECONDS = 15
+POLL_SECONDS = int(os.environ.get("FRIGATE_OBJECT_POLL_SECONDS", "15"))
+if not 1 <= POLL_SECONDS <= 60:
+    raise ValueError("Object polling interval must be between 1 and 60 seconds")
 MIN_INTERVAL = 0.5
 MODEL_BUDGET_MIB = 1536
 HEADROOM_MIB = 2048
@@ -454,14 +456,20 @@ class Frigate:
         if (any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in box)
                 or min(box) < 0 or max(box) > 1 or min(box[2:]) <= 0):
             raise ValueError("Invalid relative object box")
+        kind = EVENT_KINDS[event["label"]]
+        height = "&height=0" if kind == "two_wheeler" else "&height=512"
         data, headers = request_bytes(
             self.base + "/events/" + urllib.parse.quote(event["id"], safe="")
-            + "/snapshot.jpg?crop=0&bbox=0&timestamp=0&height=512&quality=90",
+            + "/snapshot.jpg?crop=0&bbox=0&timestamp=0" + height + "&quality=90",
             limit=4 * 1024 * 1024, timeout=8, return_headers=True, bypass_cache=True)
         actual = float(headers.get("x-frame-time", 0))
         if not math.isfinite(actual) or abs(actual - expected) > 0.001:
             raise ValueError("Snapshot advanced; wait for matching event metadata")
-        if EVENT_KINDS[event["label"]] in {"car", "two_wheeler"}:
+        native_event = False
+        if kind == "two_wheeler":
+            with Image.open(io.BytesIO(data)) as original:
+                native_event = original.width >= 1280 and original.height >= 720
+        if kind == "car" or (kind == "two_wheeler" and not native_event):
             # Event JPEGs come from the small detection stream. Use the native
             # recording at its verified best-frame time, preserving the same
             # normalized box. An unfinished/missing recording remains retryable.

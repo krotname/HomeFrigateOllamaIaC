@@ -13,6 +13,76 @@ DEPLOY_SPEC.loader.exec_module(DEPLOY)
 
 
 class MigrationTests(unittest.TestCase):
+    def test_native_kugoo_uses_main_stream_without_changing_recording(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {
+                      "ffmpeg": {"inputs": [
+                          {"path": "rtsp://127.0.0.1:8554/common_camera03_main",
+                           "input_args": ["-rtsp_transport", "tcp"], "roles": ["record"]},
+                          {"path": "rtsp://127.0.0.1:8554/common_camera03_sub",
+                           "roles": ["detect"]}]},
+                      "record": {"enabled": True}}}}
+        before = copy.deepcopy(source)
+        result = MODULE.configure_kugoo_detector(source)
+        inputs = result["cameras"]["common_camera03"]["ffmpeg"]["inputs"]
+        self.assertEqual(1, len(inputs))
+        self.assertEqual({**before["cameras"]["common_camera03"]["ffmpeg"]["inputs"][0],
+                          "roles": ["record", "detect"]}, inputs[0])
+        self.assertEqual(before["cameras"]["common_camera03"]["record"],
+                         result["cameras"]["common_camera03"]["record"])
+        self.assertEqual(before, source)
+        self.assertEqual(result, MODULE.configure_kugoo_detector(result))
+
+    def test_native_kugoo_limits_two_wheeler_tracking_to_measured_views(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "objects": {"track": ["person", "bicycle"]},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {},
+                              "other": {"objects": {"track": ["car", "cat", "bicycle", "motorcycle"]}},
+                              "inherited": {}}}
+        result = MODULE.configure_kugoo_detector(source)
+        self.assertEqual(["car", "cat"], result["cameras"]["other"]["objects"]["track"])
+        self.assertEqual(["person"], result["cameras"]["inherited"]["objects"]["track"])
+        self.assertEqual(["person", "bicycle", "motorcycle"],
+                         result["cameras"]["cam1_ds_i202"]["objects"]["track"])
+
+    def test_native_kugoo_rejects_unmeasured_two_wheeler_zones_without_mutation(self):
+        source = {"model": {"path": "yolov9-t-320.onnx"},
+                  "detectors": {"objects": {"type": "onnx"}},
+                  "cameras": {"cam1_ds_i202": {}, "common_camera03": {},
+                              "other": {"objects": {"track": ["car", "bicycle"]},
+                                        "zones": {"entrance": {"objects": ["bicycle"]}}}}}
+        before = copy.deepcopy(source)
+        with self.assertRaisesRegex(ValueError, "other: zone entrance requires it"):
+            MODULE.configure_kugoo_detector(source)
+        self.assertEqual(before, source)
+
+    def test_native_kugoo_keeps_connections_recording_and_filter_thresholds(self):
+        source = self.source()
+        source.update(model={"path": "/config/model_cache/yolov9-t-320.onnx",
+                             "width": 320, "height": 320},
+                      detectors={"objects": {"type": "onnx", "device": "GPU"}})
+        for name in ("cam1_ds_i202", "common_camera03"):
+            source["cameras"][name] = {
+                "ffmpeg": {"inputs": [{"path": "rtsp://private/stream", "roles": ["record", "detect"]}]},
+                "record": {"enabled": True},
+                "objects": {"track": ["car", "cat", "bicycle"], "filters": {
+                    "bicycle": {"threshold": .7, "min_score": .5},
+                    "cat": {"threshold": .8}}}}
+        before = copy.deepcopy(source)
+        converted = MODULE.configure_kugoo_detector(source)
+        self.assertEqual(source, before)
+        self.assertEqual(converted, MODULE.configure_kugoo_detector(converted))
+        self.assertEqual(source["cameras"]["living"], converted["cameras"]["living"])
+        for name in ("cam1_ds_i202", "common_camera03"):
+            for field in ("ffmpeg", "record"):
+                self.assertEqual(source["cameras"][name][field], converted["cameras"][name][field])
+            self.assertEqual(source["cameras"][name]["objects"]["filters"],
+                             converted["cameras"][name]["objects"]["filters"])
+        self.assertEqual(converted["model"]["width"], 960)
+        self.assertEqual(converted["detectors"]["objects"]["supplement_threshold"], .7)
+
     def test_two_wheeler_update_preserves_implicit_person_tracking(self):
         source = {"cameras": {"cam3_ds_i200": {}}}
         converted = MODULE.configure_two_wheelers(source)
