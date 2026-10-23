@@ -35,9 +35,9 @@ def is_better_thumbnail(label_attributes, current_thumb, new_obj, frame_shape):
         previous_area = float(current_thumb["area"])
         if not all(math.isfinite(value) for value in (age, score, area, previous_area)):
             return False
-        # Leave time for the recording segment to become available before the
-        # next refresh; the identity worker verifies that exact recorded frame.
-        return (age >= 20 and score >= .7 and previous_area > 0
+        # The worker reads the exact native JPEG immediately; a short track can
+        # provide a second real frame without waiting for a recording segment.
+        return (age >= 5 and score >= .7 and previous_area > 0
                 and area >= previous_area * .9
                 and not on_edge(new_obj["box"], frame_shape))
     except (KeyError, TypeError, ValueError):
