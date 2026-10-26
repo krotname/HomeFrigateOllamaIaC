@@ -1,0 +1,31 @@
+services:
+  frigate-barrier:
+    container_name: frigate-barrier
+    image: ghcr.io/blakeblackshear/frigate:0.18.0-tensorrt@sha256:82d7475ba7e5f950911bd9d06f2392de96881f39eeacd78824a526dde9b5cad9
+    user: "65534:65534"
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app
+    entrypoint: [python3, -m, ocr.frigate_barrier]
+    command: [--config, /config/calibration.json, --state-dir, /state]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    volumes:
+      - /opt/frigate-barrier/ocr:/app/ocr:ro
+      - /opt/frigate-barrier/config:/config:ro
+      - /var/lib/frigate-barrier:/state
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=16m]
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: "0.5"
+    pids_limit: 48
+    healthcheck:
+      test: [CMD, python3, -c, "import json,time; h=json.load(open('/state/status.json')); assert time.time()-h['updated']<10"]
+      interval: 15s
+      timeout: 3s
+      retries: 2
