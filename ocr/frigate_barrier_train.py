@@ -31,6 +31,7 @@ def vectors(manifest_path, config, rows, origin, augment=False):
     import numpy as np
     cv2.setNumThreads(1)
     result = {name: [] for name in config['regions']}
+    visible = {name: [] for name in config['regions']}
     labels = []
     for row in rows:
         image = cv2.imread(str(manifest_path.parent / row['path']), cv2.IMREAD_GRAYSCALE)
@@ -41,16 +42,25 @@ def vectors(manifest_path, config, rows, origin, augment=False):
             # Misaligned and hidden regions must never become a known position.
             variants += [(image, shift, 0) for shift in [(10, 0), (-10, 0), (0, 10), (0, -10)]]
         for source, shift, label in variants:
-            for name, region in config['regions'].items():
-                vector = features(crop_region(source, region, origin, shift))
+            try:
+                crops = {name: crop_region(source, region, origin, shift)
+                         for name, region in config['regions'].items()}
+            except ValueError:
+                if shift != (0, 0):
+                    continue
+                raise
+            for name, crop in crops.items():
+                vector = features(crop)
+                visible[name].append(vector is not None)
                 if vector is None:
                     vector = np.zeros(FEATURE_LENGTH, dtype=np.float32)
                 result[name].append(vector)
             labels.append(label)
-    return {name: np.asarray(values, dtype=np.float32) for name, values in result.items()}, np.asarray(labels)
+    return ({name: np.asarray(values, dtype=np.float32) for name, values in result.items()},
+            np.asarray(labels), {name: np.asarray(values, dtype=bool) for name, values in visible.items()})
 
 
-def predict(model, data):
+def predict(model, data, visible):
     import numpy as np
     predictions = []
     for name, value in model['classifiers'].items():
@@ -59,11 +69,11 @@ def predict(model, data):
         candidate = order[:, -1]
         margin = scores[np.arange(len(scores)), order[:, -1]] - scores[np.arange(len(scores)), order[:, -2]]
         threshold = np.asarray(value['thresholds'])[candidate]
-        predictions.append(np.where((candidate != 0) & (margin >= threshold), candidate, 0))
+        predictions.append(np.where(visible[name] & (candidate != 0) & (margin >= threshold), candidate, 0))
     return np.where(np.logical_and.reduce([p == predictions[0] for p in predictions]), predictions[0], 0)
 
 
-def tune_consensus(model, data, labels):
+def tune_consensus(model, data, labels, visible):
     """Choose margins for the two-region decision using validation only."""
     import numpy as np
     names = list(model['classifiers'])
@@ -74,7 +84,7 @@ def tune_consensus(model, data, labels):
         order = scores.argsort(axis=1)
         best = order[:, -1]
         margin = scores[np.arange(len(scores)), best] - scores[np.arange(len(scores)), order[:, -2]]
-        decisions.append((best, margin))
+        decisions.append((np.where(visible[name], best, 0), margin))
     for state in (1, 2):
         agreed = (decisions[0][0] == state) & (decisions[1][0] == state)
         wrong = agreed & (labels != state)
@@ -101,8 +111,8 @@ def train(args):
     validation = [r for r in rows if r['role'] == 'validation']
     if not training or not validation or any(sum(r['label'] == k for r in training) < 5 for k in (1, 2)):
         raise ValueError('insufficient_independent_labels')
-    x, y = vectors(args.manifest, config, training, manifest['origin'], augment=True)
-    vx, vy = vectors(args.manifest, config, validation, manifest['origin'])
+    x, y, _ = vectors(args.manifest, config, training, manifest['origin'], augment=True)
+    vx, vy, visible = vectors(args.manifest, config, validation, manifest['origin'])
     candidates = []
     for strength in (.01, .1, 1.):
         model = {'schema': 1, 'feature_version': FEATURE_VERSION, 'version': args.version,
@@ -114,8 +124,8 @@ def train(args):
             if list(svm.classes_) != [0, 1, 2]:
                 raise ValueError('missing_training_class')
             model['classifiers'][name] = {'weights': svm.coef_.tolist(), 'bias': svm.intercept_.tolist(), 'thresholds': [0., .15, .15]}
-        tune_consensus(model, vx, vy)
-        result = predict(model, vx)
+        tune_consensus(model, vx, vy, visible)
+        result = predict(model, vx, visible)
         wrong = int(((result != 0) & (result != vy)).sum())
         known = int(((result != 0) & (vy != 0)).sum())
         candidates.append((wrong, -known, strength, model))

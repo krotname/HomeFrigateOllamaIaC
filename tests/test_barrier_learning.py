@@ -34,8 +34,47 @@ class ModelTests(unittest.TestCase):
                                        'thresholds': [0., .15, .15]} for name in ('pose', 'arm')}}
         values = {'pose': np.asarray([[0., 3, 0], [0, 20, 0], [0, 1.5, 0]]),
                   'arm': np.asarray([[0., 3, 0], [0, 0, 3], [0, 1, 0]])}
-        tune_consensus(model, values, np.asarray([1, 0, 0]))
-        self.assertEqual(predict(model, values).tolist(), [1, 0, 0])
+        visible = {name: np.ones(3, dtype=bool) for name in values}
+        tune_consensus(model, values, np.asarray([1, 0, 0]), visible)
+        self.assertEqual(predict(model, values, visible).tolist(), [1, 0, 0])
+
+    def test_edge_crops_skip_only_invalid_augmentation_variants(self):
+        import cv2
+        import numpy as np
+        from ocr.frigate_barrier_train import vectors
+        image = np.tile(np.arange(40, dtype=np.uint8), (50, 1))
+        cv2.imwrite(str(self.path.parent / 'edge.png'), image)
+        config = {'regions': {'pose': [100, 200, 119, 232], 'arm': [119, 200, 140, 232]}}
+        rows = [{'path': 'edge.png', 'label': 1}]
+        data, labels, visible = vectors(self.path, config, rows, (100, 200), augment=True)
+        self.assertEqual(labels.tolist(), [1, 0])
+        for name in ('pose', 'arm'):
+            self.assertEqual(len(data[name]), len(labels))
+            self.assertTrue(visible[name].all())
+        config['regions']['arm'][2] += 1
+        with self.assertRaisesRegex(ValueError, 'region_outside_image'):
+            vectors(self.path, config, rows, (100, 200), augment=True)
+
+    def test_validation_visibility_matches_runtime_despite_confident_bias(self):
+        import cv2
+        import numpy as np
+        from ocr.frigate_barrier_train import predict, tune_consensus, vectors
+        image = np.tile(np.arange(40, dtype=np.uint8), (50, 1))
+        hidden = image.copy()
+        hidden[:, :19] = 0
+        for filename, source in [('hidden.png', hidden), ('visible.png', image)]:
+            cv2.imwrite(str(self.path.parent / filename), source)
+        config = {'regions': {'pose': [0, 0, 19, 32], 'arm': [19, 0, 40, 32]}}
+        rows = [{'path': 'hidden.png', 'label': 0}, {'path': 'visible.png', 'label': 1}]
+        data, labels, visible = vectors(self.path, config, rows, (0, 0))
+        self.assertEqual(visible['pose'].tolist(), [False, True])
+        self.assertEqual(visible['arm'].tolist(), [True, True])
+        self.assertEqual(predict(self.model, data, visible).tolist(), [0, 1])
+        tune_consensus(self.model, data, labels, visible)
+        self.assertEqual(predict(self.model, data, visible).tolist(), [0, 1])
+        learned = self.load()
+        self.assertEqual(learned.classify('pose', hidden[:32, :19])[0], 0)
+        self.assertEqual(learned.classify('pose', image[:32, :19])[0], 1)
 
     def setUp(self):
         import numpy as np
