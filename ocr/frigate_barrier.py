@@ -31,6 +31,8 @@ class EvidenceGate:
             return UNKNOWN, 'camera_unavailable'
         changed = self.clock is not None and clock != self.clock
         first = self.clock is None
+        if self.changed_at is not None and now - self.changed_at > self.frozen_after:
+            self.pending, self.count = UNKNOWN, 0
         if first or changed:
             self.clock = clock
             if changed:

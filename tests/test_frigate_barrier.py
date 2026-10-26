@@ -29,6 +29,12 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(gate.observe(UNKNOWN, b'y', 5, 105)[0], UNKNOWN)
         self.assertEqual(gate.observe(OPEN, b'z', 6, 106)[0], UNKNOWN)
 
+    def test_changed_clock_after_long_poll_gap_requires_new_sequence(self):
+        gate = self.confirmed()
+        self.assertEqual(gate.observe(CLOSED, b'x', 10, 110)[0], UNKNOWN)
+        self.assertEqual(gate.observe(CLOSED, b'y', 11, 111)[0], UNKNOWN)
+        self.assertEqual(gate.observe(CLOSED, b'z', 12, 112)[0], CLOSED)
+
     def test_camera_health_is_current_not_just_running(self):
         def stats(updated=100, fps=1):
             return {'service': {'last_updated': updated}, 'cameras': {'gate': {'camera_fps': fps}}}
