@@ -82,6 +82,13 @@ class PoseClassifier:
                    for state, bank in states.items()}
             for kind, states in config['templates'].items()
         }
+        self.learned, self.model_error = None, None
+        if config.get('classifier') == 'hog-linear':
+            from ocr.barrier_learning import LearnedPose
+            try:
+                self.learned = LearnedPose(config['model_path'], config)
+            except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
+                self.model_error = 'invalid_model'
         self.previous = None
         self.clock_patch = None
         self.clock_counter = 0
@@ -100,22 +107,29 @@ class PoseClassifier:
             self.clock_counter += 1
             self.clock_patch = clock_patch.copy()
         clock = self.clock_counter.to_bytes(8, 'big')
+        if self.model_error:
+            self.previous = None
+            return UNKNOWN, clock, {'reason': self.model_error}
         scores = {}
         winners = []
         pose = None
         for kind, region in self.config['regions'].items():
             x1, y1, x2, y2 = region
             crop = frame[y1:y2, x1:x2].astype(self.np.float32)
-            if crop.size == 0 or float(crop.std()) < 10:
+            if crop.size == 0 or float(crop.std()) < (3 if self.learned else 10):
                 self.previous = None
                 return UNKNOWN, clock, {'reason': 'poor_visibility'}
-            scores[kind] = {state: max(float(self.cv.matchTemplate(crop, template, self.cv.TM_CCOEFF_NORMED)[0, 0]) for template in bank)
-                            for state, bank in self.templates[kind].items()}
-            ordered = sorted(scores[kind], key=scores[kind].get, reverse=True)
-            best, other = ordered[:2]
-            minimum = self.config.get('minimum_score', {}).get(kind, 0.90)
-            margin = self.config.get('minimum_margin', {}).get(kind, 0.06)
-            winners.append({'closed': CLOSED, 'open': OPEN}[best] if scores[kind][best] >= minimum and scores[kind][best] - scores[kind][other] >= margin else UNKNOWN)
+            if self.learned:
+                winner, scores[kind] = self.learned.classify(kind, crop.astype(self.np.uint8))
+                winners.append(winner)
+            else:
+                scores[kind] = {state: max(float(self.cv.matchTemplate(crop, template, self.cv.TM_CCOEFF_NORMED)[0, 0]) for template in bank)
+                                for state, bank in self.templates[kind].items()}
+                ordered = sorted(scores[kind], key=scores[kind].get, reverse=True)
+                best, other = ordered[:2]
+                minimum = self.config.get('minimum_score', {}).get(kind, 0.90)
+                margin = self.config.get('minimum_margin', {}).get(kind, 0.06)
+                winners.append({'closed': CLOSED, 'open': OPEN}[best] if scores[kind][best] >= minimum and scores[kind][best] - scores[kind][other] >= margin else UNKNOWN)
             if kind == 'pose':
                 pose = crop
         state = consensus(winners)
@@ -123,7 +137,14 @@ class PoseClassifier:
         self.previous = None if pose is None else pose.copy()
         if moving:
             state = UNKNOWN
-        return state, clock, {'scores': scores, 'moving': moving}
+        detail = {'scores': scores, 'moving': moving}
+        if self.learned:
+            detail['model_version'] = self.learned.version
+            detail['confidence'] = round(min(v['margin'] for v in scores.values()), 5)
+            detail['confidence_kind'] = 'svm_margin'
+            if state == UNKNOWN:
+                detail['reason'] = 'motion' if moving else ('region_disagreement' if len(set(winners)) > 1 else 'low_confidence')
+        return state, clock, detail
 
 
 def fetch(base, path):
