@@ -60,7 +60,7 @@ def camera_healthy(stats, camera, wall):
     try:
         updated = float(stats['service']['last_updated'])
         fps = float(stats['cameras'][camera]['camera_fps'])
-        return math.isfinite(updated) and -2 <= wall - updated <= 15 and fps >= 0.25
+        return math.isfinite(updated) and -2 <= wall - updated <= 45 and fps >= 0.25
     except (KeyError, TypeError, ValueError):
         return False
 

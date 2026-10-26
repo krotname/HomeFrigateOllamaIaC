@@ -33,6 +33,7 @@ class EvidenceTests(unittest.TestCase):
         def stats(updated=100, fps=1):
             return {'service': {'last_updated': updated}, 'cameras': {'gate': {'camera_fps': fps}}}
         self.assertTrue(camera_healthy(stats(), 'gate', 101))
+        self.assertTrue(camera_healthy(stats(), 'gate', 118))
         for data in ({}, stats(50), stats(fps=0), stats(float('nan'))):
             self.assertFalse(camera_healthy(data, 'gate', 101))
 
