@@ -48,6 +48,15 @@ def deliver(key, text, journal, path, sender):
     atomic_json(path, journal)
 
 
+def prune_journal(journal, retained):
+    # Recorder incidents expire by count, independently of notification history.
+    # Their verified AND ambiguous markers must survive while they can reappear.
+    notifications = [key for key in journal["sent"] if key not in retained]
+    recent = sorted(notifications, key=lambda key: journal["sent"][key]["at"])[-1000:]
+    keep = retained | set(recent)
+    journal["sent"] = {key: value for key, value in journal["sent"].items() if key in keep}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
@@ -75,6 +84,7 @@ def main():
             finally:
                 message.unlink(missing_ok=True)
 
+        retained = None
         try:
             result = subprocess.run(
                 [config["ssh"], "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
@@ -91,6 +101,7 @@ def main():
                 # Ignore historical events predating this installation.
                 if incident["timestamp"] >= config["enabled_at"]:
                     deliver(incident["id"], render(incident), journal, path, sender)
+            retained = {incident["id"] for incident in state.get("incidents", [])}
             healthy = (time.time() - state.get("heartbeat", 0) < 180
                        and time.time() - state.get("last_recognized", 0) < 180)
             journal["last_state"] = {k: state.get(k) for k in
@@ -111,9 +122,8 @@ def main():
                     "Наблюдение за прицепом на камере 04 восстановлено.", journal, path, sender)
             journal.pop("outage", None)
         journal["heartbeat"] = time.time()
-        if len(journal["sent"]) > 1000:
-            recent = sorted(journal["sent"], key=lambda key: journal["sent"][key]["at"])[-1000:]
-            journal["sent"] = {key: journal["sent"][key] for key in recent}
+        if retained is not None:
+            prune_journal(journal, retained)
         atomic_json(path, journal)
         print(json.dumps({"healthy": healthy, "deliveries": {
             key: value["status"] for key, value in journal["sent"].items()}}, ensure_ascii=False))

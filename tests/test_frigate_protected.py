@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
-from ocr.frigate_protected import Movement, Observation, vehicle_near
+from ocr.frigate_protected import Api, Movement, Observation, vehicle_near
 
 
 class MovementTests(unittest.TestCase):
@@ -48,6 +50,31 @@ class MovementTests(unittest.TestCase):
         self.assertFalse(vehicle_near([event], 110, [.1, .1, .2, .3]))
         event["label"] = "person"
         self.assertFalse(vehicle_near([event], 110, area))
+
+
+class ApiTests(unittest.TestCase):
+    def test_parked_vehicle_with_fresh_track_is_included_once(self):
+        parked = {"id": "parked", "start_time": 1, "label": "car",
+                  "data": {"path_data": [[[.6, .2], 300]]}}
+        recent = {"id": "recent", "start_time": 290, "label": "person"}
+        api = Api()
+        with patch.object(api, "json", side_effect=[[recent], [recent, parked]]) as fetch:
+            candidates = api.candidates("common_camera04", 310)
+        self.assertEqual({row["id"] for row in candidates}, {"recent", "parked"})
+        self.assertEqual(len(candidates), 2)
+        active_query = parse_qs(urlsplit(fetch.call_args_list[1].args[0]).query)
+        self.assertEqual(active_query["in_progress"], ["1"])
+        self.assertNotIn("after", active_query)
+        self.assertTrue(vehicle_near(candidates, 310, [.5, .1, .7, .3]))
+
+    def test_recording_disappearance_is_rejected_with_fresh_coverage(self):
+        with patch("ocr.frigate_protected.request_bytes", side_effect=[
+                b'[{"id":"segment","start_time":90,"end_time":110}]', b"image", b"[]"
+        ]) as fetch:
+            with self.assertRaisesRegex(ValueError, "disappeared"):
+                Api().frame("common_camera04", 100)
+        self.assertTrue(fetch.call_args_list[0].kwargs["bypass_cache"])
+        self.assertTrue(fetch.call_args_list[2].kwargs["bypass_cache"])
 
 
 if __name__ == "__main__":

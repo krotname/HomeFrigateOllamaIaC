@@ -170,19 +170,28 @@ class Matcher:
 class Api:
     base = "http://127.0.0.1:15000/api"
 
-    def data(self, path, payload=None):
+    def data(self, path, payload=None, *, bypass_cache=False):
         body = None if payload is None else json.dumps(payload).encode()
         raw = request_bytes(self.base + path, method="GET" if body is None else "POST",
-                            body=body, timeout=15, limit=4 * 1024 * 1024)
+                            body=body, timeout=15, limit=4 * 1024 * 1024,
+                            bypass_cache=bypass_cache)
         return raw
 
-    def json(self, path, payload=None):
-        return json.loads(self.data(path, payload))
+    def json(self, path, payload=None, *, bypass_cache=False):
+        return json.loads(self.data(path, payload, bypass_cache=bypass_cache))
+
+    def candidates(self, camera, timestamp):
+        filters = {"cameras": camera, "limit": 100, "include_thumbnails": 0}
+        recent = self.json("/events?" + urllib.parse.urlencode(
+            {**filters, "after": timestamp - 120}))
+        # Event start_time does not bound the age of its latest trajectory points.
+        active = self.json("/events?" + urllib.parse.urlencode({**filters, "in_progress": 1}))
+        return list({event["id"]: event for event in recent + active}.values())
 
     def frame(self, camera, timestamp):
         query = urllib.parse.urlencode({"after": timestamp - 2, "before": timestamp + 2})
         def coverage():
-            segments = self.json(f"/{camera}/recordings?{query}")
+            segments = self.json(f"/{camera}/recordings?{query}", bypass_cache=True)
             return {row["id"] for row in segments
                     if row["start_time"] <= timestamp <= row["end_time"]}
         before = coverage()
@@ -254,9 +263,8 @@ def main():
                     raise ValueError("Camera has no live frames")
                 raw = api.frame(profile["camera"], timestamp)
                 observation = matcher.observe(raw, timestamp)
-                query = urllib.parse.urlencode({"cameras": profile["camera"], "after": timestamp - 120,
-                                                "limit": 100, "include_thumbnails": 0})
-                nearby = vehicle_near(api.json("/events?" + query), timestamp, profile["vehicle_area"])
+                nearby = vehicle_near(api.candidates(profile["camera"], timestamp),
+                                      timestamp, profile["vehicle_area"])
                 status = movement.observe(observation, nearby)
                 state.update(observed_at=timestamp, status=status, position=observation.position,
                              confidence=round(observation.confidence, 4), nearby_vehicle=nearby,
