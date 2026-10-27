@@ -22,11 +22,27 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(detector.observe(Observation(116, (7, 1), .9, True), False), "possible_impact")
         self.assertEqual(detector.observe(Observation(120, (7, 1), .9, True), True), "present")
 
-    def test_occlusion_cannot_be_impact(self):
+    def test_occlusion_without_movement_cannot_be_impact(self):
         detector = self.armed()
         self.assertEqual(detector.observe(Observation(112), True), "unknown")
         for ts in (116, 120, 124):
-            self.assertNotEqual(detector.observe(Observation(ts, (9, 0), .9, True), True), "possible_impact")
+            self.assertEqual(detector.observe(Observation(ts, (0, 0), .9, True), True), "present")
+
+    def test_movement_during_brief_occlusion_is_confirmed_on_reappearance(self):
+        detector = self.armed()
+        self.assertEqual(detector.observe(Observation(112), True), "unknown")
+        self.assertEqual(detector.observe(Observation(116, (9, 0), .9, True), True),
+                         "movement_pending")
+        self.assertEqual(detector.observe(Observation(120, (9, 0), .9, True), True),
+                         "possible_impact")
+
+    def test_long_occlusion_requires_a_new_baseline(self):
+        detector = self.armed()
+        for ts in range(112, 149, 4):
+            self.assertEqual(detector.observe(Observation(ts), True), "unknown")
+        for ts in (152, 156, 160):
+            self.assertNotEqual(detector.observe(Observation(ts, (9, 0), .9, True), True),
+                                "possible_impact")
 
     def test_gap_cannot_be_impact(self):
         detector = self.armed()

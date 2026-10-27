@@ -3,7 +3,7 @@
 Reference images and the owner-approved profile live outside Git. A possible
 impact needs two coherent object landmarks, a stable background, an abrupt
 movement observed twice, and a recent nearby vehicle track. Recording gaps,
-occlusion and initial acquisition never constitute impact evidence.
+occlusion alone and initial acquisition never constitute impact evidence.
 """
 
 import argparse
@@ -41,13 +41,14 @@ class Observation:
 
 
 class Movement:
-    """Only consecutive valid observations can arm or confirm a movement."""
+    """Confirm movement twice, retaining a known baseline across brief occlusions."""
 
     def __init__(self, threshold=5, cooldown=300):
         self.threshold = threshold
         self.cooldown = cooldown
         self.baseline = None
         self.previous_time = None
+        self.last_valid_time = None
         self.acquired = 0
         self.pending = None
         self.last_alarm = -math.inf
@@ -57,11 +58,16 @@ class Movement:
         gap = self.previous_time is None or not 0 < ts - self.previous_time <= 10
         self.previous_time = ts
         if gap or not observation.valid:
-            self.baseline = None
-            self.acquired = 0
+            retained = (self.baseline is not None and self.acquired >= 3
+                        and self.last_valid_time is not None
+                        and 0 < ts - self.last_valid_time <= 30)
+            if not retained:
+                self.baseline = None
+                self.acquired = 0
             self.pending = None
         if not observation.valid:
             return "unknown"
+        self.last_valid_time = ts
         pos = observation.position
         if self.baseline is None:
             self.baseline = pos
