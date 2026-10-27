@@ -1,0 +1,37 @@
+services:
+  frigate-protected:
+    container_name: frigate-protected
+    image: ghcr.io/blakeblackshear/frigate:0.18.0-tensorrt@sha256:82d7475ba7e5f950911bd9d06f2392de96881f39eeacd78824a526dde9b5cad9
+    user: "65534:65534"
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app
+    entrypoint: [python3, -m, ocr.frigate_protected]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    volumes:
+      - type: bind
+        source: /opt/frigate-protected/ocr
+        target: /app/ocr
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /var/lib/frigate-protected
+        target: /state
+        bind: {create_host_path: false}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=16m]
+    mem_limit: 384m
+    cpus: 0.75
+    healthcheck:
+      test: [CMD, python3, -c, "import json,time; d=json.load(open('/state/state.json')); assert time.time()-d['heartbeat']<90 and time.time()-d.get('last_success',0)<120"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 2m, max-file: "2"}
