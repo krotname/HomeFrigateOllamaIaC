@@ -839,15 +839,15 @@
   ansible.builtin.stat:
     path: "{{ item }}"
   loop:
-    - "{{ frigate_root }}/certs/white-domain-fullchain.pem"
-    - "{{ frigate_root }}/certs/white-domain-privkey.pem"
+    - "{{ frigate_root }}/certs/black-domain-fullchain.pem"
+    - "{{ frigate_root }}/certs/black-domain-privkey.pem"
   register: frigate_vm_friendly_cert_files
 
 - name: Require friendly Frigate certificate and key
   ansible.builtin.assert:
     that:
       - frigate_vm_friendly_cert_files.results | map(attribute='stat.exists') | min
-    fail_msg: The r3 certificate for frigate.adler-white-w1.lan must be installed first.
+    fail_msg: "The LAN CA certificate for {{ frigate_vm_friendly_dns_name }} must be installed first."
 
 - name: Check friendly Frigate certificate hostname
   ansible.builtin.command:
@@ -855,7 +855,7 @@
       - openssl
       - x509
       - -in
-      - "{{ frigate_root }}/certs/white-domain-fullchain.pem"
+      - "{{ frigate_root }}/certs/black-domain-fullchain.pem"
       - -noout
       - -checkhost
       - "{{ frigate_vm_friendly_dns_name }}"
@@ -868,7 +868,7 @@
 - name: Render friendly Frigate HTTPS site
   ansible.builtin.template:
     src: frigate-white-domain.nginx.j2
-    dest: /etc/nginx/sites-available/frigate-white-domain
+    dest: /etc/nginx/sites-available/frigate-black-domain
     owner: root
     group: root
     mode: "0644"
@@ -876,8 +876,8 @@
 
 - name: Enable friendly Frigate HTTPS site
   ansible.builtin.file:
-    src: /etc/nginx/sites-available/frigate-white-domain
-    dest: /etc/nginx/sites-enabled/frigate-white-domain
+    src: /etc/nginx/sites-available/frigate-black-domain
+    dest: /etc/nginx/sites-enabled/frigate-black-domain
     state: link
   notify: Restart nginx
 
@@ -889,6 +889,23 @@
     - ollama-https
     - asr-https
     - adler-frigate
+    - frigate-white-domain
+  notify: Restart nginx
+
+- name: Render retired Frigate name guard
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../frigate/black/frigate-white-redirect.conf"
+    dest: /etc/nginx/sites-available/frigate-retired-names
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart nginx
+
+- name: Enable retired Frigate name guard
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/frigate-retired-names
+    dest: /etc/nginx/sites-enabled/frigate-retired-names
+    state: link
   notify: Restart nginx
 
 - name: Disable default nginx site

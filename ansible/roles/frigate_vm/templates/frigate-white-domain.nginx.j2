@@ -2,8 +2,8 @@ server {
     listen 443 ssl;
     server_name {{ frigate_vm_friendly_dns_name }};
 
-    ssl_certificate {{ frigate_root }}/certs/white-domain-fullchain.pem;
-    ssl_certificate_key {{ frigate_root }}/certs/white-domain-privkey.pem;
+    ssl_certificate {{ frigate_root }}/certs/black-domain-fullchain.pem;
+    ssl_certificate_key {{ frigate_root }}/certs/black-domain-privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
 
     auth_basic "Home AI";

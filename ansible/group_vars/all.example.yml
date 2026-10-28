@@ -18,9 +18,7 @@ recorder_detect_fps: 1
 # Адрес VM и локальные DNS-имена, которые попадут в self-signed сертификат.
 frigate_vm_ip: 192.168.50.20
 frigate_dns_names:
-  - adler-frigate.local
-  - adler-frigate
-  - frigate-ubuntu
+  - frigate.adler-black-u2.lan
 
 # Образ Frigate с поддержкой NVIDIA/TensorRT.
 # Перед обновлением сверяйте release notes Frigate и прогоняйте smoke-test.

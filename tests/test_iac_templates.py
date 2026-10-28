@@ -426,7 +426,7 @@ class IacTemplateTests(unittest.TestCase):
         )
 
         self.assertEqual(1, nginx.count('auth_basic "Home AI";'))
-        self.assertIn("listen 8971 ssl;", nginx)
+        self.assertIn("listen 8971 ssl default_server;", nginx)
         self.assertNotIn("listen 11443 ssl;", nginx)
         self.assertNotIn("listen 9443 ssl;", nginx)
 
@@ -438,7 +438,7 @@ class IacTemplateTests(unittest.TestCase):
 
         self.assertNotIn("{{", nginx)
         self.assertEqual(3, nginx.count('auth_basic "Home AI";'))
-        self.assertIn("listen 8971 ssl;", nginx)
+        self.assertIn("listen 8971 ssl default_server;", nginx)
         self.assertIn("listen 11443 ssl;", nginx)
         self.assertIn("listen 9443 ssl;", nginx)
         self.assertIn("https://127.0.0.1:18971", nginx)
