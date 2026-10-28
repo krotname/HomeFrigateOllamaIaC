@@ -124,7 +124,7 @@ def recorder_nginx(server_names: list[str], backend_port: int, cert_dir: str) ->
 }}
 
 server {{
-    listen 8971 ssl;
+    listen 8971 ssl default_server;
     server_name {names};
 
     ssl_certificate {cert_dir}/fullchain.pem;

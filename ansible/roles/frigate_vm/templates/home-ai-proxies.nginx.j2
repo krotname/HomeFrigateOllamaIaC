@@ -4,7 +4,7 @@ map $http_upgrade $home_ai_connection_upgrade {
 }
 
 server {
-    listen 8971 ssl;
+    listen 8971 ssl default_server;
     server_name {{ frigate_vm_ip }}{% for name in frigate_dns_names %} {{ name }}{% endfor %};
 
     ssl_certificate {{ frigate_root }}/certs/fullchain.pem;

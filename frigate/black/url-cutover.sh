@@ -33,6 +33,7 @@ case "${1:-}" in
     rm -f /etc/nginx/sites-enabled/frigate-white-domain /etc/nginx/sites-available/frigate-white-domain
     # Retain the IP endpoint, but remove names now handled by the rejection vhost.
     if test -f /etc/nginx/sites-available/home-ai-proxies; then
+      sed -i -E 's/^([[:space:]]*listen 8971 ssl);/\1 default_server;/' /etc/nginx/sites-available/home-ai-proxies
       sed -i -E '/^[[:space:]]*server_name /{:again; s/ (adler-frigate\.lan|frigate\.adler-white-w1\.lan|frigate\.lan|adler-frigate\.local|frigate\.local|adler-asr\.lan|frigate-ubuntu)([ ;])/\2/g; t again;}' /etc/nginx/sites-available/home-ai-proxies
     fi
     nginx -t
