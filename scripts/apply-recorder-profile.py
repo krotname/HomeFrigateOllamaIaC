@@ -181,9 +181,7 @@ def main() -> int:
         raise SystemExit("--detect-fps must be between 1 and 5")
     names = args.server_names or [
         "192.168.1.138",
-        "adler-frigate.lan",
-        "adler-asr.lan",
-        "frigate-ubuntu",
+        "frigate.adler-black-u2.lan",
     ]
 
     config = recorder_config(

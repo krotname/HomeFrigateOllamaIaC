@@ -48,8 +48,8 @@ record_continuous_days: 3
 
 The Frigate name resolves on the LAN router to the VM, where nginx serves port 443
 with a dedicated certificate from `krt-local-lan-root-ca-2026-r3`. The certificate
-and private key are provisioned from White's CA before running Ansible. The old
-`https://adler-frigate.lan:8971/` endpoint remains available for existing clients.
+and private key are provisioned from White's CA before running Ansible. Only the canonical Frigate DNS name is published; retired names are rejected
+during the TLS handshake, including on the former port 8971.
 
 ## Что Показывает Репозиторий
 
