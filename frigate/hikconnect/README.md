@@ -12,12 +12,16 @@ by the recorder protocol; P slices remain clear. Original RTP timestamps survive
 local publication, fragmentation, clock wraps and reconnects. Audio is omitted.
 There is no dependency on a phone or an open browser.
 
-Frigate's existing go2rtc converts only the main streams to H.264 using the
-already assigned Tesla P40 and CUDA/NVENC. Resolution and 15 fps are preserved;
-the substreams stay HEVC. Encoder headers are available immediately and keyframes
-occur every two seconds. This makes live video and recordings playable in Chrome
-without adding GPU access to the cloud adapter. The existing Black compose GPU
-assignment and FFmpeg 8 installation are required.
+Frigate's existing go2rtc converts the `_main` streams to H.264 for live viewing
+using the already assigned Tesla P40 and CUDA/NVENC. Resolution and 15 fps are
+preserved; the substreams stay HEVC. Separate `_archive` streams copy the
+recorder's original HEVC into the archive without transcoding. Encoder headers
+for live viewing are available immediately and keyframes occur every two seconds.
+The existing Black compose GPU assignment and FFmpeg 8 installation are required.
+After adding or updating cameras, apply `../black/storage_profile.py` to a
+candidate configuration and validate it with the installed Frigate version.
+Continuous retention is disabled; motion, alerts and detections are kept for
+seven days. HEVC archive playback requires a browser with HEVC support.
 
 ## Build and credentials
 
