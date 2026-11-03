@@ -24,10 +24,11 @@ uses the recorder's loopback API over SSH without exposing another network API.
 Run a single persistent scheduled task as the account owning the existing bot
 runtime, with an at-logon trigger and restart on failure. The recorder gets no
 Telegram token. Each fresh closed-to-open transition creates a separate
-`door_open` Frigate event with recording, ten seconds before and thirty seconds
+`door_open` Frigate event requesting ten seconds before and thirty seconds
 after its trigger, then sends the owner a clip link using `tg_bot.py` with
 identity and delivery readback. Recording retention follows the recorder's
-policy. No alarm cooldown drops successive door openings. Initial open states,
+policy; motion-only recording can yield a shorter clip. No alarm cooldown drops
+successive door openings. Initial open states,
 duplicate states and reconnects do not invent openings. A known door state is
 retained across worker restarts; its first-ever observation must establish a
 closed baseline before an opening alarm can fire.
