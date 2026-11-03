@@ -1,6 +1,8 @@
 import unittest
+import threading
+from unittest.mock import patch
 
-from ocr.frigate_state_notify import Transitions, message, process
+from ocr.frigate_state_notify import RecordingQueue, Transitions, event_creator, message, process
 
 
 class DoorTests(unittest.TestCase):
@@ -45,6 +47,29 @@ class DoorTests(unittest.TestCase):
                        {"label": "Room", "frigate_url": "https://recorder.example"})
         self.assertIn("Реальное открытие не обнаружено", text)
         self.assertIn("/api/events/123-abc/clip.mp4", text)
+
+
+    def test_blocked_delivery_does_not_delay_next_recording(self):
+        recorder = RecordingQueue(lambda: None, lambda row: {"success": True, "event_id": row["id"]})
+        threading.Thread(target=recorder.run, daemon=True).start()
+        recorder.pending.put({"id": "first", "timestamp": 1})
+        recorder.ready.get(timeout=2)  # Delivery remains queued/blocked.
+        recorder.pending.put({"id": "second", "timestamp": 2})
+        self.assertEqual(recorder.ready.get(timeout=2)["event_id"], "second")
+
+    def test_recovered_incident_keeps_original_recording_time_without_post(self):
+        config = {"frigate_url": "https://recorder.example", "api_user": "u", "api_password": "p", "camera": "hall"}
+        with patch("ocr.frigate_state_notify.time.time", return_value=1000):
+            result = event_creator(config)({"timestamp": 100})
+        self.assertNotIn("event_id", result)
+        self.assertEqual(result["recording_url"], "https://recorder.example/api/hall/start/90/end/130/clip.mp4")
+
+    def test_unverified_delivery_keeps_receipt_for_reconciliation(self):
+        row = {"timestamp": 0, "event_status": "unknown"}
+        receipt = {"ok": True, "verified": False, "sent": [{"message_id": 42}]}
+        process(row, {"label": "Room"}, lambda: None, None, lambda text: receipt)
+        self.assertEqual(row["delivery_status"], "unknown")
+        self.assertEqual(row["delivery"], receipt)
 
 
 if __name__ == "__main__":

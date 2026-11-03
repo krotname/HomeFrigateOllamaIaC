@@ -16,6 +16,10 @@ Windows notification host. Install `websocket-client` there. Its private
 MQTT does not need to be enabled. Keep this file accessible
 only to the worker account and administrators. Never put credentials or camera
 images in Git. The worker does not contact a vault during startup.
+If the existing HTTPS account is read-only, use the notification host's existing
+SSH identity: set `ssh` to its executable, `recorder_ssh` to the exact SSH alias,
+and `recorder_hostname` to the verified recorder hostname. Event creation then
+uses the recorder's loopback API over SSH without exposing another network API.
 
 Run a single persistent scheduled task as the account owning the existing bot
 runtime, with an at-logon trigger and restart on failure. The recorder gets no
@@ -38,3 +42,8 @@ sampled frames. After installing/training, validate a real open-close cycle.
 Telegram POSTs are kept as `started`/`unknown` and never blindly repeated. Check
 these markers and `stream_connected`/`heartbeat` when diagnosing delivery. Worker
 restarts resume unsent queued incidents but do not replay attempted sends.
+Recording has its own queue, so Telegram delivery cannot delay another event.
+Frigate 0.18 dates manual events at creation time. Incidents older than five
+seconds therefore link the original archive range instead of creating a
+misleading current-time event. Such recovery depends on existing motion footage;
+it cannot restore footage that was never recorded.
