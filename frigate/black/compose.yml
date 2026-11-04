@@ -38,7 +38,7 @@ services:
       - "${FRIGATE_BIND_IP:-192.168.1.242}:8555:8555/udp"
     mem_limit: 12g
     memswap_limit: 14g
-    cpus: "12"
+    cpus: "16"
     logging:
       driver: json-file
       options:
