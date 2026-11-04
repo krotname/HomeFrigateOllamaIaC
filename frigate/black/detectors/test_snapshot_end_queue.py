@@ -230,13 +230,17 @@ class SnapshotEndQueueTest(unittest.TestCase):
             event_sender=publisher, pending_snapshot_ends=set(),
             ptz_autotracker_thread=SimpleNamespace())
         obj = SimpleNamespace(false_positive=False, previous={}, obj_data={"id": "one"},
+            camera_config=SimpleNamespace(detect=SimpleNamespace(width=1920,height=1080)),
             to_dict=lambda: {"id": "one", "sub_label": "latest recognition"})
         namespace = {"self": fake_self, "json": json,
+            "snapshot_end_data": storage.snapshot_end_data,
             "EventTypeEnum": SimpleNamespace(tracked_object="tracked"),
             "EventStateEnum": SimpleNamespace(end="end")}
         exec(compile(ast.Module(body=[end], type_ignores=[]), "native_end", "exec"), namespace)
         namespace["end_after_snapshot"]("removed_camera", obj, "frame")
         self.assertEqual("latest recognition", sent[-1][0][-1]["sub_label"])
+        self.assertEqual([1920,1080], sent[-1][0][-1]["_snapshot_dimensions"])
+        self.assertNotIn("_snapshot_dimensions", sent[0][1])
         self.assertEqual({"one"}, fake_self.pending_snapshot_ends)
         app = Path("/opt/frigate/frigate/app.py").read_text()
         app_result = adapter.patch_app_shutdown(app)
@@ -246,6 +250,51 @@ class SnapshotEndQueueTest(unittest.TestCase):
         ast.parse(app_result)
         with self.assertRaisesRegex(ValueError, "Incomplete"):
             adapter.patch_snapshot_io(result.replace("self.snapshot_ends.close()", "pass"))
+
+    def test_native_consumer_finalizes_removed_camera_with_original_dimensions(self):
+        native = Path("/opt/frigate/frigate/events/maintainer.py")
+        if not native.exists():
+            self.skipTest("Requires the pinned Frigate image")
+        result = adapter.patch_event_maintainer(native.read_text())
+        self.assertEqual(result, adapter.patch_event_maintainer(result))
+        tree = ast.parse(result)
+        cls = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=="EventProcessor")
+        function = next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=="handle_object_detection")
+        for arg in function.args.args:
+            arg.annotation = None
+        function.returns = None
+        inserted, acknowledged = [], []
+
+        class Query:
+            def on_conflict(self, **kwargs):
+                return self
+            def execute(self):
+                return 1
+
+        fields={n.attr:n.attr for n in ast.walk(function)
+            if isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name) and n.value.id=="Event"}
+        event_model=SimpleNamespace(**fields)
+        event_model.insert=lambda event: inserted.append(event) or Query()
+        cfg=SimpleNamespace(cameras={},detectors={"one":SimpleNamespace(model=None,type="test")},
+            classification=SimpleNamespace(custom={}))
+        previous={"has_clip":True,"has_snapshot":True}
+        obj=SimpleNamespace(config=cfg,events_in_process={"one":previous},
+            event_end_publisher=SimpleNamespace(publish=acknowledged.append))
+        event={"id":"one","camera":"removed_camera","start_time":1,"end_time":10,
+            "snapshot":None,"has_clip":True,"has_snapshot":True,"entered_zones":[],
+            "label":"person","top_score":.9,"average_estimated_speed":0,
+            "velocity_angle":0,"sub_label":["latest",.8],"_snapshot_dimensions":[1920,1080]}
+        namespace={"Event":event_model,"EventStateEnum":SimpleNamespace(end="end"),
+            "event_camera_dimensions":storage.event_camera_dimensions,
+            "should_update_db":lambda *args:True,"should_update_state":lambda *args:False}
+        exec(compile(ast.Module(body=[function],type_ignores=[]),"native_event_consumer","exec"),namespace)
+        namespace['handle_object_detection'](obj,"end","removed_camera",event)
+        self.assertEqual(10,inserted[0]['end_time'])
+        self.assertEqual("latest",inserted[0]['sub_label'])
+        self.assertNotIn('_snapshot_dimensions',inserted[0])
+        self.assertEqual([("one","removed_camera",True)],acknowledged)
+        self.assertEqual({},obj.events_in_process)
+        self.assertEqual((None,None),storage.event_camera_dimensions(cfg,"another_camera",event))
 
 
 if __name__ == "__main__":

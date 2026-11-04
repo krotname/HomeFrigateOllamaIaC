@@ -8,6 +8,25 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def snapshot_end_data(obj):
+    data = obj.to_dict()
+    data['_snapshot_dimensions'] = [obj.camera_config.detect.width, obj.camera_config.detect.height]
+    return data
+
+
+def event_camera_dimensions(config, camera, event_data):
+    # Carry only the dimensions needed by the native DB serializer. This
+    # message-local value survives camera removal without a retained registry.
+    size = event_data.get('_snapshot_dimensions')
+    if (event_data.get('camera') == camera and isinstance(size, (list, tuple))
+            and len(size) == 2 and all(type(x) is int and x > 0 for x in size)):
+        return tuple(size)
+    camera_config = config.cameras.get(camera)
+    if camera_config is None:
+        return None, None
+    return camera_config.detect.width, camera_config.detect.height
+
+
 class SnapshotEndQueue:
     """Write frozen event images in order, then publish on the owning thread."""
 
