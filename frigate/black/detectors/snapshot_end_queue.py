@@ -1,0 +1,170 @@
+"""Keep slow snapshot storage outside the shared camera processing loop."""
+import copy
+import logging
+import queue
+import threading
+import time
+
+logger = logging.getLogger(__name__)
+
+
+def snapshot_end_data(obj):
+    data = obj.to_dict()
+    data['_snapshot_dimensions'] = [obj.camera_config.detect.width, obj.camera_config.detect.height]
+    return data
+
+
+def event_camera_dimensions(config, camera, event_data):
+    # Carry only the dimensions needed by the native DB serializer. This
+    # message-local value survives camera removal without a retained registry.
+    size = event_data.get('_snapshot_dimensions')
+    if (event_data.get('camera') == camera and isinstance(size, (list, tuple))
+            and len(size) == 2 and all(type(x) is int and x > 0 for x in size)):
+        return tuple(size)
+    camera_config = config.cameras.get(camera)
+    if camera_config is None:
+        return None, None
+    return camera_config.detect.width, camera_config.detect.height
+
+
+class SnapshotEndQueue:
+    """Write frozen event images in order, then publish on the owning thread."""
+
+    def __init__(self, max_pending=16):
+        if max_pending < 1:
+            raise ValueError("Snapshot queue must have a positive bound")
+        self.max_pending = max_pending
+        self.pending = 0
+        # Frigate constructs its processor in the parent thread, then starts it.
+        self.owner = None
+        self.jobs = queue.Queue()
+        self.completed = queue.Queue()
+        self.closed = False
+        self.worker = threading.Thread(
+            target=self._run, name="snapshot_storage", daemon=True
+        )
+        self.worker.start()
+
+    def _assert_owner(self):
+        if self.owner is None:
+            self.owner = threading.get_ident()
+        if threading.get_ident() != self.owner:
+            raise RuntimeError("Snapshot completions must run on the processor thread")
+
+    @staticmethod
+    def _freeze(obj):
+        frozen = copy.copy(obj)
+        frozen.obj_data = copy.deepcopy(obj.obj_data)
+        frozen.previous = copy.deepcopy(obj.previous)
+        frozen.thumbnail_data = copy.deepcopy(obj.thumbnail_data)
+        # CameraState evicts its cache after the end callback. Retain just the
+        # selected, immutable frame array, not the entire camera frame history.
+        frame_time = (frozen.thumbnail_data or {}).get("frame_time")
+        frozen.frame_cache = (
+            {frame_time: dict(obj.frame_cache[frame_time])}
+            if frame_time in obj.frame_cache else {}
+        )
+        return frozen
+
+    @staticmethod
+    def _write(obj):
+        if obj.has_snapshot or obj.has_clip:
+            obj.write_thumbnail_to_disk()
+        if obj.has_snapshot:
+            obj.write_snapshot_to_disk()
+
+    def submit(self, camera, obj, frame_name, callback):
+        self._assert_owner()
+        if self.closed:
+            raise RuntimeError("Snapshot queue is closed")
+        self.drain()
+        if self.pending >= self.max_pending:
+            # Preserve files and bound retained frames during a storage outage.
+            # Persistent saturation deliberately retains native backpressure.
+            logger.warning("Snapshot storage queue full; waiting for pending writes")
+            self.flush()
+        if not (obj.has_snapshot or obj.has_clip):
+            callback(camera, obj, frame_name)
+            return
+        frozen = self._freeze(obj)
+        self.pending += 1
+        self.jobs.put((camera, frozen, frame_name, callback, obj))
+
+    def _run(self):
+        while True:
+            job = self.jobs.get()
+            if job is None:
+                return
+            error = None
+            try:
+                self._write(job[1])
+            except Exception as exc:
+                error = exc
+                logger.exception("Snapshot storage write failed; native retry required")
+            self.completed.put((job, error))
+
+    def _finish(self, completion):
+        (camera, frozen, frame_name, callback, obj), error = completion
+        self.pending -= 1
+        if error is not None:
+            # A transient failure gets the native synchronous retry. A repeated
+            # failure propagates instead of publishing a nonexistent snapshot.
+            self._write(frozen)
+        callback(camera, obj, frame_name)
+
+    def drain(self):
+        self._assert_owner()
+        while True:
+            try:
+                completion = self.completed.get_nowait()
+            except queue.Empty:
+                return
+            self._finish(completion)
+
+    def flush(self):
+        self._assert_owner()
+        while self.pending:
+            self._finish(self.completed.get())
+
+    def close(self):
+        self._assert_owner()
+        if self.closed:
+            return
+        try:
+            self.flush()
+        finally:
+            self.closed = True
+            self.jobs.put(None)
+            self.worker.join(timeout=5)
+
+
+class ProcessorStopEvent:
+    """Stop the camera processor before the application's shared consumers."""
+
+    def __init__(self, shared):
+        self.shared = shared
+        self.local = threading.Event()
+
+    def set(self):
+        self.local.set()
+
+    def is_set(self):
+        return self.local.is_set() or self.shared.is_set()
+
+
+def stop_snapshot_processor(processor):
+    processor.stop_event.set()
+    processor.join()
+
+
+def wait_for_end_acks(pending, subscriber, timeout=10):
+    """Keep the native event consumer alive until it confirms final DB writes."""
+    deadline = time.monotonic() + timeout
+    while pending:
+        if time.monotonic() >= deadline:
+            logger.error("Snapshot shutdown: %d end acknowledgements missing", len(pending))
+            return False
+        update = subscriber.check_for_update(timeout=min(0.2, max(0, deadline - time.monotonic())))
+        if update:
+            pending.discard(update[0])
+    return True
