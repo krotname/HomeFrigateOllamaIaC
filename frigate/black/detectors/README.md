@@ -80,6 +80,12 @@ fallback, арена 1536 МиБ, свободно не менее 2048 МиБ, 
    `prepare_snapshot_patch.py SOURCE /opt/frigate/detectors/video_detect.py --video-context`.
    `/opt/frigate/frigate/track/object_processing.py` обработать командой
    `prepare_snapshot_patch.py SOURCE /opt/frigate/detectors/object_processing.py --object-processing`.
+   Рядом установить `snapshot_end_queue.py`: overlay подключает его как
+   `frigate.track.snapshot_end_queue`. Файлы событий сохраняет один фоновый
+   поток; обработчик камер публикует окончание события только после записи.
+   Очередь удерживает не более 16 выбранных кадров. При заполнении действует
+   обратное давление без потери событий; при остановке очередь опустошается
+   до закрытия штатных отправителей. Пути, качество снимков и retention прежние.
    Генератор прекращает работу при изменении ожидаемого контракта; исходный
    код Frigate в образе не редактировать. Подготовленные файлы подключаются overlay.
 2. Преобразовать текущий конфиг через `prepare.py --kugoo-only` и проверить его
@@ -110,3 +116,7 @@ fallback, арена 1536 МиБ, свободно не менее 2048 МиБ, 
 Проверки сохранения строк, отказов GPU и очереди без блокирующего ожидания
 запускаются внутри существующего образа Frigate:
 `python3 frigate/black/detectors/test_kugoo.py`.
+Проверки медленного хранилища, сохранности выбранного кадра, порядка публикации,
+отказа записи и остановки: `python3 frigate/black/detectors/test_snapshot_end_queue.py`.
+Для всех адаптеров выполнить `python3 -m unittest discover -s frigate/black/detectors -p 'test*.py'`
+в закреплённом образе без сети, GPU, секретов и доступа на запись к рабочим каталогам.

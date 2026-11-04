@@ -25,11 +25,48 @@ def patch_object_processing(source):
         raise ValueError("Pinned Frigate snapshot-admission contract changed")
     function = source[start:end]
     if addition in source and replacement in function:
-        return source
+        return patch_snapshot_io(source)
     if addition in source or function.count(original) != 1:
         raise ValueError("Pinned Frigate stationary-snapshot contract changed")
     result = source[:start] + function.replace(original, replacement, 1) + source[end:]
-    return result.replace(marker, addition + marker, 1)
+    return patch_snapshot_io(result.replace(marker, addition + marker, 1))
+
+
+def patch_snapshot_io(source):
+    """Defer native end-image writes without moving ZMQ publishers to a worker."""
+    addition = "from frigate.track.snapshot_end_queue import SnapshotEndQueue\n\n\n"
+    marker = "class TrackedObjectProcessor(threading.Thread):"
+    init = "        self.frame_manager = SharedMemoryFrameManager()"
+    init_new = init + "\n        self.snapshot_ends = SnapshotEndQueue()"
+    end_start = "        def end(camera: str, obj: TrackedObject, frame_name: str) -> None:\n"
+    writes_start = "            # write thumbnail to disk if it will be saved as an event\n"
+    writes_end = "            if not obj.false_positive:\n"
+    run = "    def run(self) -> None:\n        while not self.stop_event.is_set():\n"
+    run_new = run + "            self.snapshot_ends.drain()\n"
+    shutdown = "        self.requestor.stop()"
+    shutdown_new = "        self.snapshot_ends.close()\n\n" + shutdown
+    deferred = ("            self.snapshot_ends.submit(camera, obj, frame_name, end_after_snapshot)\n\n"
+                "        def end_after_snapshot(camera: str, obj: TrackedObject, frame_name: str) -> None:\n")
+    if addition in source:
+        if not all(s in source for s in (init_new, run_new, shutdown_new, deferred)):
+            raise ValueError("Incomplete Frigate snapshot-storage adapter")
+        return source
+    if any(source.count(s) != 1 for s in (marker, init, end_start, run, shutdown)):
+        raise ValueError("Pinned Frigate snapshot-storage contract changed")
+    start = source.index(writes_start, source.index(end_start))
+    end = source.index(writes_end, start)
+    expected = ("            # write thumbnail to disk if it will be saved as an event\n"
+                "            if obj.has_snapshot or obj.has_clip:\n"
+                "                obj.write_thumbnail_to_disk()\n\n"
+                "            # write the snapshot to disk\n"
+                "            if obj.has_snapshot:\n"
+                "                obj.write_snapshot_to_disk()\n\n")
+    if source[start:end] != expected:
+        raise ValueError("Pinned Frigate end-image writes changed")
+    result = source[:start] + deferred + source[end:]
+    return (result.replace(marker, addition + marker, 1)
+            .replace(init, init_new, 1).replace(run, run_new, 1)
+            .replace(shutdown, shutdown_new, 1))
 
 
 def patch_detector_context(source):
