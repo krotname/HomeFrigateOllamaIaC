@@ -1,8 +1,11 @@
 import ast
+import json
 import importlib.util
 from pathlib import Path
+import queue
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 
 
@@ -66,7 +69,7 @@ class SnapshotEndQueueTest(unittest.TestCase):
             gate.set()
             writer.flush()
             self.assertEqual([("thumbnail", b"selected"), ("snapshot", ["original"])], obj.writes)
-            self.assertEqual([(owner, {"id": "one", "nested": ["original"]}, [1.0])], callbacks)
+            self.assertEqual([(owner, {"id": "one", "nested": ["changed"]}, [])], callbacks)
         finally:
             gate.set()
             writer.close()
@@ -137,6 +140,66 @@ class SnapshotEndQueueTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "processor thread"):
             writer.drain()
 
+    def test_shutdown_keeps_consumer_running_until_slow_write_is_acknowledged(self):
+        shared = threading.Event()
+        gate = threading.Event()
+        obj = FakeObject(gate)
+        messages, acks = queue.Queue(), queue.Queue()
+        order = []
+        errors = []
+
+        class Subscriber:
+            def check_for_update(self, timeout):
+                try:
+                    return acks.get(timeout=timeout)
+                except queue.Empty:
+                    return None
+
+        class Processor(threading.Thread):
+            stop_event = storage.ProcessorStopEvent(shared)
+
+            def run(self):
+                writer = storage.SnapshotEndQueue()
+                try:
+                    writer.submit("camera", obj, "frame", lambda *args: messages.put(("one",)))
+                    while not self.stop_event.is_set():
+                        time.sleep(0.001)
+                    writer.close()
+                    self.acknowledged = storage.wait_for_end_acks({"one"}, Subscriber())
+                    order.append("processor_stopped")
+                except Exception as exc:
+                    errors.append(exc)
+
+        def consume():
+            while not shared.is_set():
+                try:
+                    item = messages.get(timeout=0.02)
+                except queue.Empty:
+                    continue
+                self.assertFalse(shared.is_set())
+                self.assertEqual(2, len(obj.writes))
+                order.append("database_end_written")
+                acks.put(item)
+
+        processor, consumer = Processor(), threading.Thread(target=consume)
+        consumer.start()
+        processor.start()
+        self.assertTrue(obj.entered.wait(1))
+        timer = threading.Timer(0.05, gate.set)
+        timer.start()
+        try:
+            storage.stop_snapshot_processor(processor)
+            self.assertEqual([], errors)
+            self.assertTrue(processor.acknowledged)
+            self.assertEqual(["database_end_written", "processor_stopped"], order)
+            self.assertTrue(consumer.is_alive())
+        finally:
+            gate.set()
+            shared.set()
+            processor.join(2)
+            consumer.join(2)
+            timer.join(2)
+
     def test_pinned_adapter_keeps_native_end_publication_on_processor(self):
         native = Path("/opt/frigate/frigate/track/object_processing.py")
         if not native.exists():
@@ -152,7 +215,35 @@ class SnapshotEndQueueTest(unittest.TestCase):
         self.assertNotIn(".publish(", functions["end"])
         self.assertIn("event_sender.publish", functions["end_after_snapshot"])
         self.assertNotIn("write_snapshot_to_disk", functions["end_after_snapshot"])
-        self.assertIn("self.snapshot_ends.close()\n\n        self.requestor.stop()", result)
+        self.assertIn("self.snapshot_ends.close()", result)
+        self.assertIn("wait_for_end_acks(self.pending_snapshot_ends", result)
+        self.assertIn("state = self.camera_states.get(camera)", result)
+        # A camera can disappear while storage is blocked. Its end event still
+        # reaches the database, but no removed PTZ configuration is accessed.
+        end = next(n for n in create.body if isinstance(n, ast.FunctionDef) and n.name == "end_after_snapshot")
+        for arg in end.args.args:
+            arg.annotation = None
+        end.returns = None
+        sent = []
+        publisher = SimpleNamespace(publish=lambda *a, **k: sent.append(a))
+        fake_self = SimpleNamespace(config=SimpleNamespace(cameras={}), dispatcher=publisher,
+            event_sender=publisher, pending_snapshot_ends=set(),
+            ptz_autotracker_thread=SimpleNamespace())
+        obj = SimpleNamespace(false_positive=False, previous={}, obj_data={"id": "one"},
+            to_dict=lambda: {"id": "one", "sub_label": "latest recognition"})
+        namespace = {"self": fake_self, "json": json,
+            "EventTypeEnum": SimpleNamespace(tracked_object="tracked"),
+            "EventStateEnum": SimpleNamespace(end="end")}
+        exec(compile(ast.Module(body=[end], type_ignores=[]), "native_end", "exec"), namespace)
+        namespace["end_after_snapshot"]("removed_camera", obj, "frame")
+        self.assertEqual("latest recognition", sent[-1][0][-1]["sub_label"])
+        self.assertEqual({"one"}, fake_self.pending_snapshot_ends)
+        app = Path("/opt/frigate/frigate/app.py").read_text()
+        app_result = adapter.patch_app_shutdown(app)
+        self.assertEqual(app_result, adapter.patch_app_shutdown(app_result))
+        stop = app_result.split("    def stop(self) -> None:", 1)[1]
+        self.assertLess(stop.index("stop_snapshot_processor("), stop.index("self.stop_event.set()"))
+        ast.parse(app_result)
         with self.assertRaisesRegex(ValueError, "Incomplete"):
             adapter.patch_snapshot_io(result.replace("self.snapshot_ends.close()", "pass"))
 

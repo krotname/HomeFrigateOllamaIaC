@@ -2,6 +2,11 @@ services:
   frigate:
     volumes:
       - type: bind
+        source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/app.py
+        target: /opt/frigate/frigate/app.py
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
         source: ${FRIGATE_ROOT:-/opt/frigate}/detectors/snapshot_end_queue.py
         target: /opt/frigate/frigate/track/snapshot_end_queue.py
         read_only: true

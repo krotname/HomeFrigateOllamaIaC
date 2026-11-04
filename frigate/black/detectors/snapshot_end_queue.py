@@ -3,6 +3,7 @@ import copy
 import logging
 import queue
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class SnapshotEndQueue:
             return
         frozen = self._freeze(obj)
         self.pending += 1
-        self.jobs.put((camera, frozen, frame_name, callback))
+        self.jobs.put((camera, frozen, frame_name, callback, obj))
 
     def _run(self):
         while True:
@@ -84,12 +85,12 @@ class SnapshotEndQueue:
             self.completed.put((job, error))
 
     def _finish(self, completion):
-        (camera, obj, frame_name, callback), error = completion
+        (camera, frozen, frame_name, callback, obj), error = completion
         self.pending -= 1
         if error is not None:
             # A transient failure gets the native synchronous retry. A repeated
             # failure propagates instead of publishing a nonexistent snapshot.
-            self._write(obj)
+            self._write(frozen)
         callback(camera, obj, frame_name)
 
     def drain(self):
@@ -116,3 +117,35 @@ class SnapshotEndQueue:
             self.closed = True
             self.jobs.put(None)
             self.worker.join(timeout=5)
+
+
+class ProcessorStopEvent:
+    """Stop the camera processor before the application's shared consumers."""
+
+    def __init__(self, shared):
+        self.shared = shared
+        self.local = threading.Event()
+
+    def set(self):
+        self.local.set()
+
+    def is_set(self):
+        return self.local.is_set() or self.shared.is_set()
+
+
+def stop_snapshot_processor(processor):
+    processor.stop_event.set()
+    processor.join()
+
+
+def wait_for_end_acks(pending, subscriber, timeout=10):
+    """Keep the native event consumer alive until it confirms final DB writes."""
+    deadline = time.monotonic() + timeout
+    while pending:
+        if time.monotonic() >= deadline:
+            logger.error("Snapshot shutdown: %d end acknowledgements missing", len(pending))
+            return False
+        update = subscriber.check_for_update(timeout=min(0.2, max(0, deadline - time.monotonic())))
+        if update:
+            pending.discard(update[0])
+    return True
