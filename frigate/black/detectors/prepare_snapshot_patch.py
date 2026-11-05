@@ -25,11 +25,104 @@ def patch_object_processing(source):
         raise ValueError("Pinned Frigate snapshot-admission contract changed")
     function = source[start:end]
     if addition in source and replacement in function:
-        return source
+        return patch_snapshot_io(source)
     if addition in source or function.count(original) != 1:
         raise ValueError("Pinned Frigate stationary-snapshot contract changed")
     result = source[:start] + function.replace(original, replacement, 1) + source[end:]
-    return result.replace(marker, addition + marker, 1)
+    return patch_snapshot_io(result.replace(marker, addition + marker, 1))
+
+
+def patch_snapshot_io(source):
+    """Defer native end-image writes without moving ZMQ publishers to a worker."""
+    addition = ("from frigate.track.snapshot_end_queue import (\n"
+                "    SnapshotEndQueue, ProcessorStopEvent, wait_for_end_acks, snapshot_end_data,\n)\n\n\n")
+    marker = "class TrackedObjectProcessor(threading.Thread):"
+    init = "        self.frame_manager = SharedMemoryFrameManager()"
+    init_new = init + "\n        self.snapshot_ends = SnapshotEndQueue()\n        self.pending_snapshot_ends = set()"
+    stop = "        self.stop_event: MpEvent = stop_event"
+    stop_new = "        self.stop_event: MpEvent = ProcessorStopEvent(stop_event)"
+    end_start = "        def end(camera: str, obj: TrackedObject, frame_name: str) -> None:\n"
+    writes_start = "            # write thumbnail to disk if it will be saved as an event\n"
+    writes_end = "            if not obj.false_positive:\n"
+    run = "    def run(self) -> None:\n        while not self.stop_event.is_set():\n"
+    run_new = run + "            self.snapshot_ends.drain()\n"
+    shutdown = "        self.requestor.stop()"
+    shutdown_new = ("        self.snapshot_ends.close()\n"
+                    "        wait_for_end_acks(self.pending_snapshot_ends, self.event_end_subscriber)\n\n" + shutdown)
+    ack = "                self.camera_states[camera].finished(event_id)"
+    ack_new = ("                self.pending_snapshot_ends.discard(event_id)\n"
+               "                state = self.camera_states.get(camera)\n"
+               "                if state is not None:\n                    state.finished(event_id)")
+    ptz = "                self.ptz_autotracker_thread.ptz_autotracker.end_object(camera, obj)"
+    ptz_new = ("                if camera in self.config.cameras:\n"
+               "    " + ptz)
+    publish = "            self.event_sender.publish(\n                (\n                    EventTypeEnum.tracked_object,\n                    EventStateEnum.end,"
+    publish_new = "            self.pending_snapshot_ends.add(obj.obj_data[\"id\"])\n" + publish
+    deferred = ("            self.snapshot_ends.submit(camera, obj, frame_name, end_after_snapshot)\n\n"
+                "        def end_after_snapshot(camera: str, obj: TrackedObject, frame_name: str) -> None:\n")
+    if addition in source:
+        if not all(s in source for s in (init_new, run_new, shutdown_new, deferred, stop_new, ack_new, ptz_new, publish_new, "snapshot_end_data(obj),")):
+            raise ValueError("Incomplete Frigate snapshot-storage adapter")
+        return source
+    if any(source.count(s) != 1 for s in (marker, init, end_start, run, shutdown, stop, ack, ptz, publish)):
+        raise ValueError("Pinned Frigate snapshot-storage contract changed")
+    start = source.index(writes_start, source.index(end_start))
+    end = source.index(writes_end, start)
+    expected = ("            # write thumbnail to disk if it will be saved as an event\n"
+                "            if obj.has_snapshot or obj.has_clip:\n"
+                "                obj.write_thumbnail_to_disk()\n\n"
+                "            # write the snapshot to disk\n"
+                "            if obj.has_snapshot:\n"
+                "                obj.write_snapshot_to_disk()\n\n")
+    if source[start:end] != expected:
+        raise ValueError("Pinned Frigate end-image writes changed")
+    result = source[:start] + deferred + source[end:]
+    finish_start = result.index("        def end_after_snapshot(")
+    finish_end = result.index("        def snapshot(", finish_start)
+    finish = result[finish_start:finish_end]
+    event_data = "                    obj.to_dict(),"
+    if finish.count(event_data) != 1:
+        raise ValueError("Pinned Frigate end-event payload changed")
+    result = result[:finish_start] + finish.replace(event_data, "                    snapshot_end_data(obj),", 1) + result[finish_end:]
+    return (result.replace(marker, addition + marker, 1)
+            .replace(init, init_new, 1).replace(run, run_new, 1)
+            .replace(shutdown, shutdown_new, 1).replace(stop, stop_new, 1)
+            .replace(ack, ack_new, 1).replace(ptz, ptz_new, 1)
+            .replace(publish, publish_new, 1))
+
+
+def patch_app_shutdown(source):
+    addition = "from frigate.track.snapshot_end_queue import stop_snapshot_processor\n"
+    marker = "class FrigateApp:"
+    stop = "        self.stop_event.set()\n"
+    replacement = ("        # Drain snapshot files and native end acknowledgements while consumers run.\n"
+                   "        stop_snapshot_processor(self.detected_frames_processor)\n" + stop)
+    if addition in source:
+        if replacement not in source:
+            raise ValueError("Incomplete Frigate snapshot shutdown adapter")
+        return source
+    before, stop_method = source.split("    def stop(self) -> None:\n", 1)
+    if source.count(marker) != 1 or stop_method.count(stop) != 1:
+        raise ValueError("Pinned Frigate application shutdown contract changed")
+    return (before.replace(marker, addition + "\n\n" + marker, 1)
+            + "    def stop(self) -> None:\n" + stop_method.replace(stop, replacement, 1))
+
+
+def patch_event_maintainer(source):
+    addition = "from frigate.track.snapshot_end_queue import event_camera_dimensions\n"
+    marker = "logger = logging.getLogger(__name__)"
+    native = ("            camera_config = self.config.cameras.get(camera)\n"
+              "            if camera_config is None:\n                return\n\n"
+              "            width = camera_config.detect.width\n"
+              "            height = camera_config.detect.height")
+    replacement = "            width, height = event_camera_dimensions(self.config, camera, event_data)"
+    if addition in source:
+        if replacement not in source:
+            raise ValueError("Incomplete Frigate event dimension adapter")
+        return source
+    if source.count(marker) != 1 or source.count(native) != 1:
+        raise ValueError("Pinned Frigate event dimension contract changed")
+    return source.replace(marker, addition + "\n" + marker, 1).replace(native, replacement, 1)
 
 
 def patch_detector_context(source):
@@ -91,6 +184,8 @@ if __name__ == "__main__":
     parser.add_argument("--detector-context", action="store_true")
     parser.add_argument("--video-context", action="store_true")
     parser.add_argument("--object-processing", action="store_true")
+    parser.add_argument("--app-shutdown", action="store_true")
+    parser.add_argument("--event-maintainer", action="store_true")
     args = parser.parse_args()
-    transform = patch_object_processing if args.object_processing else patch_video_context if args.video_context else patch_detector_context if args.detector_context else patch
+    transform = patch_event_maintainer if args.event_maintainer else patch_app_shutdown if args.app_shutdown else patch_object_processing if args.object_processing else patch_video_context if args.video_context else patch_detector_context if args.detector_context else patch
     args.destination.write_text(transform(args.source.read_text()), encoding="utf-8")
