@@ -119,10 +119,10 @@ def event_creator(config):
     base = config["frigate_url"].rstrip("/")
     if urllib.parse.urlsplit(base).scheme != "https":
         raise ValueError("Frigate must use verified HTTPS")
-    passwords = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    passwords.add_password(None, base, config["api_user"], config["api_password"])
+    auth_manager = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+    auth_manager.add_password(None, base, config["api_user"], config["api_password"])
     opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}), urllib.request.HTTPBasicAuthHandler(passwords))
+        urllib.request.ProxyHandler({}), urllib.request.HTTPBasicAuthHandler(auth_manager))
 
     def create(incident):
         label = "door_open_test" if incident.get("test") else "door_open"
