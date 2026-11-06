@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Городские камеры</title>
+<style>
+  :root{color-scheme:dark;font:16px system-ui,sans-serif;background:#101318;color:#edf1f7}
+  body{margin:0 auto;max-width:1800px;padding:24px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+  h1{font-size:26px;margin:0 0 6px}p{margin:0;color:#a9b4c5;line-height:1.5}
+  nav{display:flex;gap:12px}a{color:#a8caff;text-decoration:none}a:hover{text-decoration:underline}
+  nav a{background:#242c39;padding:10px 16px;border-radius:10px}
+  main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:20px}
+  article{min-width:0;background:#1a202b;border:1px solid #30394a;border-radius:14px;overflow:hidden}
+  video-rtc{display:block;aspect-ratio:16/9;background:#000}video{object-fit:contain}
+  .caption{padding:16px}h2{font-size:19px;margin:0 0 8px}small{color:#a9b4c5}
+  footer{margin-top:22px;color:#a9b4c5;font-size:14px;line-height:1.5}
+</style>
+<header>
+  <div><h1>Городские камеры</h1><p>Прямой эфир · без записи и детекции</p></div>
+  <nav><a href="./">Все камеры</a><a href="/">Frigate</a></nav>
+</header>
+<main>
+  <article data-stream="public_adler_sea">
+    <video-rtc></video-rtc>
+    <div class="caption"><h2><a href="?camera=public_adler_sea">Море и железная дорога — Адлер</a></h2><small>Камера «Фрегат», севернее вокзала · <a href="https://sochi.camera/vse-kamery/cam-170/" target="_blank" rel="noopener noreferrer">Источник</a></small></div>
+  </article>
+  <article data-stream="public_adler_station">
+    <video-rtc></video-rtc>
+    <div class="caption"><h2><a href="?camera=public_adler_station">Вокзал Адлера</a></h2><small>Привокзальная площадь · <a href="https://sochi.camera/vse-kamery/cam-445/" target="_blank" rel="noopener noreferrer">Источник</a></small></div>
+  </article>
+  <article data-stream="public_moscow_ryazansky">
+    <video-rtc></video-rtc>
+    <div class="caption"><h2><a href="?camera=public_moscow_ryazansky">Москва — Рязанский / Фрезер</a></h2><small>Около 2,6 км от Михайлова; вид на район · <a href="https://cameras.inetcom.ru/embed/10" target="_blank" rel="noopener noreferrer">Источник</a></small></div>
+  </article>
+</main>
+<footer>Нажмите название, чтобы открыть камеру отдельно. Полный экран — кнопка в плеере.<br>Потоки останавливаются, когда вкладка скрыта или закрыта. Временные ссылки обновляются автоматически.<br>Рабочей публичной камеры на Кожуховской пока нет.</footer>
+<script type="module">
+  import {VideoRTC} from './video-rtc.js';
+  customElements.define('video-rtc', VideoRTC);
+  const cards = [...document.querySelectorAll('article')];
+  const selected = new URLSearchParams(location.search).get('camera');
+  if (cards.some(card => card.dataset.stream === selected)) {
+    cards.filter(card => card.dataset.stream !== selected).forEach(card => card.remove());
+  }
+  const start = () => {
+    if (document.hidden) return;
+    document.querySelectorAll('article').forEach(card => {
+      const player = card.querySelector('video-rtc');
+      if (player.wsURL) return;
+      player.mode = 'webrtc';
+      player.background = false;
+      player.src = new URL('/live/webrtc/api/ws?src=' + encodeURIComponent(card.dataset.stream), location.href);
+    });
+  };
+  start();
+  document.addEventListener('visibilitychange', start);
+</script>
+</html>
