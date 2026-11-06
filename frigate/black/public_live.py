@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ipaddress
 import json
 import re
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from urllib.error import HTTPError
@@ -28,10 +30,10 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def resolve_source(name: str, opener=None) -> str:
-    """Return a fresh go2rtc FFmpeg source, never storing a signed URL."""
+    """Return a fresh public HLS URL, never storing a signed URL."""
     camera_id, _ = SOURCES[name]
     if camera_id is None:
-        return "ffmpeg:" + MOSCOW_URL + "#video=copy"
+        return MOSCOW_URL
     api = f"https://sochi.camera/vse-kamery/cam-{camera_id}/?format=json"
     request = Request(api, headers={"User-Agent": "Frigate-Public-Live/1.0", "Accept": "application/json"})
     with (opener or build_opener(NoRedirect()).open)(request, timeout=12) as response:
@@ -57,11 +59,22 @@ def resolve_source(name: str, opener=None) -> str:
         and parse_qs(parsed.query).get("token")
     ):
         raise ValueError("Unexpected public camera source")
-    return "ffmpeg:" + source + "#video=copy"
+    return source
 
 
-def configure_public_live(source: dict) -> dict:
+def configure_public_live(source: dict, resolver_base: str) -> dict:
     """Add only go2rtc sources and optional live-menu entries, without inputs."""
+    base = urlsplit(resolver_base)
+    address = ipaddress.ip_address(base.hostname or "")
+    if not (
+        base.scheme == "http" and address.version == 4 and address.is_private
+        and not address.is_unspecified and not address.is_multicast
+        and base.port is not None and 1024 <= base.port <= 65535
+        and base.path in ("", "/") and not base.query and not base.fragment
+        and base.username is None and base.password is None
+    ):
+        raise ValueError("The resolver must use a private IPv4 address and an explicit port")
+    resolver_base = resolver_base.rstrip("/")
     config = copy.deepcopy(source)
     camera = config.get("cameras", {}).get(ANCHOR)
     if camera is None:
@@ -69,7 +82,7 @@ def configure_public_live(source: dict) -> dict:
     streams = config.setdefault("go2rtc", {}).setdefault("streams", {})
     choices = camera.setdefault("live", {}).setdefault("streams", {})
     for name, (_, label) in SOURCES.items():
-        expected = f"echo:python3 /config/public_live.py resolve {name}"
+        expected = f"ffmpeg:{resolver_base}/{name}.m3u8#video=copy"
         if name in streams and streams[name] != expected:
             raise ValueError("Public stream name is already in use")
         if label in choices and choices[label] != name:
@@ -77,6 +90,40 @@ def configure_public_live(source: dict) -> dict:
         streams[name] = expected
         choices[label] = name
     return config
+
+
+class ResolverHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(15)
+
+    def do_GET(self):
+        name = {f"/{name}.m3u8": name for name in SOURCES}.get(self.path)
+        if name is None:
+            self.send_error(404)
+            return
+        try:
+            target = resolve_source(name)
+        except Exception:
+            self.send_error(503, "Public camera is temporarily unavailable")
+            return
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        # No request bodies, temporary URLs, headers or tokens in service logs.
+        pass
+
+
+class ResolverServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 8
+
+    def handle_error(self, request, client_address):
+        print("Public live request failed", file=sys.stderr)
 
 
 def main(argv=None) -> int:
@@ -87,15 +134,24 @@ def main(argv=None) -> int:
     profile = commands.add_parser("profile")
     profile.add_argument("source", type=Path)
     profile.add_argument("candidate", type=Path)
+    profile.add_argument("--resolver-base", required=True)
+    server = commands.add_parser("serve")
+    server.add_argument("--bind", required=True)
+    server.add_argument("--port", type=int, default=18786)
     args = parser.parse_args(argv)
     try:
         if args.action == "resolve":
             print(resolve_source(args.source))
-        else:
+        elif args.action == "profile":
             import yaml
 
-            config = configure_public_live(yaml.safe_load(args.source.read_text(encoding="utf-8")))
+            config = configure_public_live(yaml.safe_load(args.source.read_text(encoding="utf-8")), args.resolver_base)
             args.candidate.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        else:
+            # Reuse profile validation to reject wildcard, public and IPv6 binds.
+            configure_public_live({"cameras": {ANCHOR: {}}}, f"http://{args.bind}:{args.port}")
+            with ResolverServer((args.bind, args.port), ResolverHandler) as httpd:
+                httpd.serve_forever()
     except Exception:
         # Exceptions can contain signed URLs. Do not copy them into go2rtc logs.
         print("Public live source could not be prepared", file=sys.stderr)
