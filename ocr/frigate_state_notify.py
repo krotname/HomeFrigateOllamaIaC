@@ -19,8 +19,9 @@ from pathlib import Path
 
 from ocr.frigate_caption_worker import exclusive_worker
 from ocr.frigate_protected import atomic_json
+from ocr.frigate_door_archive import ArchiveQueue, trim_history
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 class Transitions:
@@ -178,7 +179,8 @@ def main():
         recordings.save = save
 
         def enqueue(test=False):
-            incident = {"id": str(uuid.uuid4()), "timestamp": time.time(), "test": test}
+            incident = {"id": str(uuid.uuid4()), "timestamp": time.time(), "test": test,
+                        "archive_required": bool(config.get("archive_openings")) and not test}
             state["incidents"].append(incident)
             save()
             pending.put(incident)
@@ -204,9 +206,15 @@ def main():
             return
 
         for incident in state["incidents"]:
+            if config.get("archive_openings") and not incident.get("test"):
+                incident["archive_required"] = True
             if "delivery_status" not in incident:
                 pending.put(incident)
+        save()
         threading.Thread(target=recordings.run, daemon=True).start()
+        if config.get("archive_openings"):
+            archives = ArchiveQueue(state, config, save, lock)
+            threading.Thread(target=archives.run, daemon=True).start()
 
         import websocket
         topic = config["camera"] + "/classification/" + config["model"]
@@ -268,8 +276,7 @@ def main():
                 with lock:
                     state.update(version=VERSION, heartbeat=time.time())
                     # Keep unfinished attempts and a bounded notification history.
-                    finished = [r for r in state["incidents"] if "delivery_status" in r][-1000:]
-                    state["incidents"] = [r for r in state["incidents"] if "delivery_status" not in r] + finished
+                    state["incidents"] = trim_history(state["incidents"])
                     save()
         finally:
             client.close()

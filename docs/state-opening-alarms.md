@@ -33,6 +33,24 @@ duplicate states and reconnects do not invent openings. A known door state is
 retained across worker restarts; its first-ever observation must establish a
 closed baseline before an opening alarm can fire.
 
+Set `archive_openings: true` in the private runtime to preserve every real
+opening in Frigate's **Exports** until the owner explicitly deletes it. The
+worker exports the same ten-second pre-roll and thirty-second post-roll after
+allowing another twenty seconds for recording segments to finalize. Exports
+are outside ordinary recording retention; this does not change retention for
+other cameras. Test alarms are excluded unless explicitly added to the archive
+journal for a labelled technical check.
+
+Exporting runs separately from recording and Telegram. Each incident journals
+its stable export name and request before posting. On restart it reconciles
+the exact native export ID/name, including a lost POST response, rather than
+creating duplicates. Explicit queue-full/rate-limit rejections retry after a
+minute; uncertain writes are read back without blindly reposting. Unfinished
+exports survive notification-history trimming. Check `archive_heartbeat`,
+`archive_pending`, `archive_issues` and each incident's `archive` in `state.json`.
+`complete` requires native export readback with `in_progress: false`; `queued`
+is not completion. Failed/ambiguous jobs stay in the journal for reconciliation.
+
 `--test` creates a clearly labelled `door_open_test` recording and sends a test
 message. This verifies the recording and delivery path, not visual recognition.
 Inspect the exact event, clip and verified Telegram message. A single camera
