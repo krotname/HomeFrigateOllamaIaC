@@ -1,0 +1,28 @@
+[Unit]
+Description=On-demand public camera URL resolver for Frigate
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+EnvironmentFile=/etc/frigate-public-live.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /usr/local/lib/frigate-public-live/public_live.py serve --bind ${PUBLIC_LIVE_BIND} --port 18786
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+CapabilityBoundingSet=
+TasksMax=32
+MemoryMax=128M
+InaccessiblePaths=/opt/frigate /media/frigate
+
+[Install]
+WantedBy=multi-user.target
